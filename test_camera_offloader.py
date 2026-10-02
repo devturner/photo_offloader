@@ -78,7 +78,16 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertIn("hello", self.log.read_text())
 
     def test_parse_args(self):
-        args = app.parse_args(["--source", str(self.card), "--no-usb", "--no-eject", "--sha256", "--verbose"])
+        args = app.parse_args(
+            [
+                "--source",
+                str(self.card),
+                "--no-usb",
+                "--no-eject",
+                "--sha256",
+                "--verbose",
+            ]
+        )
         self.assertEqual(args.source, self.card)
         self.assertTrue(args.no_usb and args.no_eject and args.sha256 and args.verbose)
 
@@ -107,7 +116,10 @@ class TestCameraOffloader(unittest.TestCase):
 
     @patch("camera_offloader_v2.glob.glob", return_value=["/Volumes/NIKON/DCIM"])
     def test_find_card_single_match(self, glob):
-        with patch.object(Path, "is_dir", return_value=True), patch("builtins.input", return_value=""):
+        with (
+            patch.object(Path, "is_dir", return_value=True),
+            patch("builtins.input", return_value=""),
+        ):
             self.assertEqual(app.find_card_dcim(), Path("/Volumes/NIKON/DCIM"))
 
     @patch("camera_offloader_v2.glob.glob", return_value=[])
@@ -131,7 +143,10 @@ class TestCameraOffloader(unittest.TestCase):
         found = {"JPG": [self.dcim / "x.jpg"], "RAW": [], "VIDEO": []}
         scan.side_effect = [empty, found]
         app.WAIT_SECONDS = 30
-        with patch("camera_offloader_v2.time.monotonic", side_effect=[0, 1]), patch("camera_offloader_v2.time.sleep"):
+        with (
+            patch("camera_offloader_v2.time.monotonic", side_effect=[0, 1]),
+            patch("camera_offloader_v2.time.sleep"),
+        ):
             self.assertEqual(app.scan_with_retry(self.dcim), found)
         self.assertEqual(scan.call_count, 2)
 
@@ -143,6 +158,19 @@ class TestCameraOffloader(unittest.TestCase):
         month = datetime.fromtimestamp(source.stat().st_mtime).strftime("%Y-%m")
         result = app.build_destination_path(source, self.dcim, self.local)
         self.assertEqual(result, self.local / month / "100NIKON" / "IMG.JPG")
+
+    def test_get_month_folder_prefers_exif_date(self):
+        from PIL import Image
+
+        source = self.dcim / "100NIKON" / "IMG.JPG"
+        source.parent.mkdir(parents=True)
+
+        image = Image.new("RGB", (1, 1), color="red")
+        exif = Image.Exif()
+        exif[36867] = "2024:01:02 03:04:05"
+        image.save(source, format="JPEG", exif=exif)
+
+        self.assertEqual(app.get_month_folder(source), "2024-01")
 
     def test_flatten_destination_path(self):
         source = self.dcim / "100NIKON" / "IMG.JPG"
@@ -238,7 +266,14 @@ class TestCameraOffloader(unittest.TestCase):
     @patch("camera_offloader_v2.shutil.copy2")
     @patch("camera_offloader_v2.tempfile.mkstemp")
     @patch("camera_offloader_v2.os.close")
-    def test_conflict_test_exercises_false_then_true_match_sequence(self, close, mkstemp, copy2, install, match):
+    def test_conflict_test_exercises_false_then_true_match_sequence(
+        self,
+        close,
+        mkstemp,
+        copy2,
+        install,
+        match,
+    ):
         source = self.media()["RAW"]
         destination = app.build_destination_path(source, self.dcim, self.local)
         destination.parent.mkdir(parents=True)
@@ -401,7 +436,10 @@ class TestCameraOffloader(unittest.TestCase):
         stats = ImportStats(found=sum(len(v) for v in files.values()))
         for category in ("JPG", "RAW", "VIDEO"):
             app.copy_category(files[category], self.dcim, [self.local, self.usb], category, stats)
-        self.assertEqual((stats.found, stats.destination_copies, stats.verified_copies, stats.failed), (3, 6, 6, 0))
+        self.assertEqual(
+            (stats.found, stats.destination_copies, stats.verified_copies, stats.failed),
+            (3, 6, 6, 0),
+        )
         local = sorted(p.relative_to(self.local) for p in self.local.rglob("*") if p.is_file())
         usb = sorted(p.relative_to(self.usb) for p in self.usb.rglob("*") if p.is_file())
         self.assertEqual(local, usb)

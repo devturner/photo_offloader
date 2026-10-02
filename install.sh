@@ -17,7 +17,7 @@ echo "➡️ Creating application directory..."
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$HOME/Library/LaunchAgents"
 
-echo "➡️ Copying active import script..."
+echo "➡️ Copying active import script and dependency manifest..."
 if [ -f "$SCRIPT_NAME" ]; then
     cp "$SCRIPT_NAME" "$SCRIPT_PATH"
     chmod +x "$SCRIPT_PATH"
@@ -26,12 +26,21 @@ else
     exit 1
 fi
 
+if [ -f "requirements.txt" ]; then
+    cp "requirements.txt" "$INSTALL_DIR/requirements.txt"
+else
+    echo "❌ Error: requirements.txt not found in the current folder."
+    exit 1
+fi
+
 echo "➡️ Setting up isolated Python environment..."
 python3 -m venv "$VENV_DIR"
 
-echo "➡️ Installing dependencies (alive-progress)..."
+echo "➡️ Installing Python dependencies..."
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip
-"$VENV_DIR/bin/pip" install --quiet alive-progress
+"$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+
+# Ruff is included for local linting/checks, but the app itself does not depend on it at runtime.
 
 echo "➡️ Configuring macOS automation service..."
 cat <<EOF > "$PLIST_PATH"

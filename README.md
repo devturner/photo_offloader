@@ -184,12 +184,13 @@ The importer uses:
 
 ```text
 alive-progress
+Pillow
 ```
 
 Install it with:
 
 ```bash
-python3 -m pip install alive-progress
+python3 -m pip install -r requirements.txt
 ```
 
 ---
@@ -205,10 +206,21 @@ cd /path/to/PhotoOffloader
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install alive-progress
+python -m pip install -r requirements.txt
 ```
 
 The script will still run without `alive-progress` installed, but the progress bar will be disabled and a warning will be logged instead.
+
+### Linting
+
+This project includes Ruff for local linting and import-order checks:
+
+```bash
+source .venv/bin/activate
+python -m ruff check camera_offloader_v2.py test_camera_offloader.py --output-format concise
+```
+
+The repo also includes a Ruff config file so you can use the same command in CI or before a PR.
 
 ### Common usage
 
@@ -546,13 +558,17 @@ This performs SHA-256 verification rather than relying only on file size.
 
 ---
 
-## 📌 Important Notes
+## 📌 Archive date behavior
 
-The `YYYY-MM` archive folder currently uses the file's macOS filesystem creation time (`st_birthtime`) when available, falling back to modification time.
+The importer prefers the camera's EXIF capture date when it is available, then falls back to the file's filesystem timestamp.
 
-This is **not the same thing as the camera's EXIF capture date**.
+In practice, the `YYYY-MM` folder is created from:
 
-If the archive needs to be organized according to the actual date and time recorded by the camera, EXIF-based date extraction should be added in a future version.
+1. EXIF DateTimeOriginal / DateTimeDigitized / DateTime when present
+2. macOS filesystem birth time (`st_birthtime`) when available
+3. file modification time (`st_mtime`) as the final fallback
+
+This keeps imports aligned with the actual shooting date when the camera metadata is present, while still working for files without EXIF data.
 
 ---
 

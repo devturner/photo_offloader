@@ -15,16 +15,17 @@ Workflow:
     7. Write a session log and send a macOS notification.
 
 Designed for Python 3.9+ on macOS.
-Dependency:
-    pip install alive-progress
+Dependencies:
+    python3 -m pip install -r requirements.txt
+    # alive-progress is optional; Pillow is used for EXIF dates
 """
 
 from __future__ import annotations
 
 import argparse
 import errno
-import hashlib
 import glob
+import hashlib
 import logging
 import os
 import shutil
@@ -39,22 +40,31 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 try:
     from alive_progress import alive_bar
-    HAS_ALIVE_PROGRESS = True
 except ImportError:
     HAS_ALIVE_PROGRESS = False
 
     class _NullProgress:
         def __init__(self, *args, **kwargs):
             pass
+
         def __enter__(self):
             return self
+
         def __exit__(self, exc_type, exc_value, traceback):
             return False
+
         def __call__(self, *args, **kwargs):
             pass
 
     def alive_bar(*args, **kwargs):
         return _NullProgress()
+else:
+    HAS_ALIVE_PROGRESS = True
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    Image = None
 
 
 # ---------------------------------------------------------------------------
@@ -389,17 +399,56 @@ def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
     return True
 
 
-def get_month_folder(source: Path) -> str:
-    info = source.stat()
+def get_exif_datetime(path: Path) -> Optional[datetime]:
+    """Return the EXIF capture date for an image/video when available."""
+    if Image is None:
+        return None
 
-    timestamp = None
-    if USE_FILE_BIRTH_TIME:
-        timestamp = getattr(info, "st_birthtime", None)
+    try:
+        with Image.open(path) as image:
+            exif = image.getexif()
+            if not exif:
+                return None
+
+            for tag in (36867, 36868, 306):
+                value = exif.get(tag)
+                if not value:
+                    continue
+
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8", errors="ignore")
+
+                if not isinstance(value, str):
+                    continue
+
+                try:
+                    return datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
+                except ValueError:
+                    try:
+                        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+    except Exception as exc:  # pragma: no cover - best effort metadata parsing
+        logger.debug("Could not read EXIF date for %s: %s", path, exc)
+
+    return None
+
+
+def get_month_folder(source: Path) -> str:
+    timestamp = get_exif_datetime(source)
 
     if timestamp is None:
-        timestamp = info.st_mtime
+        info = source.stat()
+        value = None
+        if USE_FILE_BIRTH_TIME:
+            value = getattr(info, "st_birthtime", None)
 
-    return datetime.fromtimestamp(timestamp).strftime("%Y-%m")
+        if value is None:
+            value = info.st_mtime
+
+        timestamp = datetime.fromtimestamp(value)
+
+    return timestamp.strftime("%Y-%m")
 
 
 def build_destination_path(

@@ -1,0 +1,17 @@
+line-length = 100
+
+[lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "W",
+]
+ignore = []
+
+[format]
+quote-style = "double"
+indent-style = "space"
+
+[lint.isort]
+known-first-party = ["camera_offloader_v2"]
