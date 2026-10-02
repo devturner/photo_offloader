@@ -185,6 +185,14 @@ class TestCameraOffloader(unittest.TestCase):
             image.save(source, format="JPEG", exif=exif)
             self.assertEqual(app.get_exif_datetime(source), datetime(2024, 1, 2, 3, 4, 5))
 
+    def test_get_exif_datetime_skips_video_files(self):
+        source = self.dcim / "100NIKON" / "CLIP.MOV"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"video-data")
+
+        self.assertIsNone(app.get_exif_datetime(source))
+        self.assertEqual(app.get_month_folder(source), datetime.fromtimestamp(source.stat().st_mtime).strftime("%Y-%m"))
+
     def test_flatten_destination_path(self):
         source = self.dcim / "100NIKON" / "IMG.JPG"
         source.parent.mkdir(parents=True)

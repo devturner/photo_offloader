@@ -39,6 +39,10 @@ python3 -m venv "$VENV_DIR"
 
 echo "➡️ Installing Python dependencies..."
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip
+if [ ! -f "$INSTALL_DIR/requirements.txt" ]; then
+    echo "❌ Error: staged requirements.txt not found at $INSTALL_DIR/requirements.txt."
+    exit 1
+fi
 "$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
 
 # Ruff is included for local linting/checks, but the app itself does not depend on it at runtime.

@@ -445,6 +445,10 @@ def get_exif_datetime(path: Path) -> Optional[datetime]:
     if Image is None:
         return None
 
+    suffix = path.suffix.lower()
+    if suffix in {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}:
+        return None
+
     try:
         with Image.open(path) as image:
             exif = image.getexif()
