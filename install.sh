@@ -4,6 +4,7 @@
 set -e
 
 SCRIPT_NAME="camera_offloader_v2.py"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$HOME/Library/Application Support/PhotoOffloader"
 VENV_DIR="$INSTALL_DIR/venv"
 SCRIPT_PATH="$INSTALL_DIR/$SCRIPT_NAME"
@@ -18,18 +19,18 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$HOME/Library/LaunchAgents"
 
 echo "➡️ Copying active import script and dependency manifest..."
-if [ -f "$SCRIPT_NAME" ]; then
-    cp "$SCRIPT_NAME" "$SCRIPT_PATH"
+if [ -f "$SCRIPT_DIR/$SCRIPT_NAME" ]; then
+    cp "$SCRIPT_DIR/$SCRIPT_NAME" "$SCRIPT_PATH"
     chmod +x "$SCRIPT_PATH"
 else
-    echo "❌ Error: $SCRIPT_NAME not found in the current folder."
+    echo "❌ Error: $SCRIPT_NAME not found in $SCRIPT_DIR."
     exit 1
 fi
 
-if [ -f "requirements.txt" ]; then
-    cp "requirements.txt" "$INSTALL_DIR/requirements.txt"
+if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
+    cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
 else
-    echo "❌ Error: requirements.txt not found in the current folder."
+    echo "❌ Error: requirements.txt not found in $SCRIPT_DIR."
     exit 1
 fi
 

@@ -172,6 +172,19 @@ class TestCameraOffloader(unittest.TestCase):
 
         self.assertEqual(app.get_month_folder(source), "2024-01")
 
+    def test_exif_datetime_normalizes_common_camera_formats(self):
+        from PIL import Image
+
+        source = self.dcim / "100NIKON" / "IMG2.JPG"
+        source.parent.mkdir(parents=True)
+
+        for raw_value in ["2024:01:02 03:04:05", "2024-01-02T03:04:05", "2024/01/02 03:04:05"]:
+            image = Image.new("RGB", (1, 1), color="red")
+            exif = Image.Exif()
+            exif[36867] = raw_value
+            image.save(source, format="JPEG", exif=exif)
+            self.assertEqual(app.get_exif_datetime(source), datetime(2024, 1, 2, 3, 4, 5))
+
     def test_flatten_destination_path(self):
         source = self.dcim / "100NIKON" / "IMG.JPG"
         source.parent.mkdir(parents=True)

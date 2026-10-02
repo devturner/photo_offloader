@@ -28,6 +28,7 @@ import glob
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -399,6 +400,46 @@ def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
     return True
 
 
+def _parse_exif_datetime_value(value: str) -> Optional[datetime]:
+    """Normalize common EXIF timestamp formats into a datetime."""
+    if not value:
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+
+    text = text.replace("Z", "+00:00")
+    text = text.replace("/", "-")
+
+    normalized = re.sub(
+        r"^(\d{4})[-:](\d{2})[-:](\d{2})[ T](\d{2}):(\d{2}):(\d{2})",
+        r"\1-\2-\3 \4:\5:\6",
+        text,
+    )
+
+    candidates = [text, normalized]
+    for candidate in candidates:
+        for fmt in (
+            "%Y:%m:%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S%z",
+        ):
+            try:
+                return datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+
+    return None
+
+
 def get_exif_datetime(path: Path) -> Optional[datetime]:
     """Return the EXIF capture date for an image/video when available."""
     if Image is None:
@@ -421,13 +462,9 @@ def get_exif_datetime(path: Path) -> Optional[datetime]:
                 if not isinstance(value, str):
                     continue
 
-                try:
-                    return datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
-                except ValueError:
-                    try:
-                        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-                    except ValueError:
-                        continue
+                parsed = _parse_exif_datetime_value(value)
+                if parsed is not None:
+                    return parsed
     except Exception as exc:  # pragma: no cover - best effort metadata parsing
         logger.debug("Could not read EXIF date for %s: %s", path, exc)
 
