@@ -190,6 +190,10 @@ def import_session_lock() -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
+            try:
+                SESSION_LOCK_PATH.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def find_card_dcim() -> Path:
