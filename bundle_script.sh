@@ -1,24 +1,32 @@
 #!/bin/bash
+set -euo pipefail
 
-# 1. Create a clean staging directory
-mkdir -p ./photo_offloader_dist
+DIST="./photo_offloader_v2_dist"
+ARCHIVE="./photo_offloader_v2.2.zip"
 
-# 2. Copy files into the staging directory using your exact folder structure
-cp photo_offloader.py ./photo_offloader_dist/
-cp install.sh ./photo_offloader_dist/
-cp README.md ./photo_offloader_dist/
-cp running_bash.sh ./photo_offloader_dist/
+rm -rf "$DIST" "$ARCHIVE"
+mkdir -p "$DIST"
 
-# 3. Ensure the bash scripts retain their executable permissions
-chmod +x ./photo_offloader_dist/install.sh
-chmod +x ./photo_offloader_dist/running_bash.sh
+FILES=(
+  camera_offloader_v2.py
+  camera_offloader_trigger.sh
+  install.sh
+  uninstall.sh
+  running_bash.sh
+  README.md
+  CHANGELOG.md
+  LICENSE
+  requirements.txt
+  requirements-dev.txt
+)
 
-# 4. Compress the folder into a shareable ZIP archive
-zip -r photo_offloader_v1.0.zip ./photo_offloader_dist
+for file in "${FILES[@]}"; do
+  [[ -f "$file" ]] || { echo "Missing required bundle file: $file" >&2; exit 1; }
+  cp "$file" "$DIST/"
+done
 
-# 5. Clean up the staging directory
-rm -rf ./photo_offloader_dist
+chmod +x "$DIST"/*.sh
+zip -qr "$ARCHIVE" "$DIST"
+rm -rf "$DIST"
 
-echo "==========================================="
-echo "📦 Archive Created: photo_offloader_v1.0.zip"
-echo "==========================================="
+echo "Archive created: $ARCHIVE"

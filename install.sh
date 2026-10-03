@@ -1,80 +1,65 @@
 #!/bin/bash
-
-# Stop immediately if any step fails.
-set -e
+set -euo pipefail
 
 SCRIPT_NAME="camera_offloader_v2.py"
+TRIGGER_NAME="camera_offloader_trigger.sh"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$HOME/Library/Application Support/PhotoOffloader"
 VENV_DIR="$INSTALL_DIR/venv"
 SCRIPT_PATH="$INSTALL_DIR/$SCRIPT_NAME"
+TRIGGER_PATH="$INSTALL_DIR/$TRIGGER_NAME"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.user.photooffloader.plist"
+LABEL="com.user.photooffloader"
 
 echo "==========================================="
-echo " Installing Photo Offloader Automation"
+echo " Installing Photo Offloader v2.2"
 echo "==========================================="
 
-echo "➡️ Creating application directory..."
-mkdir -p "$INSTALL_DIR"
-mkdir -p "$HOME/Library/LaunchAgents"
+mkdir -p "$INSTALL_DIR" "$HOME/Library/LaunchAgents"
 
-echo "➡️ Copying active import script and dependency manifest..."
-if [ -f "$SCRIPT_DIR/$SCRIPT_NAME" ]; then
-    cp "$SCRIPT_DIR/$SCRIPT_NAME" "$SCRIPT_PATH"
-    chmod +x "$SCRIPT_PATH"
-else
-    echo "❌ Error: $SCRIPT_NAME not found in $SCRIPT_DIR."
+for file in "$SCRIPT_NAME" "$TRIGGER_NAME" "requirements.txt"; do
+  if [[ ! -f "$SCRIPT_DIR/$file" ]]; then
+    echo "Error: $file not found in $SCRIPT_DIR."
     exit 1
-fi
+  fi
+done
 
-if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
-    cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
-else
-    echo "❌ Error: requirements.txt not found in $SCRIPT_DIR."
-    exit 1
-fi
+cp "$SCRIPT_DIR/$SCRIPT_NAME" "$SCRIPT_PATH"
+cp "$SCRIPT_DIR/$TRIGGER_NAME" "$TRIGGER_PATH"
+cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
+chmod +x "$SCRIPT_PATH" "$TRIGGER_PATH"
 
-echo "➡️ Setting up isolated Python environment..."
 python3 -m venv "$VENV_DIR"
+"$VENV_DIR/bin/python3" -m pip install --quiet --upgrade pip
+"$VENV_DIR/bin/python3" -m pip install --quiet -r "$INSTALL_DIR/requirements.txt"
 
-echo "➡️ Installing Python dependencies..."
-"$VENV_DIR/bin/pip" install --quiet --upgrade pip
-if [ ! -f "$INSTALL_DIR/requirements.txt" ]; then
-    echo "❌ Error: staged requirements.txt not found at $INSTALL_DIR/requirements.txt."
-    exit 1
-fi
-"$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
-
-# Ruff is included for local linting/checks, but the app itself does not depend on it at runtime.
-
-echo "➡️ Configuring macOS automation service..."
-cat <<EOF > "$PLIST_PATH"
+cat > "$PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://apple.com">
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.user.photooffloader</string>
+    <string>$LABEL</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/osascript</string>
-        <string>-e</string>
-        <string>tell application "Terminal" to do script "'$VENV_DIR/bin/python3' '$SCRIPT_PATH'; exit"</string>
+        <string>$TRIGGER_PATH</string>
     </array>
     <key>WatchPaths</key>
     <array>
         <string>/Volumes</string>
     </array>
+    <key>ProcessType</key>
+    <string>Background</string>
 </dict>
 </plist>
 EOF
 
-echo "➡️ Registering background service with macOS..."
-launchctl unload "$PLIST_PATH" 2>/dev/null || true
-launchctl load "$PLIST_PATH"
+plutil -lint "$PLIST_PATH"
 
-echo "==========================================="
-echo " 🎉 Installation complete successfully!"
-echo "==========================================="
-echo "The camera importer will launch whenever a card is inserted."
-echo "Log file: ~/.camera_transfer.log"
+launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
+
+echo "Installation complete."
+echo "Importer: $SCRIPT_PATH"
+echo "Trigger:   $TRIGGER_PATH"
+echo "Log:       ~/.camera_transfer.log"
