@@ -1,34 +1,16 @@
 #!/bin/bash
-
-# Stop immediately if any step fails.
-set -e
+set -euo pipefail
 
 INSTALL_DIR="$HOME/Library/Application Support/PhotoOffloader"
-VENV_DIR="$INSTALL_DIR/venv"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.user.photooffloader.plist"
-LOG_FILE_PATH="$HOME/.camera_transfer.log"
+LABEL="com.user.photooffloader"
 
-printf '===========================================\n'
-printf ' Uninstalling Photo Offloader Automation\n'
-printf '===========================================\n\n'
+echo "Uninstalling Photo Offloader..."
 
-if [ -f "$PLIST_PATH" ]; then
-    echo "➡️ Unloading LaunchAgent..."
-    launchctl unload "$PLIST_PATH" 2>/dev/null || true
-    rm -f "$PLIST_PATH"
-fi
+launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+rm -f "$PLIST_PATH"
+rm -rf "$INSTALL_DIR"
+rm -f "$HOME/.camera_transfer.log" "$HOME/.camera_transfer_trigger.log"
 
-if [ -d "$VENV_DIR" ] || [ -d "$INSTALL_DIR" ]; then
-    echo "➡️ Removing installed application files..."
-    rm -rf "$INSTALL_DIR"
-fi
-
-if [ -f "$LOG_FILE_PATH" ]; then
-    echo "➡️ Removing application log..."
-    rm -f "$LOG_FILE_PATH"
-fi
-
-printf '\n===========================================\n'
-printf ' ✅ Uninstall complete.\n'
-printf '===========================================\n'
-printf 'The imported media in ~/Pictures/CameraImports was left in place.\n'
+echo "Application files, trigger, LaunchAgent, and logs removed."
+echo "Imported media under ~/Pictures/CameraImports was left untouched."

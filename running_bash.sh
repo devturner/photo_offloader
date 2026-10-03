@@ -1,18 +1,23 @@
 #!/bin/bash
+set -u
 
 echo "==========================================="
-echo "🚀 Running Camera Offloader v2 Manually"
+echo " Running Camera Offloader v2.2 Manually"
 echo "==========================================="
 
 INSTALL_DIR="$HOME/Library/Application Support/PhotoOffloader"
 
-if [ -f "$INSTALL_DIR/venv/bin/python3" ]; then
-    # Executes cleanly inside your permanent isolated application virtual environment context
+if [[ -x "$INSTALL_DIR/venv/bin/python3" && -f "$INSTALL_DIR/camera_offloader_v2.py" ]]; then
     "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/camera_offloader_v2.py" "$@"
+    status=$?
 else
-    echo "❌ Error: Camera Offloader is not installed on this machine yet."
-    echo "   Please run ./install.sh first!"
+    echo "Error: Camera Offloader is not installed. Run ./install.sh first."
+    status=1
 fi
 
-echo ""
-read -p "Press Enter to exit..."
+if [[ -t 0 ]]; then
+    echo ""
+    read -r -p "Press Enter to exit..."
+fi
+
+exit "$status"

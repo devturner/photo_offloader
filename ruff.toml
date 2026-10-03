@@ -1,17 +1,10 @@
 line-length = 100
+target-version = "py39"
 
 [lint]
-select = [
-    "E",
-    "F",
-    "I",
-    "W",
-]
-ignore = []
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
 
 [format]
 quote-style = "double"
 indent-style = "space"
-
-[lint.isort]
-known-first-party = ["camera_offloader_v2"]
