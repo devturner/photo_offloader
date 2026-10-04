@@ -156,8 +156,10 @@ class TestCameraOffloader(unittest.TestCase):
         source = self.dcim / "100NIKON" / "IMG.JPG"
         source.parent.mkdir(parents=True)
         source.write_bytes(b"x")
-        with patch.object(app, "get_month_folder", return_value="2026-08"), \\
-             patch.object(app, "get_camera_model", return_value="NIKON-Z-8"):
+        with (
+            patch.object(app, "get_month_folder", return_value="2026-08"),
+            patch.object(app, "get_camera_model", return_value="NIKON-Z-8"),
+        ):
             result = app.build_destination_path(source, self.dcim, self.local)
         self.assertEqual(result, self.local / "2026-08" / "NIKON-Z-8" / "Photos" / "IMG.JPG")
 
