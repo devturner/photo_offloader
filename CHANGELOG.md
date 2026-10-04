@@ -4,6 +4,9 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Changed
+- Imported media from different camera/DCIM subfolders are now merged directly into the `YYYY-MM` destination folder instead of recreating the camera subfolder hierarchy.
+
 ### Fixed
 - Imported media no longer inherits executable or owner-only source mode bits such as 0700; new destination files are normalized to user read/write (0600).
 - Trigger regression test now matches the shell-escaped path format produced by bash `%q`.
