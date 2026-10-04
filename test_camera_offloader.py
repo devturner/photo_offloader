@@ -147,6 +147,34 @@ class TestCameraOffloader(unittest.TestCase):
         with patch("camera_offloader_v2.Image.open", return_value=fake_image):
             self.assertEqual(app.get_camera_model(self.root / "IMG.JPG"), "Unknown-Camera")
 
+    @patch("camera_offloader_v2.shutil.which", return_value="/opt/homebrew/bin/exiftool")
+    @patch("camera_offloader_v2.subprocess.run")
+    def test_get_camera_model_from_mov_metadata(self, run, which):
+        run.return_value = MagicMock(
+            returncode=0,
+            stdout='[{"SourceFile":"clip.MOV","Make":"Canon","Model":"Canon PowerShot S100"}]',
+            stderr="",
+        )
+        path = self.root / "clip.MOV"
+        self.assertEqual(app.get_camera_model(path), "Canon-PowerShot-S100")
+        which.assert_called_once_with("exiftool")
+        run.assert_called_once_with(
+            "/opt/homebrew/bin/exiftool",
+            "-j",
+            "-Make",
+            "-Model",
+            str(path),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    @patch("camera_offloader_v2.shutil.which", return_value=None)
+    def test_get_camera_model_mov_without_exiftool(self, which):
+        self.assertEqual(app.get_camera_model(self.root / "clip.MOV"), "Unknown-Camera")
+        which.assert_called_once_with("exiftool")
+
     def test_media_type_folders(self):
         self.assertEqual(app.get_media_type_folder(Path("photo.jpg")), "Photos")
         self.assertEqual(app.get_media_type_folder(Path("photo.nef")), "Raws")
