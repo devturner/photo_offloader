@@ -22,6 +22,7 @@ import os
 import plistlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -403,6 +404,12 @@ def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: P
             except OSError:
                 logger.exception("Could not remove failed destination %s", final_path)
             raise IOError(f"Final verification failed: {final_path}")
+
+        # Camera media can arrive with owner-only or executable mode bits
+        # (for example, 0700). Do not propagate those source permissions to
+        # imported photos/videos. Imported media should be regular user files,
+        # not executables, while remaining private to the importing user.
+        os.chmod(final_path, stat.S_IRUSR | stat.S_IWUSR)
         return DestinationResult(destination_base, "copied", final_path, "copied and verified")
     finally:
         if temp_path is not None:
