@@ -16,6 +16,7 @@ LOCK_DIR="${PHOTO_OFFLOADER_TRIGGER_LOCK:-$INSTALL_DIR/.trigger.lock}"
 SETTLE_SECONDS="${PHOTO_OFFLOADER_TRIGGER_SETTLE_SECONDS:-1}"
 PGREP="${PHOTO_OFFLOADER_PGREP:-/usr/bin/pgrep}"
 OSASCRIPT="${PHOTO_OFFLOADER_OSASCRIPT:-/usr/bin/osascript}"
+VOLUMES_ROOT="${PHOTO_OFFLOADER_VOLUMES_ROOT:-/Volumes}"
 
 log() {
     mkdir -p "$(dirname "$LOG")"
@@ -41,7 +42,7 @@ trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 sleep "$SETTLE_SECONDS"
 
 camera_dcim=""
-for volume in /Volumes/NIKON* /Volumes/SONY* /Volumes/EOS*; do
+for volume in "$VOLUMES_ROOT"/NIKON* "$VOLUMES_ROOT"/SONY* "$VOLUMES_ROOT"/EOS*; do
     [[ -d "$volume" ]] || continue
     if [[ -d "$volume/DCIM" ]]; then
         camera_dcim="$volume/DCIM"
