@@ -128,13 +128,13 @@ class TestCameraOffloader(unittest.TestCase):
         with patch("camera_offloader_v2.time.monotonic", side_effect=[0, 1]), patch("camera_offloader_v2.time.sleep"):
             self.assertEqual(app.scan_with_retry(self.dcim), found)
 
-    def test_destination_path(self):
+    def test_destination_path_merges_camera_subfolders_into_month(self):
         source = self.dcim / "100NIKON" / "IMG.JPG"
         source.parent.mkdir(parents=True)
         source.write_bytes(b"x")
         month = app.get_month_folder(source)
         result = app.build_destination_path(source, self.dcim, self.local)
-        self.assertEqual(result, self.local / month / "100NIKON" / "IMG.JPG")
+        self.assertEqual(result, self.local / month / "IMG.JPG")
 
     def test_files_match_requires_sha_for_existing_duplicate(self):
         a, b = self.root / "a", self.root / "b"
