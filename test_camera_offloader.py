@@ -159,11 +159,13 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(app.get_camera_model(path), "Canon-PowerShot-S100")
         which.assert_called_once_with("exiftool")
         run.assert_called_once_with(
-            "/opt/homebrew/bin/exiftool",
-            "-j",
-            "-Make",
-            "-Model",
-            str(path),
+            [
+                "/opt/homebrew/bin/exiftool",
+                "-j",
+                "-Make",
+                "-Model",
+                str(path),
+            ],
             check=False,
             capture_output=True,
             text=True,
