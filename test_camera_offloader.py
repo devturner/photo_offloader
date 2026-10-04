@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import errno
 import plistlib
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -171,9 +172,12 @@ class TestCameraOffloader(unittest.TestCase):
 
     def test_copy_and_verify(self):
         source = self.media()["RAW"]
+        source.chmod(0o700)
         result = app.copy_one_to_destination(source, self.dcim, self.local)
         self.assertEqual(result.status, "copied")
         self.assertEqual(result.path.read_bytes(), b"raw")
+        self.assertEqual(stat.S_IMODE(result.path.stat().st_mode), 0o600)
+
 
     def test_matching_duplicate_is_content_verified(self):
         source = self.media()["RAW"]
