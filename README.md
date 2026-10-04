@@ -110,6 +110,24 @@ CameraImports/
 
 EXIF capture date is preferred for the month folder, followed by filesystem birth time and modification time.
 
+### 🎥 Video camera metadata
+
+For video files such as MOV and MP4, the importer can read embedded camera Make/Model metadata using the optional `exiftool` command. When available, this allows videos to be grouped with photos from the same camera.
+
+If `exiftool` is not installed or a video does not contain usable camera metadata, the importer falls back to `Unknown-Camera`.
+
+`exiftool` is not installed automatically by Photo Offloader. On a Homebrew-based Mac, install it with:
+
+```bash
+brew install exiftool
+```
+
+You can verify that it is available with:
+
+```bash
+exiftool -ver
+```
+
 ### 📊 Session reporting
 
 The importer reports:
@@ -156,6 +174,7 @@ If an import fails, the card remains mounted for investigation or retry.
 - `diskutil` and `osascript` (provided by macOS)
 - `alive-progress`
 - `Pillow`
+- Optional: `exiftool` for camera Make/Model metadata in video files
 
 Development/testing also uses Ruff.
 
@@ -199,7 +218,7 @@ Run Ruff:
 python -m ruff check camera_offloader_v2.py test_camera_offloader.py test_hardening_regressions.py test_camera_offloader_trigger.py
 ```
 
-The test suite includes filesystem-level copy tests, hardening regressions, lock behavior, USB identity checks, and trigger tests covering volume names with spaces and repeated `/Volumes` events.
+The test suite includes filesystem-level copy tests, hardening regressions, lock behavior, USB identity checks, video camera metadata detection, and trigger tests covering volume names with spaces and repeated `/Volumes` events.
 
 ## ⚙️ Manual operation
 
