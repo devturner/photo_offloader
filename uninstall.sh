@@ -12,5 +12,5 @@ rm -f "$PLIST_PATH"
 rm -rf "$INSTALL_DIR"
 rm -f "$HOME/.camera_transfer.log" "$HOME/.camera_transfer_trigger.log"
 
-echo "Application files, trigger, LaunchAgent, and logs removed."
+echo "Application files, trigger state, LaunchAgent, and logs removed."
 echo "Imported media under ~/Pictures/CameraImports was left untouched."
