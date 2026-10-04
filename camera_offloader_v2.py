@@ -65,7 +65,6 @@ SESSION_LOCK_PATH = Path.home() / "Library" / "Caches" / "PhotoOffloader" / "imp
 WAIT_SECONDS = 30
 EJECT_CARD_AFTER_SUCCESS = True
 VERIFY_WITH_SHA256 = False
-PRESERVE_CAMERA_SUBFOLDERS = False
 USE_FILE_BIRTH_TIME = True
 MIN_FREE_SPACE_BUFFER_BYTES = 100 * 1024 * 1024
 
@@ -348,6 +347,40 @@ def get_exif_datetime(path: Path) -> Optional[datetime]:
     except Exception as exc:  # best effort
         logger.debug("Could not read EXIF date for %s: %s", path, exc)
     return None
+
+
+def normalize_camera_model(make: object, model: object) -> str:
+    """Return a stable, filesystem-safe camera identifier from EXIF values."""
+    def clean(value: object) -> str:
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="ignore")
+        if not isinstance(value, str):
+            return ""
+        return re.sub(r"\\s+", " ", value).strip()
+
+    make_text = clean(make)
+    model_text = clean(model)
+    if make_text and model_text:
+        combined = model_text if model_text.lower().startswith(make_text.lower()) else f"{make_text} {model_text}"
+    else:
+        combined = model_text or make_text
+    combined = re.sub(r"[^A-Za-z0-9._-]+", "-", combined)
+    combined = re.sub(r"-+", "-", combined).strip(".-_")
+    return combined or "Unknown-Camera"
+
+
+def get_camera_model(path: Path) -> str:
+    """Read EXIF camera make/model, falling back when metadata is unavailable."""
+    if Image is None or path.suffix.lower() in {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}:
+        return "Unknown-Camera"
+    try:
+        with Image.open(path) as image:
+            exif = image.getexif()
+            if exif:
+                return normalize_camera_model(exif.get(271), exif.get(272))
+    except Exception as exc:  # best effort
+        logger.debug("Could not read camera EXIF for %s: %s", path, exc)
+    return "Unknown-Camera"
 
 
 def get_month_folder(source: Path) -> str:
