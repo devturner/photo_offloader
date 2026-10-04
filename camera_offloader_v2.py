@@ -392,9 +392,20 @@ def get_month_folder(source: Path) -> str:
     return timestamp.strftime("%Y-%m")
 
 
+def get_media_type_folder(source: Path) -> str:
+    """Map a supported media extension to its human-friendly destination folder."""
+    category = MEDIA_EXTENSIONS.get(source.suffix.lower())
+    return {"JPG": "Photos", "RAW": "Raws", "VIDEO": "Movies"}.get(category, "Other")
+
+
 def build_destination_path(source: Path, dcim_folder: Path, destination_base: Path) -> Path:
-    relative_parent = source.relative_to(dcim_folder).parent if PRESERVE_CAMERA_SUBFOLDERS else Path()
-    return destination_base / get_month_folder(source) / relative_parent / source.name
+    return (
+        destination_base
+        / get_month_folder(source)
+        / get_camera_model(source)
+        / get_media_type_folder(source)
+        / source.name
+    )
 
 
 def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: Path) -> DestinationResult:
