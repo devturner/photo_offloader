@@ -5,7 +5,7 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Changed
-- Imported media is now organized as `YYYY-MM/Camera-Model/filename`, using EXIF camera make/model when available and `Unknown-Camera` as a fallback; original DCIM subfolder names are no longer recreated.
+- Imported media is now organized as `YYYY-MM/Camera-Model/Media-Type/filename`, using `Photos`, `Raws`, and `Movies` folders; camera identity comes from EXIF make/model when available, with `Unknown-Camera` as a fallback.
 
 ### Fixed
 - Imported media no longer inherits executable or owner-only source mode bits such as 0700; new destination files are normalized to user read/write (0600).
