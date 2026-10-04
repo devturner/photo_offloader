@@ -4,6 +4,10 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- Imported media no longer inherits executable or owner-only source mode bits such as 0700; new destination files are normalized to user read/write (0600).
+- Trigger regression test now matches the shell-escaped path format produced by bash `%q`.
+
 ### Planned
 - Additional macOS hardware integration tests with real removable media.
 - Validation across supported macOS and Python versions.
