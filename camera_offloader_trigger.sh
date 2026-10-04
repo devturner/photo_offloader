@@ -66,7 +66,7 @@ fi
 # The importer has its own advisory lock. Avoid opening extra Terminal windows
 # while an import is already running, but retain the importer lock as the final
 # safety barrier against races.
-if "$PGREP" -f -- "$IMPORTER" >/dev/null 2>&1; then
+if "$PGREP" -f "$IMPORTER" >/dev/null 2>&1; then
     log "Importer already running; ignoring duplicate volume event for $camera_dcim"
     exit 0
 fi
