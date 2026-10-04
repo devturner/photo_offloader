@@ -14,6 +14,8 @@ LOG="${PHOTO_OFFLOADER_TRIGGER_LOG:-$HOME/.camera_transfer_trigger.log}"
 STATE_FILE="${PHOTO_OFFLOADER_TRIGGER_STATE:-$INSTALL_DIR/.last_camera_source}"
 LOCK_DIR="${PHOTO_OFFLOADER_TRIGGER_LOCK:-$INSTALL_DIR/.trigger.lock}"
 SETTLE_SECONDS="${PHOTO_OFFLOADER_TRIGGER_SETTLE_SECONDS:-1}"
+PGREP="${PHOTO_OFFLOADER_PGREP:-/usr/bin/pgrep}"
+OSASCRIPT="${PHOTO_OFFLOADER_OSASCRIPT:-/usr/bin/osascript}"
 
 log() {
     mkdir -p "$(dirname "$LOG")"
@@ -63,7 +65,7 @@ fi
 # The importer has its own advisory lock. Avoid opening extra Terminal windows
 # while an import is already running, but retain the importer lock as the final
 # safety barrier against races.
-if /usr/bin/pgrep -f -- "$IMPORTER" >/dev/null 2>&1; then
+if "$PGREP" -f -- "$IMPORTER" >/dev/null 2>&1; then
     log "Importer already running; ignoring duplicate volume event for $camera_dcim"
     exit 0
 fi
@@ -75,7 +77,7 @@ log "Recognized camera source: $camera_dcim"
 # the volume name.
 command="$(printf '%q ' "$PYTHON" "$IMPORTER" --source "$camera_dcim")"
 
-if /usr/bin/osascript - "$command" <<'APPLESCRIPT' >/dev/null 2>&1
+if "$OSASCRIPT" - "$command" <<'APPLESCRIPT' >/dev/null 2>&1
 on run argv
     tell application "Terminal"
         do script (item 1 of argv)
