@@ -147,14 +147,19 @@ class TestCameraOffloader(unittest.TestCase):
         with patch("camera_offloader_v2.Image.open", return_value=fake_image):
             self.assertEqual(app.get_camera_model(self.root / "IMG.JPG"), "Unknown-Camera")
 
-    def test_destination_path_uses_month_and_camera_model(self):
+    def test_media_type_folders(self):
+        self.assertEqual(app.get_media_type_folder(Path("photo.jpg")), "Photos")
+        self.assertEqual(app.get_media_type_folder(Path("photo.nef")), "Raws")
+        self.assertEqual(app.get_media_type_folder(Path("clip.mov")), "Movies")
+
+    def test_destination_path_uses_month_camera_model_and_media_type(self):
         source = self.dcim / "100NIKON" / "IMG.JPG"
         source.parent.mkdir(parents=True)
         source.write_bytes(b"x")
         with patch.object(app, "get_month_folder", return_value="2026-08"), \\
              patch.object(app, "get_camera_model", return_value="NIKON-Z-8"):
             result = app.build_destination_path(source, self.dcim, self.local)
-        self.assertEqual(result, self.local / "2026-08" / "NIKON-Z-8" / "IMG.JPG")
+        self.assertEqual(result, self.local / "2026-08" / "NIKON-Z-8" / "Photos" / "IMG.JPG")
 
     def test_files_match_requires_sha_for_existing_duplicate(self):
         a, b = self.root / "a", self.root / "b"
