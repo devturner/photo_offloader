@@ -86,9 +86,11 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.state.read_text().strip(), str(self.dcim))
         command = self.command_capture.read_text().strip()
-        self.assertIn("NIKON Z 8/DCIM", command)
+        # The trigger builds a shell-safe command with bash %q, so spaces
+        # are escaped rather than wrapped in quotes.
+        self.assertIn("NIKON\\ Z\\ 8/DCIM", command)
         self.assertIn("--source", command)
-        self.assertIn("'", command)
+        self.assertNotIn("NIKON Z 8/DCIM", command)
 
     def test_repeated_volume_event_does_not_launch_same_mount_twice(self):
         self.assertEqual(self.run_trigger().returncode, 0)
