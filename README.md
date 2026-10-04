@@ -8,22 +8,7 @@ The importer follows:
 
 Files are never deleted from the camera card and existing destination files are never overwritten.
 
-## What's new in v2.2
-
-v2.2 is a reliability and safety hardening release.
-
-- Automatic volume events are filtered through a camera-aware trigger.
-- Only one import session can run at a time.
-- Existing same-name files are SHA-256 checked before being skipped.
-- Required destination space is checked before copying.
-- The configured USB volume is identified at session start and checked again before ejection.
-- Source files are checked for changes during copying.
-- LaunchAgent installation validates the generated plist.
-- Runtime and development dependencies are separated.
-- The distribution bundle is updated for v2.
-- Exit codes are documented and changes are tracked in `CHANGELOG.md`.
-
-## Features
+## ✨ Features
 
 ### Camera card detection
 
@@ -33,9 +18,32 @@ Configured camera volume patterns currently include:
 - `SONY*`
 - `EOS*`
 
+The automatic LaunchAgent watches `/Volumes`, but the trigger only launches when one of those camera volumes contains a `DCIM` directory. A volume such as `/Volumes/Photos` is ignored as a source.
+
 The importer also accepts a volume or `DCIM` path through `--source`.
 
-### Local + external backup
+### Safe handling of camera names with spaces
+
+Volume names are passed as real command arguments rather than being reconstructed through unsafe nested shell quoting. Names such as:
+
+```text
+/Volumes/NIKON Z 8
+```
+
+are supported.
+
+### Duplicate-trigger protection
+
+macOS can generate multiple `/Volumes` events while removable media is mounting. The trigger therefore uses several layers of protection:
+
+1. LaunchAgent `ThrottleInterval` reduces event bursts.
+2. An atomic trigger lock prevents simultaneous trigger evaluations.
+3. Trigger state prevents the same mounted camera from launching repeatedly.
+4. The importer has its own process lock as the final concurrency safeguard.
+
+The state is cleared when no recognized camera volume is mounted, allowing the same card to be processed again after it is unmounted and remounted.
+
+### 💾 Local + external backup
 
 Local storage defaults to:
 
@@ -43,56 +51,52 @@ Local storage defaults to:
 ~/Pictures/CameraImports/
 ```
 
-When `/Volumes/Photos` is mounted, a second copy is written to:
+When `/Volumes/Photos` is mounted when an import begins, a second copy is written to:
 
 ```text
 /Volumes/Photos/CameraImports/
 ```
 
-The USB destination is snapshotted at the beginning of the session. If it disappears or is replaced during the import, the session fails and the card is not automatically ejected.
+The USB destination is snapshotted at the beginning of the session. If the expected USB volume disappears or is replaced during the import, the session fails and the camera card is not automatically ejected.
 
 Use `--no-usb` when a second backup is intentionally not required.
 
-### Collision safety
+### 🛡️ Collision safety
 
-Existing files are never overwritten.
+Existing files are never blindly overwritten.
 
 For an existing same-name file:
 
-1. Its size is compared.
-2. Its contents are SHA-256 compared.
+1. Size is compared.
+2. Contents are SHA-256 compared.
 3. If it matches, the file is skipped.
 4. If it differs, a conflict name such as `DSC_1234__conflict-1.NEF` is used.
 
-### Verification
+### 🔐 Copy verification
 
-New copies are verified by size by default.
+Every copied file is verified after the copy completes.
 
-Use:
+By default, verification compares file sizes. For stronger verification of every new copy:
 
 ```bash
 python3 camera_offloader_v2.py --sha256
 ```
 
-to use SHA-256 for every copy verification.
-
-Existing same-name files are always content-checked regardless of the `--sha256` option.
+Existing same-name files are always content-checked before being skipped.
 
 ### Source stability
 
-The source file's size, modification timestamp, and inode are captured before copying and checked again afterward. If the source changes during the copy, that destination is treated as failed.
+The importer fingerprints each source file before copying and checks it again afterward. If the source changes or disappears during the copy, that destination is treated as failed.
 
 ### Free-space protection
 
 Before copying, the importer calculates the total source bytes and checks every required destination for enough free space plus a safety buffer.
 
-The default safety buffer is 100 MiB and can be changed with `MIN_FREE_SPACE_BUFFER_BYTES`.
+The default safety buffer is 100 MiB and can be changed with `MIN_FREE_SPACE_BUFFER_BYTES` in the Python configuration.
 
-### Single-instance protection
+### 📁 Archive layout
 
-A process lock prevents two importer sessions from operating on the same workstation simultaneously.
-
-## Archive layout
+Files are organized into `YYYY-MM` folders while preserving native camera subfolders:
 
 ```text
 CameraImports/
@@ -101,125 +105,81 @@ CameraImports/
     │   ├── DSC_0001.NEF
     │   └── DSC_0002.JPG
     └── 101NIKON/
-        └── DSC_0003.NEF
+        └── DSC_0003.JPG
 ```
 
 EXIF capture date is preferred for the month folder, followed by filesystem birth time and modification time.
 
-## Supported media
+### 📊 Session reporting
 
-- JPEG / JPG
-- HEIC / HEIF
-- NEF
-- ARW
-- CR2
-- CR3
-- DNG
-- RAF
-- ORF
-- RW2
-- MOV
-- MP4
-- AVI
-- MTS
-- M2TS
+The importer reports:
 
-## Requirements
+- files discovered
+- source bytes
+- destination copies
+- destination skips
+- verified copies
+- failures
+- destination paths
+- eject status
 
-- macOS
-- Python 3.9+
-- `diskutil`
-- `osascript`
-- `alive-progress`
-- `Pillow`
-
-Runtime dependencies are in `requirements.txt`.
-
-Development dependencies are in `requirements-dev.txt`.
-
-## Installation
-
-```bash
-chmod +x install.sh uninstall.sh running_bash.sh camera_offloader_trigger.sh
-./install.sh
-```
-
-The installer creates:
-
-```text
-~/Library/Application Support/PhotoOffloader/
-```
-
-with an isolated Python environment and installs a LaunchAgent.
-
-The LaunchAgent watches `/Volumes`, but it does **not** launch the importer for every volume event. The trigger script first checks for a configured camera DCIM directory and passes the detected source explicitly to the importer.
-
-## Manual use
-
-```bash
-python3 camera_offloader_v2.py --source /Volumes/NIKON/DCIM
-```
-
-or:
-
-```bash
-./running_bash.sh --source /Volumes/NIKON/DCIM
-```
-
-If `--source` is omitted, the importer prompts for a recognized camera card.
-
-## Command-line options
-
-```text
---source PATH    Camera volume or DCIM path
---no-usb         Local destination only
---no-eject       Leave camera card mounted
---sha256         SHA-256 verification for all copies
---verbose        Verbose logging
-```
-
-## Exit codes
-
-| Code | Meaning |
-|---:|---|
-| 0 | Import completed successfully |
-| 1 | Import failed or was incomplete |
-| 2 | Import succeeded but automatic eject failed |
-| 130 | Import canceled with Ctrl-C |
-
-## Safety model
-
-The importer:
-
-- does not delete source media
-- never overwrites destination files
-- uses temporary files before final installation
-- verifies completed copies
-- detects source mutation during copy
-- validates destination capacity
-- requires the originally detected USB backup volume to remain present
-- prevents concurrent import sessions
-- only ejects after all required destinations succeed
-
-A failed import leaves the camera card mounted.
-
-## Logs
-
-Main importer log:
+Persistent logs are written to:
 
 ```text
 ~/.camera_transfer.log
 ```
 
-Automatic trigger log:
+Trigger activity is written to:
 
 ```text
 ~/.camera_transfer_trigger.log
 ```
 
-## Testing
+### 🔔 macOS notifications
 
-Create a development environment:
+The importer uses native `osascript` notifications for successful, incomplete, canceled, and eject-failure sessions. Notification failure does not itself make an import fail.
+
+### ⏏️ Safe ejection
+
+The card is automatically ejected only when:
+
+- all required destinations succeeded;
+- the expected USB backup volume is still present and matches its recorded identity; and
+- `--no-eject` was not specified.
+
+If an import fails, the card remains mounted for investigation or retry.
+
+## 📋 Requirements
+
+- macOS
+- Python 3.9+
+- `diskutil` and `osascript` (provided by macOS)
+- `alive-progress`
+- `Pillow`
+
+Development/testing also uses Ruff.
+
+## 🚀 Installation
+
+From the repository directory:
+
+```bash
+chmod +x install.sh uninstall.sh
+./install.sh
+```
+
+The installer:
+
+1. installs the importer and trigger under `~/Library/Application Support/PhotoOffloader`;
+2. creates the runtime virtual environment;
+3. installs runtime dependencies;
+4. creates and validates `com.user.photooffloader.plist`;
+5. loads the LaunchAgent with `launchctl bootstrap`; and
+6. verifies that the LaunchAgent is active.
+
+## 🧪 Testing
+
+Install development dependencies:
 
 ```bash
 python3 -m venv .venv
@@ -227,7 +187,7 @@ source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
 ```
 
-Run tests:
+Run the complete test suite:
 
 ```bash
 python -m unittest discover -v
@@ -236,58 +196,81 @@ python -m unittest discover -v
 Run Ruff:
 
 ```bash
-python -m ruff check camera_offloader_v2.py test_camera_offloader.py camera_offloader_trigger.sh
+python -m ruff check camera_offloader_v2.py test_camera_offloader.py test_hardening_regressions.py test_camera_offloader_trigger.py
 ```
 
-The shell script is not Python, so a typical Ruff command should target the Python files only:
+The test suite includes filesystem-level copy tests, hardening regressions, lock behavior, USB identity checks, and trigger tests covering volume names with spaces and repeated `/Volumes` events.
+
+## ⚙️ Manual operation
+
+Import a specific camera volume:
 
 ```bash
-python -m ruff check camera_offloader_v2.py test_camera_offloader.py
+python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8"
 ```
 
-## Distribution bundle
+Import without the USB destination:
 
 ```bash
-./bundle_script.sh
+python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8" --no-usb
 ```
 
-This produces:
+Do not eject after a successful import:
+
+```bash
+python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8" --no-eject
+```
+
+Enable SHA-256 verification:
+
+```bash
+python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8" --sha256
+```
+
+## 🔧 Configuration
+
+The main configuration constants are at the top of `camera_offloader_v2.py`:
+
+- `CARD_VOLUME_GLOBS`
+- `LOCAL_DEST_ROOT`
+- `USB_DEST_VOLUME`
+- `USB_DEST_ROOT`
+- `VERIFY_WITH_SHA256`
+- `PRESERVE_CAMERA_SUBFOLDERS`
+- `USE_FILE_BIRTH_TIME`
+- `MIN_FREE_SPACE_BUFFER_BYTES`
+- `EJECT_CARD_AFTER_SUCCESS`
+
+The installed copy lives at:
 
 ```text
-photo_offloader_v2.2.zip
+~/Library/Application Support/PhotoOffloader/camera_offloader_v2.py
 ```
 
-## Uninstallation
+### Trigger configuration
+
+The LaunchAgent is:
+
+```text
+~/Library/LaunchAgents/com.user.photooffloader.plist
+```
+
+It watches `/Volumes`. Do not remove the trigger-level and importer-level locks; both are intentional safety layers.
+
+## 🧹 Uninstallation
 
 ```bash
 ./uninstall.sh
 ```
 
-The uninstaller removes the LaunchAgent, installed application files, and logs. It does **not** delete imported media under `~/Pictures/CameraImports`.
+This removes the application files, runtime environment, trigger state, LaunchAgent, and logs. Imported media under `~/Pictures/CameraImports` is intentionally left untouched.
 
-## Configuration
+## 📝 Change tracking
 
-The main configuration is at the top of `camera_offloader_v2.py`.
+See [`CHANGELOG.md`](CHANGELOG.md) for the project history. The current hardening release is tracked as **2.3.0**.
 
-Important values include:
+## ⚠️ Operational guidance
 
-```python
-CARD_VOLUME_GLOBS
-LOCAL_DEST_ROOT
-USB_DEST_VOLUME
-USB_DEST_ROOT
-WAIT_SECONDS
-EJECT_CARD_AFTER_SUCCESS
-VERIFY_WITH_SHA256
-PRESERVE_CAMERA_SUBFOLDERS
-USE_FILE_BIRTH_TIME
-MIN_FREE_SPACE_BUFFER_BYTES
-```
+This application is designed to protect against accidental overwrites and incomplete backups, but it should still be treated as backup infrastructure rather than the only copy of irreplaceable media.
 
-## Changelog
-
-See `CHANGELOG.md` for release and reliability-hardening history.
-
-## License
-
-MIT License.
+For a first run after installation or an upgrade, verify the resulting files on both destinations before formatting or reusing the camera card.
