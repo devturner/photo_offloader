@@ -17,6 +17,7 @@ import errno
 import fcntl
 import glob
 import hashlib
+import json
 import logging
 import os
 import plistlib
@@ -369,9 +370,38 @@ def normalize_camera_model(make: object, model: object) -> str:
     return combined or "Unknown-Camera"
 
 
+def get_camera_model_from_exiftool(path: Path) -> str:
+    """Read camera make/model from video metadata when exiftool is available."""
+    if path.suffix.lower() not in {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}:
+        return "Unknown-Camera"
+    exiftool = shutil.which("exiftool")
+    if not exiftool:
+        return "Unknown-Camera"
+    try:
+        result = subprocess.run(
+            [exiftool, "-j", "-Make", "-Model", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return "Unknown-Camera"
+        metadata = json.loads(result.stdout)
+        if not metadata:
+            return "Unknown-Camera"
+        item = metadata[0]
+        return normalize_camera_model(item.get("Make"), item.get("Model"))
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+        logger.debug("Could not read video camera metadata for %s: %s", path, exc)
+        return "Unknown-Camera"
+
+
 def get_camera_model(path: Path) -> str:
-    """Read EXIF camera make/model, falling back when metadata is unavailable."""
-    if Image is None or path.suffix.lower() in {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}:
+    """Read camera make/model, using EXIF or video metadata when available."""
+    if path.suffix.lower() in {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}:
+        return get_camera_model_from_exiftool(path)
+    if Image is None:
         return "Unknown-Camera"
     try:
         with Image.open(path) as image:
