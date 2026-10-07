@@ -22,6 +22,16 @@ The automatic LaunchAgent watches `/Volumes`, but the trigger only launches when
 
 The importer also accepts a volume or `DCIM` path through `--source`.
 
+### iTerm2 output
+
+The automatic camera trigger opens the importer in **iTerm2** by default. To use another terminal application, set `PHOTO_OFFLOADER_TERMINAL_APP` in the LaunchAgent environment before installing/loading the trigger.
+
+For example, to use the macOS Terminal app instead:
+
+```text
+PHOTO_OFFLOADER_TERMINAL_APP=Terminal
+```
+
 ### Safe handling of camera names with spaces
 
 Volume names are passed as real command arguments rather than being reconstructed through unsafe nested shell quoting. Names such as:
