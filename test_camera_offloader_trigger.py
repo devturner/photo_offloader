@@ -33,9 +33,11 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
 
         self.osascript = self.install / "osascript"
         self.command_capture = self.root / "osascript-command.txt"
+        self.script_capture = self.root / "osascript-script.txt"
         self.osascript.write_text(
             "#!/bin/bash\n"
-            f"cat > {self.command_capture!s}\n"
+            f"printf '%s\\n' \"$2\" > {self.command_capture!s}\n"
+            f"cat > {self.script_capture!s}\n"
             "exit 0\n"
         )
         self.osascript.chmod(0o755)
@@ -76,14 +78,14 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
     def test_default_terminal_is_iterm2(self):
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0, result.stderr)
-        script = self.command_capture.read_text()
+        script = self.script_capture.read_text()
         self.assertIn('tell application "iTerm2"', script)
         self.assertIn("create window with default profile command", script)
 
     def test_terminal_app_can_be_overridden(self):
         result = self.run_trigger(PHOTO_OFFLOADER_TERMINAL_APP="Terminal")
         self.assertEqual(result.returncode, 0, result.stderr)
-        script = self.command_capture.read_text()
+        script = self.script_capture.read_text()
         self.assertIn("tell application (item 2 of argv)", script)
         self.assertNotIn('tell application "iTerm2"', script)
 
