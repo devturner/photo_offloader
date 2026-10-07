@@ -16,6 +16,7 @@ LOCK_DIR="${PHOTO_OFFLOADER_TRIGGER_LOCK:-$INSTALL_DIR/.trigger.lock}"
 SETTLE_SECONDS="${PHOTO_OFFLOADER_TRIGGER_SETTLE_SECONDS:-1}"
 PGREP="${PHOTO_OFFLOADER_PGREP:-/usr/bin/pgrep}"
 OSASCRIPT="${PHOTO_OFFLOADER_OSASCRIPT:-/usr/bin/osascript}"
+TERMINAL_APP="${PHOTO_OFFLOADER_TERMINAL_APP:-iTerm2}"
 VOLUMES_ROOT="${PHOTO_OFFLOADER_VOLUMES_ROOT:-/Volumes}"
 
 log() {
@@ -78,16 +79,32 @@ log "Recognized camera source: $camera_dcim"
 # the volume name.
 command="$(printf '%q ' "$PYTHON" "$IMPORTER" --source "$camera_dcim")"
 
-if "$OSASCRIPT" - "$command" <<'APPLESCRIPT' >/dev/null 2>&1
+if [[ "$TERMINAL_APP" == "iTerm2" ]]; then
+    if "$OSASCRIPT" - "$command" <<'APPLESCRIPT' >/dev/null 2>&1
 on run argv
-    tell application "Terminal"
+    tell application "iTerm2"
+        create window with default profile command (item 1 of argv)
+    end tell
+end run
+APPLESCRIPT
+    then
+        printf '%s\n' "$camera_dcim" > "$STATE_FILE"
+        log "Launched iTerm2 importer for: $camera_dcim"
+    else
+        log "Failed to launch iTerm2 importer for: $camera_dcim"
+    fi
+else
+    if "$OSASCRIPT" - "$command" "$TERMINAL_APP" <<'APPLESCRIPT' >/dev/null 2>&1
+on run argv
+    tell application (item 2 of argv)
         do script (item 1 of argv)
     end tell
 end run
 APPLESCRIPT
-then
-    printf '%s\n' "$camera_dcim" > "$STATE_FILE"
-    log "Launched importer for: $camera_dcim"
-else
-    log "Failed to launch Terminal importer for: $camera_dcim"
+    then
+        printf '%s\n' "$camera_dcim" > "$STATE_FILE"
+        log "Launched $TERMINAL_APP importer for: $camera_dcim"
+    else
+        log "Failed to launch $TERMINAL_APP importer for: $camera_dcim"
+    fi
 fi
