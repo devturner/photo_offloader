@@ -31,6 +31,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.usb_volume.mkdir()
         self.original = {k: getattr(app, k) for k in (
             "LOCAL_DEST_ROOT", "USB_DEST_ROOT", "USB_DEST_VOLUME", "CATALOG_DB_PATH",
+            "BUILD_INFO_PATH", "VERSION_PATH",
             "LOG_FILE_PATH", "SESSION_LOCK_PATH", "VERIFY_WITH_SHA256",
             "USE_FILE_BIRTH_TIME", "WAIT_SECONDS",
             "EJECT_CARD_AFTER_SUCCESS", "MIN_FREE_SPACE_BUFFER_BYTES", "STATUS_FILE_PATH",
@@ -48,6 +49,8 @@ class TestCameraOffloader(unittest.TestCase):
         app.MIN_FREE_SPACE_BUFFER_BYTES = 0
         app.STATUS_FILE_PATH = self.root / "status.json"
         app.CATALOG_DB_PATH = self.root / "catalog.sqlite3"
+        app.BUILD_INFO_PATH = self.root / "build_info.json"
+        app.VERSION_PATH = self.root / "VERSION"
         app._PROGRESS_STARTED = None
         app._PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
         app.find_exiftool.cache_clear()
@@ -314,6 +317,27 @@ class TestCameraOffloader(unittest.TestCase):
     def test_duplicate_session_does_not_reset_active_progress(self, lock, update_status):
         self.assertEqual(app.main(["--backup-usb"]), 0)
         update_status.assert_not_called()
+
+    def test_load_build_info_reads_installed_provenance(self):
+        app.BUILD_INFO_PATH.write_text(
+            __import__("json").dumps({
+                "version": "2.4",
+                "git_commit": "abc123def456",
+                "git_branch": "feature/test",
+                "git_tag": "v2.4",
+                "git_dirty": "false",
+                "build_time_utc": "2026-10-21T22:00:00Z",
+                "source_path": "/Applications/PhotoOffloader/camera_offloader_v2.py",
+            }),
+            encoding="utf-8",
+        )
+        info = app.load_build_info()
+        self.assertEqual(info["version"], "2.4")
+        self.assertEqual(info["git_commit"], "abc123def456")
+        self.assertEqual(info["git_branch"], "feature/test")
+        self.assertEqual(info["git_tag"], "v2.4")
+        self.assertEqual(info["git_dirty"], "false")
+        self.assertEqual(info["source_path"], "/Applications/PhotoOffloader/camera_offloader_v2.py")
 
     def test_import_session_lock_acquires_and_releases(self):
         with app.import_session_lock():
