@@ -10,6 +10,8 @@ set -euo pipefail
 INSTALL_DIR="${PHOTO_OFFLOADER_INSTALL_DIR:-$HOME/Library/Application Support/PhotoOffloader}"
 PYTHON="${PHOTO_OFFLOADER_PYTHON:-$INSTALL_DIR/venv/bin/python3}"
 IMPORTER="${PHOTO_OFFLOADER_IMPORTER:-$INSTALL_DIR/camera_offloader_v2.py}"
+DASHBOARD="${PHOTO_OFFLOADER_DASHBOARD:-$INSTALL_DIR/photo_offloader_ui.py}"
+OPEN_DASHBOARD="${PHOTO_OFFLOADER_OPEN_DASHBOARD:-1}"
 LOG="${PHOTO_OFFLOADER_TRIGGER_LOG:-$HOME/.camera_transfer_trigger.log}"
 STATE_FILE="${PHOTO_OFFLOADER_TRIGGER_STATE:-$INSTALL_DIR/.last_camera_source}"
 PAUSE_FILE="${PHOTO_OFFLOADER_PAUSE_FILE:-$INSTALL_DIR/.paused}"
@@ -86,6 +88,18 @@ if [[ -f "$PAUSE_FILE" ]]; then
 fi
 
 log "Recognized camera source: $camera_dcim"
+
+# Open one dashboard window when an import starts. LaunchAgent jobs run in the
+# logged-in user's GUI session, so the Tk window is visible without a Terminal
+# command. This is best-effort: a UI failure must never block a safe copy.
+if [[ "$OPEN_DASHBOARD" == "1" && -f "$DASHBOARD" ]]; then
+    if ! "$PGREP" -f "$DASHBOARD" >/dev/null 2>&1; then
+        nohup "$PYTHON" "$DASHBOARD" >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
+        log "Opened progress dashboard for: $camera_dcim"
+    else
+        log "Progress dashboard is already running."
+    fi
+fi
 
 # Build a shell-safe command without interpolating the path into AppleScript.
 # %q is bash-specific and preserves spaces and other shell metacharacters in

@@ -25,6 +25,8 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.importer = self.install / "camera_offloader_v2.py"
         self.python.write_text("#!/bin/bash\nexit 0\n")
         self.importer.write_text("#!/bin/bash\nexit 0\n")
+        self.dashboard = self.install / "photo_offloader_ui.py"
+        self.dashboard.write_text("# dashboard test fixture\n")
         self.python.chmod(0o755)
 
         self.pgrep = self.install / "pgrep"
@@ -57,6 +59,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
                 "PHOTO_OFFLOADER_INSTALL_DIR": str(self.install),
                 "PHOTO_OFFLOADER_PYTHON": str(self.python),
                 "PHOTO_OFFLOADER_IMPORTER": str(self.importer),
+                "PHOTO_OFFLOADER_DASHBOARD": str(self.dashboard),
                 "PHOTO_OFFLOADER_TRIGGER_LOG": str(self.log),
                 "PHOTO_OFFLOADER_TRIGGER_STATE": str(self.state),
                 "PHOTO_OFFLOADER_TRIGGER_LOCK": str(self.lock),
@@ -83,6 +86,11 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertFalse(self.command_capture.exists())
         self.assertFalse(self.state.exists())
         self.assertIn("Automatic import is paused", self.log.read_text())
+
+    def test_import_start_requests_dashboard_open(self):
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Opened progress dashboard", self.log.read_text())
 
     def test_default_terminal_is_iterm2(self):
         result = self.run_trigger()

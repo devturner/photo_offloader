@@ -49,11 +49,13 @@ class TestCameraOffloader(unittest.TestCase):
         app.STATUS_FILE_PATH = self.root / "status.json"
         app._PROGRESS_STARTED = None
         app._PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
+        app.find_exiftool.cache_clear()
         app.logger.handlers.clear()
 
     def tearDown(self):
         for handler in app.logger.handlers[:]:
             handler.close()
+        app.find_exiftool.cache_clear()
         app.logger.handlers.clear()
         for key, value in self.original.items():
             setattr(app, key, value)
@@ -135,7 +137,14 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(app.normalize_camera_model("NIKON", "Z 8"), "NIKON-Z-8")
         self.assertEqual(app.normalize_camera_model("SONY", "ILCE-7M4"), "SONY-ILCE-7M4")
         self.assertEqual(app.normalize_camera_model("NIKON", "NIKON Z 8"), "NIKON-Z-8")
+        self.assertEqual(app.normalize_camera_model("NIKON CORPORATION", "NIKON Z 8"), "NIKON-Z-8")
         self.assertEqual(app.normalize_camera_model(None, None), "Unknown-Camera")
+
+    @patch("camera_offloader_v2.shutil.which", return_value="/opt/homebrew/bin/exiftool")
+    def test_find_exiftool_caches_discovery(self, which):
+        self.assertEqual(app.find_exiftool(), "/opt/homebrew/bin/exiftool")
+        self.assertEqual(app.find_exiftool(), "/opt/homebrew/bin/exiftool")
+        which.assert_called_once_with("exiftool")
 
     def test_get_camera_model_from_exif(self):
         fake_image = MagicMock()
@@ -143,6 +152,37 @@ class TestCameraOffloader(unittest.TestCase):
         fake_image.getexif.return_value = {271: "NIKON", 272: "Z 8"}
         with patch("camera_offloader_v2.Image.open", return_value=fake_image):
             self.assertEqual(app.get_camera_model(self.root / "IMG.JPG"), "NIKON-Z-8")
+
+    @patch("camera_offloader_v2.shutil.which", return_value="/opt/homebrew/bin/exiftool")
+    @patch("camera_offloader_v2.subprocess.run")
+    def test_get_camera_model_from_nef_uses_exiftool(self, run, which):
+        run.return_value = MagicMock(
+            returncode=0,
+            stdout='[{"SourceFile":"photo.NEF","Make":"NIKON CORPORATION","Model":"NIKON Z 8"}]',
+            stderr="",
+        )
+        path = self.root / "photo.NEF"
+        self.assertEqual(app.get_camera_model(path), "NIKON-Z-8")
+        which.assert_called_once_with("exiftool")
+        self.assertEqual(run.call_args.args[0], [
+            "/opt/homebrew/bin/exiftool", "-j", "-Make", "-Model", str(path)
+        ])
+
+    @patch("camera_offloader_v2.shutil.which", return_value="/opt/homebrew/bin/exiftool")
+    @patch("camera_offloader_v2.subprocess.run")
+    def test_get_exif_datetime_from_nef_uses_exiftool(self, run, which):
+        run.return_value = MagicMock(
+            returncode=0,
+            stdout='[{"SourceFile":"photo.NEF","DateTimeOriginal":"2026:10:21 13:49:15"}]',
+            stderr="",
+        )
+        path = self.root / "photo.NEF"
+        self.assertEqual(app.get_exif_datetime(path), app.datetime(2026, 10, 21, 13, 49, 15))
+        which.assert_called_once_with("exiftool")
+        self.assertEqual(run.call_args.args[0], [
+            "/opt/homebrew/bin/exiftool", "-j", "-DateTimeOriginal",
+            "-CreateDate", "-DateTimeDigitized", "-ModifyDate", str(path)
+        ])
 
     def test_get_camera_model_missing_exif(self):
         fake_image = MagicMock()
