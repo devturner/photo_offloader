@@ -423,9 +423,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.media()
         with patch("camera_offloader_v2.time.sleep"):
             self.assertEqual(app.main(["--source", str(self.card)]), 1)
-        # The local SSD copy is complete and verified, so the card may be
-        # released even if the independent USB stage later detects a replacement.
-        eject.assert_called_once_with(self.card.resolve())
+        eject.assert_not_called()
 
     @patch("camera_offloader_v2.eject_volume", return_value=False)
     @patch("camera_offloader_v2.usb_is_mounted", return_value=False)
@@ -456,8 +454,10 @@ class TestCameraOffloader(unittest.TestCase):
             VolumeIdentity(self.usb_volume.resolve(), "disk5s1", "uuid-b"),
         ]
         with patch("camera_offloader_v2.time.sleep"):
-            self.assertEqual(app.main(["--source", str(self.card), "--no-eject"]), 1)
-        eject.assert_not_called()
+            self.assertEqual(app.main(["--source", str(self.card)]), 1)
+        # Local SSD is verified before ejection; USB replacement is detected
+        # afterward, so the card is safely released and backup reports failure.
+        eject.assert_called_once_with(self.card.resolve())
 
     def test_second_import_skips(self):
         self.media()
