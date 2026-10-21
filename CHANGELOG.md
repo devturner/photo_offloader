@@ -5,6 +5,7 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Added
+- Per-run provenance logging with application version, full Git commit, branch, tag, dirty-source state, build timestamp, Python runtime, script path, and run ID; installer persists build metadata for installed copies.
 - Native macOS menu-bar controller with a dashboard for live import speed, progress, and estimated completion time.
 - Menu-bar pause/resume control that blocks new automatic imports without interrupting an active copy; resuming re-checks already-mounted camera cards.
 - Atomic JSON progress status updates emitted during chunked file copies.

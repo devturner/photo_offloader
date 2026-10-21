@@ -227,5 +227,23 @@ class Dashboard:
         self.root.after(1000, self.refresh)
 
 
+def log_build_provenance() -> None:
+    try:
+        info = json.loads((INSTALL_DIR / "build_info.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        info = {"version": "unknown", "git_commit": "unknown", "git_branch": "unknown"}
+    print(
+        "Photo Offloader dashboard startup: "
+        f"version={info.get('version', 'unknown')} "
+        f"git_commit={info.get('git_commit', 'unknown')} "
+        f"git_branch={info.get('git_branch', 'unknown')} "
+        f"git_tag={info.get('git_tag', 'unknown')} "
+        f"git_dirty={info.get('git_dirty', 'unknown')} "
+        f"build_time_utc={info.get('build_time_utc', 'unknown')}",
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
+    log_build_provenance()
     Dashboard()

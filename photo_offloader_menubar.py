@@ -2,6 +2,7 @@
 """Native macOS menu-bar control for Photo Offloader."""
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -87,5 +88,24 @@ class PhotoOffloaderMenuBar(rumps.App):
         rumps.quit_application()
 
 
+def log_build_provenance() -> None:
+    build_info = INSTALL_DIR / "build_info.json"
+    try:
+        info = json.loads(build_info.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        info = {"version": "unknown", "git_commit": "unknown", "git_branch": "unknown"}
+    print(
+        "Photo Offloader menu-bar startup: "
+        f"version={info.get('version', 'unknown')} "
+        f"git_commit={info.get('git_commit', 'unknown')} "
+        f"git_branch={info.get('git_branch', 'unknown')} "
+        f"git_tag={info.get('git_tag', 'unknown')} "
+        f"git_dirty={info.get('git_dirty', 'unknown')} "
+        f"build_time_utc={info.get('build_time_utc', 'unknown')}",
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
+    log_build_provenance()
     PhotoOffloaderMenuBar().run()
