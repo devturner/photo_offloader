@@ -550,6 +550,33 @@ RAW_EXTENSIONS = {
 VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}
 
 
+def get_exiftool_metadata_batch(paths: List[Path], tags: List[str], batch_size: int = 100) -> dict:
+    """Read selected tags for many files per ExifTool process, keyed by absolute path."""
+    exiftool = find_exiftool()
+    if not exiftool or not paths:
+        return {}
+    results = {}
+    for offset in range(0, len(paths), batch_size):
+        batch = paths[offset:offset + batch_size]
+        try:
+            result = subprocess.run(
+                [exiftool, "-j", "-charset", "filename=UTF8", *tags, *map(str, batch)],
+                check=False, capture_output=True, text=True, timeout=max(15, len(batch) // 2),
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                logger.warning("ExifTool batch returned no metadata (batch starting at %d): %s",
+                               offset, result.stderr.strip())
+                continue
+            records = json.loads(result.stdout)
+            for record in records if isinstance(records, list) else []:
+                if not isinstance(record, dict) or not record.get("SourceFile"):
+                    continue
+                results[str(Path(record["SourceFile"]).resolve())] = record
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+            logger.warning("ExifTool batch metadata read failed at offset %d: %s", offset, exc)
+    return results
+
+
 def get_exiftool_metadata(path: Path, tags: List[str]) -> dict:
     """Read selected metadata with ExifTool for formats Pillow cannot decode."""
     exiftool = find_exiftool()
@@ -936,6 +963,26 @@ def update_file_catalog() -> Dict[str, int]:
         logger.info("Scanning catalog root %d/%d: %s", root_index, len(roots), root)
         seen: List[str] = []
         root_scanned = 0
+        candidates = []
+        for candidate in root.rglob("*"):
+            try:
+                if (candidate.is_file() and not candidate.is_symlink()
+                        and not any(part.startswith(".") for part in candidate.relative_to(root).parts)
+                        and candidate.suffix.lower() in MEDIA_EXTENSIONS):
+                    fingerprint = file_fingerprint(candidate)
+                    cached = catalog_row(candidate, fingerprint)
+                    if not (cached and cached[4] and cached[5] and cached[6]):
+                        candidates.append(candidate)
+            except (OSError, sqlite3.Error) as exc:
+                logger.warning("Could not inspect catalog candidate %s: %s", candidate, exc)
+
+        batch_metadata = get_exiftool_metadata_batch(
+            candidates,
+            ["-DateTimeOriginal", "-CreateDate", "-DateTimeDigitized", "-ModifyDate", "-Make", "-Model"],
+        )
+        logger.info("ExifTool batch metadata available for %d/%d uncached files under %s",
+                    len(batch_metadata), len(candidates), root)
+
         for path in sorted(root.rglob("*"), key=lambda item: str(item).lower()):
             try:
                 if (not path.is_file() or path.is_symlink()
@@ -973,9 +1020,29 @@ def update_file_catalog() -> Dict[str, int]:
                               catalog_root_index=roots.index(root) + 1,
                               catalog_files_found=totals["scanned"],
                               message=f"Indexing metadata for {path.name} ({totals['scanned']:,} files scanned)")
-                catalog_record(path, media_folder=get_media_type_folder(path))
-                get_month_folder(path)
-                get_camera_model(path)
+                metadata = batch_metadata.get(resolved_path)
+                if metadata:
+                    timestamp = None
+                    for tag in ("DateTimeOriginal", "CreateDate", "DateTimeDigitized", "ModifyDate"):
+                        value = metadata.get(tag)
+                        if isinstance(value, str):
+                            timestamp = _parse_exif_datetime_value(value)
+                            if timestamp:
+                                break
+                    if timestamp is None:
+                        info = path.stat()
+                        birth = getattr(info, "st_birthtime", None) if USE_FILE_BIRTH_TIME else None
+                        timestamp = datetime.fromtimestamp(birth if birth is not None else info.st_mtime)
+                    month = timestamp.strftime("%Y-%m")
+                    model = normalize_camera_model(metadata.get("Make"), metadata.get("Model")) or "Unknown-Camera"
+                    catalog_record(path, capture_month=month, camera_model=model,
+                                   media_folder=get_media_type_folder(path))
+                else:
+                    # Preserve the established Pillow/ExifTool fallback when batch
+                    # metadata is unavailable or ExifTool is not installed.
+                    catalog_record(path, media_folder=get_media_type_folder(path))
+                    get_month_folder(path)
+                    get_camera_model(path)
                 totals["metadata_refreshed"] += 1
                 if totals["scanned"] % 100 == 0:
                     logger.info("Catalog update progress: %d files scanned.", totals["scanned"])
