@@ -22,6 +22,7 @@ import os
 import plistlib
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -69,6 +70,7 @@ VERIFY_WITH_SHA256 = False
 USE_FILE_BIRTH_TIME = True
 MIN_FREE_SPACE_BUFFER_BYTES = 100 * 1024 * 1024
 STATUS_FILE_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "status.json"
+CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "catalog.sqlite3"
 _PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
 _PROGRESS_STARTED: Optional[float] = None
 
@@ -170,6 +172,97 @@ class FileFingerprint:
     size: int
     mtime_ns: int
     inode: int
+
+
+def catalog_connection() -> sqlite3.Connection:
+    """Open the persistent media/location catalog and ensure its schema exists."""
+    CATALOG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(CATALOG_DB_PATH, timeout=10)
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS file_locations (
+            path TEXT PRIMARY KEY,
+            root TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            inode INTEGER NOT NULL,
+            sha256 TEXT,
+            capture_month TEXT,
+            camera_model TEXT,
+            media_folder TEXT,
+            indexed_at REAL NOT NULL
+        )
+    """)
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_root ON file_locations(root)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_relative ON file_locations(root, relative_path)")
+    return connection
+
+
+def catalog_row(path: Path, fingerprint: Optional[FileFingerprint] = None) -> Optional[tuple]:
+    """Return cached catalog metadata only when the filesystem fingerprint still matches."""
+    try:
+        fingerprint = fingerprint or file_fingerprint(path)
+        with catalog_connection() as db:
+            row = db.execute(
+                "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
+                "FROM file_locations WHERE path = ?", (str(path.resolve()),)
+            ).fetchone()
+        if row and row[:3] == (fingerprint.size, fingerprint.mtime_ns, fingerprint.inode):
+            return row
+    except (OSError, sqlite3.Error) as exc:
+        logger.debug("Catalog lookup failed for %s: %s", path, exc)
+    return None
+
+
+def catalog_record(path: Path, *, sha256: Optional[str] = None,
+                   capture_month: Optional[str] = None,
+                   camera_model: Optional[str] = None,
+                   media_folder: Optional[str] = None) -> None:
+    """Record a file location while preserving cached fields for an unchanged file."""
+    try:
+        fingerprint = file_fingerprint(path)
+        resolved = path.resolve()
+        root = str(resolved.anchor)
+        relative = str(resolved).lstrip("/")
+        with catalog_connection() as db:
+            old = db.execute(
+                "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
+                "FROM file_locations WHERE path = ?", (str(resolved),)
+            ).fetchone()
+            same = old and old[:3] == (fingerprint.size, fingerprint.mtime_ns, fingerprint.inode)
+            values = (
+                str(resolved), root, relative, fingerprint.size, fingerprint.mtime_ns,
+                fingerprint.inode,
+                sha256 if sha256 is not None else (old[3] if same else None),
+                capture_month if capture_month is not None else (old[4] if same else None),
+                camera_model if camera_model is not None else (old[5] if same else None),
+                media_folder if media_folder is not None else (old[6] if same else None),
+                time.time(),
+            )
+            db.execute("""
+                INSERT INTO file_locations
+                (path, root, relative_path, size, mtime_ns, inode, sha256,
+                 capture_month, camera_model, media_folder, indexed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    root=excluded.root, relative_path=excluded.relative_path,
+                    size=excluded.size, mtime_ns=excluded.mtime_ns, inode=excluded.inode,
+                    sha256=excluded.sha256, capture_month=excluded.capture_month,
+                    camera_model=excluded.camera_model, media_folder=excluded.media_folder,
+                    indexed_at=excluded.indexed_at
+            """, values)
+    except (OSError, sqlite3.Error) as exc:
+        # Catalog is an optimization, never a reason to interrupt a safe import.
+        logger.debug("Could not update file catalog for %s: %s", path, exc)
+
+
+def catalog_hash_matches(source: Path, destination: Path) -> Optional[bool]:
+    """Use cached hashes only when both paths still match their indexed fingerprints."""
+    source_row = catalog_row(source)
+    destination_row = catalog_row(destination)
+    if source_row and destination_row and source_row[3] and destination_row[3]:
+        return source_row[3] == destination_row[3]
+    return None
 
 
 def configure_logging(verbose: bool = False) -> None:
