@@ -286,8 +286,21 @@ class Dashboard:
         else:
             self.eta_var.set("Estimating…" if state == "scanning" else "—")
 
-        percent = min(100.0, (done / total * 100.0) if total else 0.0)
-        self.progress.configure(value=percent)
+        catalog_running = state == "scanning" and status.get("phase") == "catalog-update"
+        if catalog_running:
+            # Catalog scans have no reliable total byte count. Use an indeterminate
+            # bar instead of snapping a determinate bar back to zero between roots.
+            self.progress.configure(mode="indeterminate")
+            if not getattr(self, "_catalog_progress_animating", False):
+                self.progress.start(12)
+                self._catalog_progress_animating = True
+        else:
+            if getattr(self, "_catalog_progress_animating", False):
+                self.progress.stop()
+                self._catalog_progress_animating = False
+            self.progress.configure(mode="determinate")
+            percent = min(100.0, (done / total * 100.0) if total else 0.0)
+            self.progress.configure(value=percent)
         if state == "copying":
             self.progress_var.set(f"{format_bytes(done)} of {format_bytes(total)} processed  •  {percent:.0f}%")
         elif state == "complete":
@@ -298,12 +311,18 @@ class Dashboard:
             if status.get("phase") == "catalog-update":
                 root_index = int(status.get("catalog_root_index", 1) or 1)
                 roots_total = int(status.get("catalog_roots_total", 1) or 1)
-                scanned = int(status.get("catalog_scanned", 0) or 0)
+                scanned = int(status.get("catalog_total_scanned", status.get("catalog_scanned", 0)) or 0)
                 root = str(status.get("catalog_root", "") or "")
                 location = "Internal SSD" if "CameraImports" in root and "/Volumes/" not in root else "Backup USB"
+                stage = str(status.get("catalog_stage", "Indexing files") or "Indexing files")
+                if stage == "Finding files needing metadata":
+                    detail = f"checking files • {int(status.get('catalog_discovered', 0) or 0):,} found"
+                elif stage == "Reading metadata batches":
+                    detail = f"reading metadata for {int(status.get('catalog_candidates', 0) or 0):,} new/changed files"
+                else:
+                    detail = f"{scanned:,} files scanned"
                 self.progress_var.set(
-                    f"Updating database • {location} ({root_index} of {roots_total}) • "
-                    f"{scanned:,} files scanned"
+                    f"Updating database • {location} ({root_index} of {roots_total}) • {stage}: {detail}"
                 )
             else:
                 self.progress_var.set(str(status.get("message", "") or "Scanning source and checking destination space…"))
