@@ -447,7 +447,7 @@ class TestCameraOffloader(unittest.TestCase):
     @patch("camera_offloader_v2.notify")
     @patch("camera_offloader_v2.usb_is_mounted", return_value=True)
     @patch("camera_offloader_v2.get_volume_identity")
-    def test_main_usb_replacement_never_ejects(self, identity, mounted, notify, eject):
+    def test_main_ejects_after_local_copy_and_reports_usb_replacement(self, identity, mounted, notify, eject):
         self.media()
         identity.side_effect = [
             VolumeIdentity(self.usb_volume.resolve(), "disk4s1", "uuid-a"),
@@ -477,6 +477,16 @@ class TestCameraOffloader(unittest.TestCase):
         for category in ("JPG", "RAW", "VIDEO"):
             app.copy_category(files[category], self.dcim, [self.local, self.usb], category, stats)
         self.assertEqual((stats.destination_copies, stats.verified_copies, stats.failed), (6, 6, 0))
+
+    @patch("camera_offloader_v2.copy_local_archive_to_usb")
+    @patch("camera_offloader_v2.notify")
+    def test_standalone_usb_backup_does_not_require_card(self, notify, backup):
+        backup.return_value = ImportStats(destination_copies=2, destination_skips=4,
+                                          verified_copies=6)
+        with patch("builtins.input", side_effect=AssertionError("should not prompt for a card")):
+            self.assertEqual(app.main(["--backup-usb"]), 0)
+        backup.assert_called_once_with()
+        notify.assert_called_once()
 
     def test_usb_backup_copies_missing_files_and_skips_matching_files(self):
         archive = self.local / "2026-10" / "NIKON-Z-8" / "Photos"
