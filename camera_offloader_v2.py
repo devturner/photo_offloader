@@ -210,6 +210,14 @@ def catalog_connection() -> sqlite3.Connection:
                 indexed_at REAL NOT NULL
             )
         """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS catalog_refreshes (
+                root TEXT PRIMARY KEY,
+                last_updated REAL NOT NULL,
+                files_scanned INTEGER NOT NULL,
+                status TEXT NOT NULL
+            )
+        """)
         connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_root ON file_locations(root)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_relative ON file_locations(root, relative_path)")
         connection.commit()
@@ -955,6 +963,20 @@ def update_file_catalog() -> Dict[str, int]:
                 db.execute("DELETE FROM catalog_seen_paths")
         except sqlite3.Error as exc:
             logger.warning("Could not reconcile catalog entries under %s: %s", root, exc)
+
+        try:
+            with catalog_connection() as db:
+                db.execute(
+                    """INSERT INTO catalog_refreshes(root, last_updated, files_scanned, status)
+                       VALUES (?, ?, ?, 'complete')
+                       ON CONFLICT(root) DO UPDATE SET
+                         last_updated=excluded.last_updated,
+                         files_scanned=excluded.files_scanned,
+                         status=excluded.status""",
+                    (str(root), time.time(), len(seen)),
+                )
+        except sqlite3.Error as exc:
+            logger.warning("Could not save catalog refresh timestamp for %s: %s", root, exc)
 
         logger.info("Catalog root updated: %s (%d media files).", root, len(seen))
 
