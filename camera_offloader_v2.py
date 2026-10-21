@@ -460,10 +460,15 @@ def normalize_camera_model(make: object, model: object) -> str:
 
     make_text = clean(make)
     model_text = clean(model)
+    make_prefix = re.sub(r"\s+(?:corporation|corp\.?|inc\.?|co\.?)$", "", make_text, flags=re.IGNORECASE)
     if make_text and model_text:
-        combined = model_text if model_text.lower().startswith(make_text.lower()) else f"{make_text} {model_text}"
+        combined = (
+            model_text
+            if model_text.lower().startswith(make_prefix.lower())
+            else f"{make_prefix} {model_text}"
+        )
     else:
-        combined = model_text or make_text
+        combined = model_text or make_prefix or make_text
     combined = re.sub(r"[^A-Za-z0-9._-]+", "-", combined)
     combined = re.sub(r"-+", "-", combined).strip(".-_")
     return combined or "Unknown-Camera"
