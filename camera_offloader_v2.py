@@ -225,11 +225,22 @@ def catalog_connection() -> sqlite3.Connection:
     return connection
 
 
+@contextmanager
+def catalog_db() -> Iterator[sqlite3.Connection]:
+    """Use a catalog connection for one transaction and always close its file handles."""
+    connection = catalog_connection()
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
 def catalog_row(path: Path, fingerprint: Optional[FileFingerprint] = None) -> Optional[tuple]:
     """Return cached catalog metadata only when the filesystem fingerprint still matches."""
     try:
         fingerprint = fingerprint or file_fingerprint(path)
-        with catalog_connection() as db:
+        with catalog_db() as db:
             row = db.execute(
                 "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
                 "FROM file_locations WHERE path = ?", (str(path.resolve()),)
