@@ -212,7 +212,7 @@ class Dashboard:
         elif state == "failed":
             self.progress_var.set("Import stopped — see the Photo Offloader log")
         elif state == "scanning":
-            self.progress_var.set("Scanning card and checking destination space…")
+            self.progress_var.set(str(status.get("message", "") or "Scanning source and checking destination space…"))
         elif state == "canceled":
             self.progress_var.set("Import canceled")
         elif PAUSE_FILE.exists():
