@@ -38,6 +38,12 @@ chmod +x "$SCRIPT_PATH" "$TRIGGER_PATH" "$INSTALL_DIR/$UI_NAME" "$INSTALL_DIR/$M
 
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/python3" -m pip install --quiet --upgrade pip
+if ! "$VENV_DIR/bin/python3" -c "import tkinter" >/dev/null 2>&1; then
+  PYTHON_MINOR="$("$VENV_DIR/bin/python3" -c \"import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')\")"
+  echo "Error: tkinter is missing from this Python installation."
+  echo "For Homebrew Python, try: brew install python-tk@$PYTHON_MINOR"
+  exit 1
+fi
 "$VENV_DIR/bin/python3" -m pip install --quiet -r "$INSTALL_DIR/requirements.txt"
 "$VENV_DIR/bin/python3" -m pip install --quiet -r "$INSTALL_DIR/requirements-ui.txt"
 
