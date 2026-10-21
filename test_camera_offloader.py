@@ -92,6 +92,8 @@ class TestCameraOffloader(unittest.TestCase):
         args = app.parse_args(["--source", str(self.card), "--no-usb", "--no-eject", "--sha256", "--verbose"])
         self.assertEqual(args.source, self.card)
         self.assertTrue(args.no_usb and args.no_eject and args.sha256 and args.verbose)
+        self.assertFalse(args.backup_usb)
+        self.assertTrue(app.parse_args(["--backup-usb"]).backup_usb)
 
     @patch("camera_offloader_v2.subprocess.run")
     def test_notify_nonfatal(self, run):
@@ -421,7 +423,9 @@ class TestCameraOffloader(unittest.TestCase):
         self.media()
         with patch("camera_offloader_v2.time.sleep"):
             self.assertEqual(app.main(["--source", str(self.card)]), 1)
-        eject.assert_not_called()
+        # The local SSD copy is complete and verified, so the card may be
+        # released even if the independent USB stage later detects a replacement.
+        eject.assert_called_once_with(self.card.resolve())
 
     @patch("camera_offloader_v2.eject_volume", return_value=False)
     @patch("camera_offloader_v2.usb_is_mounted", return_value=False)
@@ -473,6 +477,38 @@ class TestCameraOffloader(unittest.TestCase):
         for category in ("JPG", "RAW", "VIDEO"):
             app.copy_category(files[category], self.dcim, [self.local, self.usb], category, stats)
         self.assertEqual((stats.destination_copies, stats.verified_copies, stats.failed), (6, 6, 0))
+
+    def test_usb_backup_copies_missing_files_and_skips_matching_files(self):
+        archive = self.local / "2026-10" / "NIKON-Z-8" / "Photos"
+        archive.mkdir(parents=True)
+        (archive / "already.jpg").write_bytes(b"same content")
+        (archive / "missing.jpg").write_bytes(b"new content")
+        existing = self.usb / "2026-10" / "NIKON-Z-8" / "Photos"
+        existing.mkdir(parents=True)
+        (existing / "already.jpg").write_bytes(b"same content")
+
+        with patch.object(app, "usb_is_mounted", return_value=True):
+            stats = app.copy_local_archive_to_usb()
+
+        self.assertEqual(stats.destination_copies, 1)
+        self.assertEqual(stats.destination_skips, 1)
+        self.assertEqual(stats.failed, 0)
+        self.assertEqual((existing / "missing.jpg").read_bytes(), b"new content")
+
+    def test_usb_backup_does_not_overwrite_different_existing_file(self):
+        archive = self.local / "2026-10" / "Photos"
+        archive.mkdir(parents=True)
+        (archive / "photo.jpg").write_bytes(b"local version")
+        existing = self.usb / "2026-10" / "Photos"
+        existing.mkdir(parents=True)
+        (existing / "photo.jpg").write_bytes(b"USB version")
+
+        with patch.object(app, "usb_is_mounted", return_value=True):
+            stats = app.copy_local_archive_to_usb()
+
+        self.assertEqual(stats.destination_copies, 0)
+        self.assertEqual(stats.failed, 1)
+        self.assertEqual((existing / "photo.jpg").read_bytes(), b"USB version")
 
 
 if __name__ == "__main__":
