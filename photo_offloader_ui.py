@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tkinter as tk
+from collections import deque
 from pathlib import Path
 from tkinter import ttk
 from typing import Any, Dict
@@ -12,6 +14,9 @@ from typing import Any, Dict
 INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 STATUS_FILE = Path(os.environ.get("PHOTO_OFFLOADER_STATUS_FILE", str(INSTALL_DIR / "status.json")))
 PAUSE_FILE = Path(os.environ.get("PHOTO_OFFLOADER_PAUSE_FILE", str(INSTALL_DIR / ".paused")))
+IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
+PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
+USB_VOLUME = Path("/Volumes/Photos")
 
 
 def format_bytes(value: float) -> str:
@@ -47,8 +52,8 @@ class Dashboard:
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Photo Offloader")
-        self.root.geometry("570x420")
-        self.root.minsize(500, 380)
+        self.root.geometry("610x600")
+        self.root.minsize(540, 560)
         self.root.configure(bg="#101827")
 
         style = ttk.Style(self.root)
@@ -107,10 +112,60 @@ class Dashboard:
         ttk.Label(outer, textvariable=self.progress_var, style="Body.TLabel").pack(anchor="w")
         self.message_var = tk.StringVar(value="")
         ttk.Label(outer, textvariable=self.message_var, style="Subtitle.TLabel",
-                  wraplength=510).pack(anchor="w", pady=(9, 0))
+                  wraplength=550).pack(anchor="w", pady=(9, 0))
+
+        ttk.Label(outer, text="TRANSFER SPEED", style="Subtitle.TLabel").pack(anchor="w", pady=(14, 4))
+        self.speed_history = deque([0.0] * 60, maxlen=60)
+        self.graph = tk.Canvas(outer, height=110, bg="#1b2638", highlightthickness=0)
+        self.graph.pack(fill="x", expand=False)
+        actions = ttk.Frame(outer)
+        actions.pack(fill="x", pady=(12, 0))
+        ttk.Button(actions, text="Copy to USB Drive", command=self.start_usb_backup).pack(side="left")
+        ttk.Label(actions, text="Copies missing files from the Mac archive",
+                  style="Subtitle.TLabel").pack(side="left", padx=(10, 0))
 
         self.root.after(500, self.refresh)
         self.root.mainloop()
+
+    def start_usb_backup(self) -> None:
+        if not USB_VOLUME.is_mount():
+            self.message_var.set("USB backup drive is not mounted at /Volumes/Photos.")
+            return
+        try:
+            subprocess.Popen([str(PYTHON), str(IMPORTER_SCRIPT), "--backup-usb"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            self.message_var.set("Started USB backup. Existing matching files will be skipped.")
+        except OSError as exc:
+            self.message_var.set(f"Could not start USB backup: {exc}")
+
+    def draw_speed_graph(self) -> None:
+        self.graph.delete("all")
+        width = max(self.graph.winfo_width(), 200)
+        height = max(self.graph.winfo_height(), 80)
+        left, right, top, bottom = 8, width - 8, 8, height - 18
+        for fraction in (0.25, 0.5, 0.75, 1.0):
+            y = bottom - (bottom - top) * fraction
+            self.graph.create_line(left, y, right, y, fill="#34445b", dash=(2, 3))
+        values = list(self.speed_history)
+        peak = max(values, default=0.0)
+        if peak <= 0:
+            self.graph.create_text(left + 4, top + 5, anchor="nw",
+                                   text="Waiting for transfer data…", fill="#9caec4",
+                                   font=("SF Pro Text", 9))
+            return
+        points = []
+        span_x = right - left
+        span_y = bottom - top
+        for index, value in enumerate(values):
+            x = left + span_x * index / max(len(values) - 1, 1)
+            y = bottom - span_y * (value / peak)
+            points.extend((x, y))
+        if len(points) >= 4:
+            self.graph.create_line(*points, fill="#53c7a6", width=2, smooth=True)
+        self.graph.create_text(right - 2, top + 2, anchor="ne",
+                               text=f"Peak {format_bytes(peak)}/s", fill="#9caec4",
+                               font=("SF Pro Text", 9))
 
     def refresh(self) -> None:
         status = read_status()
@@ -119,6 +174,8 @@ class Dashboard:
         total = int(status.get("bytes_total", 0) or 0)
         speed = float(status.get("transfer_speed_bps", 0) or 0)
         eta = float(status.get("eta_seconds", 0) or 0)
+        self.speed_history.append(max(speed, 0.0))
+        self.draw_speed_graph()
 
         self.speed_var.set(f"{format_bytes(speed)}/s" if speed > 0 else "—")
         if state == "copying" and total > done and speed > 0:
