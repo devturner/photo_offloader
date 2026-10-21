@@ -5,6 +5,7 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Catalog updates now show phase-aware remaining-time estimates when scan progress supports one, and a clear metadata-reading label during ExifTool batches.
 - Uninstall now stops the separately launched Tkinter dashboard before removing application files, so its window does not remain open after uninstall.
 - Close SQLite catalog connections after each lookup, record, and refresh transaction to prevent file-descriptor exhaustion during large catalog scans.
 
