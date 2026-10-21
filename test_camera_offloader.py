@@ -299,13 +299,13 @@ class TestCameraOffloader(unittest.TestCase):
 
     def test_source_mutation_is_rejected(self):
         source = self.media()["RAW"]
-        original_copy = app.shutil.copy2
+        original_copy = app.copy_file_with_progress
 
         def mutate(src, dst):
             original_copy(src, dst)
             Path(src).write_bytes(b"RAW")  # changes size
 
-        with patch("camera_offloader_v2.shutil.copy2", side_effect=mutate):
+        with patch("camera_offloader_v2.copy_file_with_progress", side_effect=mutate):
             with self.assertRaisesRegex(IOError, "Source changed"):
                 app.copy_one_to_destination(source, self.dcim, self.local)
 
