@@ -173,7 +173,7 @@ class TestCameraOffloader(unittest.TestCase):
         )
 
     @patch("camera_offloader_v2.os.access", return_value=True)
-    @patch.object(Path, "is_file")
+    @patch.object(Path, "is_file", autospec=True)
     @patch("camera_offloader_v2.shutil.which", return_value=None)
     @patch("camera_offloader_v2.subprocess.run")
     def test_get_camera_model_from_mov_finds_homebrew_exiftool_without_path(
