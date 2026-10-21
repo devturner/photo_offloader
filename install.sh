@@ -90,6 +90,10 @@ cat > "$UI_PLIST_PATH" <<EOF
     <true/>
     <key>ProcessType</key>
     <string>Interactive</string>
+    <key>StandardOutPath</key>
+    <string>$INSTALL_DIR/menubar.log</string>
+    <key>StandardErrorPath</key>
+    <string>$INSTALL_DIR/menubar.log</string>
 </dict>
 </plist>
 EOF
@@ -107,10 +111,20 @@ else
   exit 1
 fi
 
+# Explicitly kick the menu-bar agent after loading and open the dashboard so
+# successful installation gives immediate visible feedback.
+launchctl kickstart -k "gui/$(id -u)/$UI_LABEL"
+if [[ -n "${GUI:-}" || -d "/System/Applications/Utilities" ]]; then
+  nohup "$VENV_DIR/bin/python3" "$INSTALL_DIR/$UI_NAME" >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
+  echo "Opened the Photo Offloader dashboard."
+fi
+
 echo "Installation complete."
 echo "Importer: $SCRIPT_PATH"
 echo "Trigger:   $TRIGGER_PATH"
 echo "Dashboard: $INSTALL_DIR/$UI_NAME"
 echo "Menu bar:  $INSTALL_DIR/$MENUBAR_NAME"
+echo "UI log:    $INSTALL_DIR/menubar.log"
+echo "Dashboard log: $INSTALL_DIR/dashboard.log"
 echo "Log:       ~/.camera_transfer.log"
 echo "Trigger log: ~/.camera_transfer_trigger.log"
