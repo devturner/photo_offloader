@@ -22,7 +22,7 @@ class TestBackupLauncher(unittest.TestCase):
             marker = root / "importer-ran"
             importer.write_text(
                 "from pathlib import Path\n"
-                f"Path({str(marker)!r}).write_text('ran')\n",
+                f"Path({str(marker)!r}).open('a').write('ran\\n')\n",
                 encoding="utf-8",
             )
             env = os.environ.copy()
@@ -65,6 +65,17 @@ class TestBackupLauncher(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(marker.exists())
+
+            duplicate = subprocess.run(
+                [sys.executable, str(LAUNCHER)],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(duplicate.returncode, 0, duplicate.stderr)
+            self.assertIn("duplicate request", duplicate.stdout)
+            self.assertEqual(marker.read_text(encoding="utf-8").splitlines(), ["ran"])
 
 
 if __name__ == "__main__":
