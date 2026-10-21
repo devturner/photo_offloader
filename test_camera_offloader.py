@@ -172,6 +172,37 @@ class TestCameraOffloader(unittest.TestCase):
             timeout=5,
         )
 
+    @patch("camera_offloader_v2.os.access", return_value=True)
+    @patch.object(Path, "is_file")
+    @patch("camera_offloader_v2.shutil.which", return_value=None)
+    @patch("camera_offloader_v2.subprocess.run")
+    def test_get_camera_model_from_mov_finds_homebrew_exiftool_without_path(
+        self, run, which, is_file, access
+    ):
+        is_file.side_effect = lambda candidate: str(candidate) == "/opt/homebrew/bin/exiftool"
+        run.return_value = MagicMock(
+            returncode=0,
+            stdout='[{"SourceFile":"clip.MOV","Make":"Canon","Model":"Canon PowerShot S100"}]',
+            stderr="",
+        )
+        path = self.root / "clip.MOV"
+
+        self.assertEqual(app.get_camera_model(path), "Canon-PowerShot-S100")
+        which.assert_called_once_with("exiftool")
+        run.assert_called_once_with(
+            [
+                "/opt/homebrew/bin/exiftool",
+                "-j",
+                "-Make",
+                "-Model",
+                str(path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
     @patch("camera_offloader_v2.shutil.which", return_value=None)
     def test_get_camera_model_mov_without_exiftool(self, which):
         self.assertEqual(app.get_camera_model(self.root / "clip.MOV"), "Unknown-Camera")
