@@ -24,7 +24,7 @@ The importer also accepts a volume or `DCIM` path through `--source`.
 
 ### 🖥️ Menu-bar dashboard and pause control
 
-The installer also launches a native macOS menu-bar item at login. Select **Open Dashboard** to view the current source, file being processed, progress, effective copy throughput, and estimated time remaining.
+The installer launches a native macOS menu-bar item and opens the dashboard window at the end of installation. When a camera import starts, the dashboard is opened automatically (or reused if already running). Select **Open Dashboard** from the menu-bar item at any time to view the current source, file being processed, progress, effective copy throughput, and estimated time remaining.
 
 Use **Pause Automatic Imports** before inserting a card when you do not want automatic copying to start. Pausing prevents new automatic import sessions; it does not interrupt a copy already in progress. Choose **Resume Automatic Imports** to re-enable the service and immediately re-check any camera card that is already mounted.
 
@@ -175,6 +175,8 @@ Trigger activity is written to:
 ~/.camera_transfer_trigger.log
 ```
 
+Dashboard startup errors are written to `~/Library/Application Support/PhotoOffloader/dashboard.log`; menu-bar app output and errors are written to `~/Library/Application Support/PhotoOffloader/menubar.log`.
+
 ### 🔔 macOS notifications
 
 The importer uses native `osascript` notifications for successful, incomplete, canceled, and eject-failure sessions. Notification failure does not itself make an import fail.
@@ -212,7 +214,7 @@ chmod +x install.sh uninstall.sh
 
 The installer:
 
-1. installs the importer and trigger under `~/Library/Application Support/PhotoOffloader`;
+1. installs the importer, trigger, dashboard, and menu-bar controller under `~/Library/Application Support/PhotoOffloader`;
 2. creates the runtime virtual environment;
 3. installs runtime dependencies;
 4. creates and validates `com.user.photooffloader.plist`;
