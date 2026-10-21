@@ -312,11 +312,24 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertTrue(app.files_match(a, b, force_sha256=True))
 
     @patch("camera_offloader_v2.update_status")
+    @patch("camera_offloader_v2.load_build_info", return_value={
+        "version": "2.4", "git_commit": "abc123def456",
+        "git_branch": "feature/test", "git_tag": "v2.4",
+        "git_dirty": "false", "build_time_utc": "2026-10-21T22:00:00Z",
+        "source_path": "/installed/camera_offloader_v2.py",
+    })
     @patch("camera_offloader_v2.import_session_lock",
            side_effect=RuntimeError("Another Photo Offloader import session is already running."))
-    def test_duplicate_session_does_not_reset_active_progress(self, lock, update_status):
+    def test_duplicate_session_does_not_reset_active_progress(
+        self, lock, build_info, update_status
+    ):
         self.assertEqual(app.main(["--backup-usb"]), 0)
         update_status.assert_not_called()
+        log = self.log.read_text(encoding="utf-8")
+        self.assertIn("version=2.4", log)
+        self.assertIn("git_commit=abc123def456", log)
+        self.assertIn("git_branch=feature/test", log)
+        self.assertIn("run_id=", log)
 
     def test_load_build_info_reads_installed_provenance(self):
         app.BUILD_INFO_PATH.write_text(
