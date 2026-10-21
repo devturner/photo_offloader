@@ -935,6 +935,7 @@ def update_file_catalog() -> Dict[str, int]:
                       message=f"Scanning location {root_index} of {len(roots)}: {root}")
         logger.info("Scanning catalog root %d/%d: %s", root_index, len(roots), root)
         seen: List[str] = []
+        root_scanned = 0
         for path in sorted(root.rglob("*"), key=lambda item: str(item).lower()):
             try:
                 if (not path.is_file() or path.is_symlink()
@@ -944,6 +945,7 @@ def update_file_catalog() -> Dict[str, int]:
                 resolved_path = str(path.resolve())
                 seen.append(resolved_path)
                 totals["scanned"] += 1
+                root_scanned += 1
 
                 # The common case is an unchanged file already fully indexed.
                 # Validate its fingerprint once and avoid redundant SQLite writes
@@ -953,7 +955,8 @@ def update_file_catalog() -> Dict[str, int]:
                 if cached and cached[4] and cached[5] and cached[6]:
                     if totals["scanned"] % 100 == 0:
                         update_status(current_file=path.name, current_path=str(path),
-                                      catalog_scanned=totals["scanned"],
+                                      catalog_scanned=root_scanned,
+                                      catalog_total_scanned=totals["scanned"],
                                       catalog_root=str(root),
                                       catalog_roots_total=len(roots),
                                       catalog_root_index=roots.index(root) + 1,
@@ -963,7 +966,8 @@ def update_file_catalog() -> Dict[str, int]:
                     continue
 
                 update_status(current_file=path.name, current_path=str(path),
-                              catalog_scanned=totals["scanned"],
+                              catalog_scanned=root_scanned,
+                              catalog_total_scanned=totals["scanned"],
                               catalog_root=str(root),
                               catalog_roots_total=len(roots),
                               catalog_root_index=roots.index(root) + 1,
