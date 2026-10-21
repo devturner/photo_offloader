@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import errno
 import plistlib
+import sqlite3
 import stat
 import tempfile
 import unittest
@@ -31,6 +32,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.usb_volume.mkdir()
         self.original = {k: getattr(app, k) for k in (
             "LOCAL_DEST_ROOT", "USB_DEST_ROOT", "USB_DEST_VOLUME", "CATALOG_DB_PATH",
+            "LEGACY_CATALOG_DB_PATH", "_CATALOG_INITIALIZED_PATH",
             "BUILD_INFO_PATH", "VERSION_PATH",
             "LOG_FILE_PATH", "SESSION_LOCK_PATH", "VERIFY_WITH_SHA256",
             "USE_FILE_BIRTH_TIME", "WAIT_SECONDS",
@@ -48,7 +50,9 @@ class TestCameraOffloader(unittest.TestCase):
         app.EJECT_CARD_AFTER_SUCCESS = True
         app.MIN_FREE_SPACE_BUFFER_BYTES = 0
         app.STATUS_FILE_PATH = self.root / "status.json"
-        app.CATALOG_DB_PATH = self.root / "catalog.sqlite3"
+        app.CATALOG_DB_PATH = self.root / "persistent-data" / "catalog.sqlite3"
+        app.LEGACY_CATALOG_DB_PATH = self.root / "legacy-app-dir" / "catalog.sqlite3"
+        app._CATALOG_INITIALIZED_PATH = None
         app.BUILD_INFO_PATH = self.root / "build_info.json"
         app.VERSION_PATH = self.root / "VERSION"
         app._PROGRESS_STARTED = None
@@ -168,6 +172,33 @@ class TestCameraOffloader(unittest.TestCase):
             path.write_bytes(b"second content")
             self.assertEqual(app.get_camera_model(path), "NIKON-Z-8")
         self.assertEqual(read_metadata.call_count, 2)
+
+    def test_catalog_migrates_from_legacy_install_directory(self):
+        app.LEGACY_CATALOG_DB_PATH.parent.mkdir(parents=True)
+        with sqlite3.connect(app.LEGACY_CATALOG_DB_PATH) as legacy:
+            legacy.execute("CREATE TABLE legacy_marker (value TEXT)")
+            legacy.execute("INSERT INTO legacy_marker VALUES ('preserve-me')")
+        with app.catalog_connection() as db:
+            self.assertEqual(db.execute("SELECT value FROM legacy_marker").fetchone()[0],
+                             "preserve-me")
+        self.assertTrue(app.CATALOG_DB_PATH.is_file())
+
+    def test_update_file_catalog_indexes_local_archive_without_usb(self):
+        media = self.local / "2026-10" / "NIKON-Z-8" / "Photos" / "test.jpg"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"photo bytes")
+        with patch.object(app, "usb_is_mounted", return_value=False), patch.object(
+            app, "get_month_folder", return_value="2026-10"
+        ), patch.object(app, "get_camera_model", return_value="NIKON-Z-8"), patch.object(
+            app, "notify"
+        ):
+            result = app.update_file_catalog()
+        self.assertEqual(result["scanned"], 1)
+        self.assertEqual(result["roots"], 1)
+        row = app.catalog_row(media)
+        self.assertIsNotNone(row)
+        self.assertEqual(row[5], "NIKON-Z-8")
+        self.assertEqual(row[6], "Photos")
 
     def test_catalog_records_file_locations(self):
         path = self.root / "catalog-photo.jpg"
