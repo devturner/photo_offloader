@@ -49,11 +49,13 @@ class TestCameraOffloader(unittest.TestCase):
         app.STATUS_FILE_PATH = self.root / "status.json"
         app._PROGRESS_STARTED = None
         app._PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
+        app.find_exiftool.cache_clear()
         app.logger.handlers.clear()
 
     def tearDown(self):
         for handler in app.logger.handlers[:]:
             handler.close()
+        app.find_exiftool.cache_clear()
         app.logger.handlers.clear()
         for key, value in self.original.items():
             setattr(app, key, value)
@@ -137,6 +139,12 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(app.normalize_camera_model("NIKON", "NIKON Z 8"), "NIKON-Z-8")
         self.assertEqual(app.normalize_camera_model("NIKON CORPORATION", "NIKON Z 8"), "NIKON-Z-8")
         self.assertEqual(app.normalize_camera_model(None, None), "Unknown-Camera")
+
+    @patch("camera_offloader_v2.shutil.which", return_value="/opt/homebrew/bin/exiftool")
+    def test_find_exiftool_caches_discovery(self, which):
+        self.assertEqual(app.find_exiftool(), "/opt/homebrew/bin/exiftool")
+        self.assertEqual(app.find_exiftool(), "/opt/homebrew/bin/exiftool")
+        which.assert_called_once_with("exiftool")
 
     def test_get_camera_model_from_exif(self):
         fake_image = MagicMock()
