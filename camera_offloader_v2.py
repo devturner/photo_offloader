@@ -392,7 +392,7 @@ def get_exiftool_metadata(path: Path, tags: List[str]) -> dict:
             check=False,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=5,
         )
         if result.returncode != 0 or not result.stdout.strip():
             logger.debug("ExifTool returned no metadata for %s: %s", path, result.stderr.strip())
