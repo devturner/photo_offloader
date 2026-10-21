@@ -916,6 +916,8 @@ def copy_one_to_destination(
             counter += 1
         logger.warning("Filename conflict for %s; using %s", source, final_path.name)
 
+    update_status(state="copying", phase="copy", current_file=source.name,
+                  current_path=str(source), message=f"Copying {source.name}")
     temp_path: Optional[Path] = None
     try:
         fd, temp_name = tempfile.mkstemp(prefix=".photo-copy-", suffix=".tmp", dir=final_path.parent)
