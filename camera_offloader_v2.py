@@ -962,9 +962,24 @@ def update_file_catalog() -> Dict[str, int]:
         raise RuntimeError("No archive locations are available to update the catalog.")
 
     totals = {"scanned": 0, "metadata_refreshed": 0, "roots": len(roots)}
+    # Use the last successful refresh counts as an initial total estimate. These
+    # counts are advisory only: roots can gain or lose files between refreshes.
+    previous_counts: Dict[str, int] = {}
+    try:
+        with catalog_db() as db:
+            previous_counts = {
+                str(row[0]): int(row[1])
+                for row in db.execute(
+                    "SELECT root, files_scanned FROM catalog_refreshes WHERE status = 'complete'"
+                )
+            }
+    except sqlite3.Error as exc:
+        logger.debug("Could not read previous catalog counts for ETA estimate: %s", exc)
+    estimated_total = sum(previous_counts.get(str(root.resolve()), 0) for root in roots)
     update_status(state="scanning", phase="catalog-update", catalog_stage="Preparing metadata",
-                  catalog_scanned=0, catalog_total_scanned=0, catalog_candidates=0,
-                  catalog_root="", catalog_root_index=0, catalog_roots_total=len(roots),
+                  catalog_scanned=0, catalog_total_scanned=0, catalog_estimated_total=estimated_total,
+                  catalog_candidates=0, catalog_root="", catalog_root_index=0,
+                  catalog_roots_total=len(roots),
                   source="; ".join(map(str, roots)), message="Preparing catalog metadata batches",
                   current_file="", current_path="")
     logger.info("Starting catalog update for %d root(s).", len(roots))
@@ -997,13 +1012,25 @@ def update_file_catalog() -> Dict[str, int]:
                                       catalog_total_scanned=totals["scanned"],
                                       catalog_discovered=discovered,
                                       catalog_candidates=len(candidates),
+                                      catalog_estimated_total=max(
+                                          estimated_total,
+                                          totals["scanned"] + discovered
+                                          + sum(previous_counts.get(str(item.resolve()), 0)
+                                                for item in roots[root_index:])
+                                      ),
                                       current_file=candidate.name, current_path=str(candidate),
                                       message=f"Preparing metadata batch • {discovered:,} media files checked")
             except (OSError, sqlite3.Error) as exc:
                 logger.warning("Could not inspect catalog candidate %s: %s", candidate, exc)
 
+        estimated_total = max(
+            estimated_total,
+            totals["scanned"] + discovered
+            + sum(previous_counts.get(str(item.resolve()), 0) for item in roots[root_index:])
+        )
         update_status(catalog_stage="Reading metadata batches", catalog_candidates=len(candidates),
-                      catalog_discovered=discovered, current_file="", current_path="",
+                      catalog_discovered=discovered, catalog_estimated_total=estimated_total,
+                      current_file="", current_path="",
                       message=f"Reading metadata for {len(candidates):,} new or changed files")
         batch_metadata = get_exiftool_metadata_batch(
             candidates,
