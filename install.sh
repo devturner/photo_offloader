@@ -55,7 +55,7 @@ else
 fi
 BUILD_TIME_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 export BUILD_VERSION BUILD_COMMIT BUILD_BRANCH BUILD_TAG BUILD_DIRTY BUILD_TIME_UTC SCRIPT_PATH
-"$VENV_DIR/bin/python3" - <<'PYBUILD'
+python3 - <<'PYBUILD'
 import json
 import os
 from pathlib import Path
