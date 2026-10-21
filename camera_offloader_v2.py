@@ -875,6 +875,7 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
         destination = destination_root / source.relative_to(source_root)
         try:
             fingerprint = file_fingerprint(source)
+            catalog_record(source)
             if destination.exists():
                 cached_match = catalog_hash_matches(source, destination)
                 if cached_match is None:
