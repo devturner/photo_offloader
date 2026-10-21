@@ -83,10 +83,13 @@ def update_status(**updates: object) -> None:
     done = int(_PROGRESS.get("bytes_done", 0))
     total = int(_PROGRESS.get("bytes_total", 0))
     speed = done / elapsed
+    transferred = int(_PROGRESS.get("bytes_transferred", 0))
+    transfer_speed = transferred / elapsed
     remaining = max(total - done, 0)
     status = dict(_PROGRESS)
     status.update({
         "speed_bps": speed,
+        "transfer_speed_bps": transfer_speed,
         "eta_seconds": remaining / speed if speed > 0 and total > done else 0,
         "elapsed_seconds": elapsed,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
