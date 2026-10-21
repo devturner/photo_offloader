@@ -33,9 +33,46 @@ cp "$SCRIPT_DIR/$TRIGGER_NAME" "$TRIGGER_PATH"
 cp "$SCRIPT_DIR/$UI_NAME" "$INSTALL_DIR/$UI_NAME"
 cp "$SCRIPT_DIR/$MENUBAR_NAME" "$INSTALL_DIR/$MENUBAR_NAME"
 cp "$SCRIPT_DIR/photo_offloader_backup_launcher.py" "$INSTALL_DIR/photo_offloader_backup_launcher.py"
+cp "$SCRIPT_DIR/VERSION" "$INSTALL_DIR/VERSION"
 cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
 cp "$SCRIPT_DIR/requirements-ui.txt" "$INSTALL_DIR/requirements-ui.txt"
 chmod +x "$SCRIPT_PATH" "$TRIGGER_PATH" "$INSTALL_DIR/$UI_NAME" "$INSTALL_DIR/$MENUBAR_NAME" "$INSTALL_DIR/photo_offloader_backup_launcher.py"
+
+# Capture provenance at install time so installed logs identify the exact source
+# revision, even though the installed Application Support directory is not a git checkout.
+BUILD_VERSION="$(cat "$INSTALL_DIR/VERSION")"
+BUILD_COMMIT="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+BUILD_BRANCH="$(git -C "$SCRIPT_DIR" branch --show-current 2>/dev/null || printf 'unknown')"
+BUILD_TAG="$(git -C "$SCRIPT_DIR" describe --tags --always 2>/dev/null || printf 'unknown')"
+if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if [[ -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null)" ]]; then
+    BUILD_DIRTY="true"
+  else
+    BUILD_DIRTY="false"
+  fi
+else
+  BUILD_DIRTY="unknown"
+fi
+BUILD_TIME_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+export BUILD_VERSION BUILD_COMMIT BUILD_BRANCH BUILD_TAG BUILD_DIRTY BUILD_TIME_UTC SCRIPT_PATH
+"$VENV_DIR/bin/python3" - <<'PYBUILD'
+import json
+import os
+from pathlib import Path
+
+info = {
+    "version": os.environ.get("BUILD_VERSION", "unknown"),
+    "git_commit": os.environ.get("BUILD_COMMIT", "unknown"),
+    "git_branch": os.environ.get("BUILD_BRANCH", "unknown"),
+    "git_tag": os.environ.get("BUILD_TAG", "unknown"),
+    "git_dirty": os.environ.get("BUILD_DIRTY", "unknown"),
+    "build_time_utc": os.environ.get("BUILD_TIME_UTC", "unknown"),
+    "source_path": os.environ.get("SCRIPT_PATH", "unknown"),
+}
+target = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "build_info.json"
+target.write_text(json.dumps(info, indent=2) + "\\n", encoding="utf-8")
+print("Build provenance: " + " ".join(f"{key}={value}" for key, value in info.items()))
+PYBUILD
 
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/python3" -m pip install --quiet --upgrade pip
