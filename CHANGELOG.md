@@ -28,6 +28,7 @@ All notable changes to Photo Offloader are documented here.
 - Video camera identity now uses embedded Make/Model metadata through optional `exiftool` support when available, so compatible MOV/MP4 files are grouped with the correct camera.
 
 ### Fixed
+- Increased the dashboard’s default window size and minimum dimensions so the bottom action buttons remain visible when opened from the menu bar.
 - Nikon and other supported camera RAW files now use ExifTool for capture date and camera make/model when Pillow cannot decode the RAW format.
 - Video metadata detection now checks standard Homebrew/MacPorts install paths when launchd's restricted PATH cannot locate `exiftool`.
 - ExifTool executable discovery is cached for the importer session to avoid repeating the same lookup/debug message for every RAW file.
