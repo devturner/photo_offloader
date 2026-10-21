@@ -75,6 +75,15 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
             check=False,
         )
 
+    def test_paused_service_does_not_start_an_import(self):
+        pause_file = self.install / ".paused"
+        pause_file.touch()
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.command_capture.exists())
+        self.assertFalse(self.state.exists())
+        self.assertIn("Automatic import is paused", self.log.read_text())
+
     def test_default_terminal_is_iterm2(self):
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0, result.stderr)
