@@ -211,6 +211,19 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(row[5], "NIKON-Z-8")
         self.assertEqual(row[6], "Photos")
 
+    def test_exiftool_batch_metadata_is_keyed_by_resolved_source_path(self):
+        media = self.local / "batch-test.NEF"
+        media.write_bytes(b"raw bytes")
+        payload = '[{"SourceFile": "' + str(media) + '", "Make": "Nikon", "Model": "Z 8"}]'
+        with patch.object(app, "find_exiftool", return_value="/usr/bin/exiftool"), patch.object(
+            app.subprocess, "run",
+            return_value=MagicMock(returncode=0, stdout=payload, stderr=""),
+        ) as run:
+            result = app.get_exiftool_metadata_batch([media], ["-Make", "-Model"])
+        self.assertEqual(result[str(media.resolve())]["Model"], "Z 8")
+        self.assertEqual(run.call_count, 1)
+        self.assertIn(str(media), run.call_args.args[0])
+
     def test_catalog_records_file_locations(self):
         path = self.root / "catalog-photo.jpg"
         path.write_bytes(b"photo")
