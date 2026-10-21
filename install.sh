@@ -114,10 +114,8 @@ fi
 # Explicitly kick the menu-bar agent after loading and open the dashboard so
 # successful installation gives immediate visible feedback.
 launchctl kickstart -k "gui/$(id -u)/$UI_LABEL"
-if [[ -n "${GUI:-}" || -d "/System/Applications/Utilities" ]]; then
-  nohup "$VENV_DIR/bin/python3" "$INSTALL_DIR/$UI_NAME" >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
-  echo "Opened the Photo Offloader dashboard."
-fi
+nohup "$VENV_DIR/bin/python3" "$INSTALL_DIR/$UI_NAME" >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
+echo "Opened the Photo Offloader dashboard."
 
 echo "Installation complete."
 echo "Importer: $SCRIPT_PATH"
