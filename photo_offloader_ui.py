@@ -117,7 +117,7 @@ class Dashboard:
         state = str(status.get("state", "idle"))
         done = int(status.get("bytes_done", 0) or 0)
         total = int(status.get("bytes_total", 0) or 0)
-        speed = float(status.get("speed_bps", 0) or 0)
+        speed = float(status.get("transfer_speed_bps", 0) or 0)
         eta = float(status.get("eta_seconds", 0) or 0)
 
         self.speed_var.set(f"{format_bytes(speed)}/s" if speed > 0 else "—")
