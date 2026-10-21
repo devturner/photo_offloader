@@ -6,9 +6,8 @@ Conservative macOS media ingestion:
     -> report -> eject
 
 The importer never deletes source media and never overwrites an existing
-same-name destination. It treats the USB backup as a required destination once
-it was present at the beginning of an import, and it refuses to eject a card
-when any required destination fails.
+same-name destination. It verifies the Mac SSD archive first, then ejects the
+card when enabled and independently synchronizes missing files to USB.
 """
 from __future__ import annotations
 
