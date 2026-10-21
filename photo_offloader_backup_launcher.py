@@ -21,7 +21,7 @@ DUPLICATE_WINDOW_SECONDS = 15.0
 
 def main() -> int:
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with LOCK_PATH.open("a", encoding="utf-8") as lock:
+    with LOCK_PATH.open("a+", encoding="utf-8") as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
