@@ -15,6 +15,8 @@ All notable changes to Photo Offloader are documented here.
 - **Update File Catalog** action in the menu bar and dashboard plus `--update-catalog` CLI mode to initialize/refresh local and mounted USB inventories, prune stale paths for scanned roots, and preserve cached hashes without rehashing every file.
 - Dashboard **Database Status** panel with separate internal-SSD and backup-USB inventory counts, refresh-in-progress indicators, and per-volume last-successful-update timestamps.
 - Faster repeat catalog refreshes: unchanged files with valid cached metadata now require only a fingerprint check and catalog lookup, avoiding redundant metadata lookups and SQLite writes.
+- Batch ExifTool reads for uncached files during catalog refresh, with the existing per-file/Pillow fallback retained for missing or failed batch metadata.
+- Added `benchmark_catalog.py` to compare cold-build and repeat-refresh times using a temporary catalog without modifying production database, log, or status files.
 - Clearer catalog progress text identifies the active drive and per-drive scan count, and removes the duplicate progress message.
 - One-time migration from the legacy catalog path; the database now lives outside the uninstallable application directory and survives upgrades/uninstall.
 - Cache reuse for unchanged media to avoid repeatedly invoking ExifTool/Pillow metadata decoding and hashing unchanged local/USB file pairs.
