@@ -16,4 +16,5 @@ rm -rf "$INSTALL_DIR"
 rm -f "$HOME/.camera_transfer.log" "$HOME/.camera_transfer_trigger.log"
 
 echo "Application files, trigger state, LaunchAgent, and logs removed."
+echo "Persistent media catalog retained at: $HOME/Library/Application Support/PhotoOffloaderData/catalog.sqlite3"
 echo "Imported media under ~/Pictures/CameraImports was left untouched."

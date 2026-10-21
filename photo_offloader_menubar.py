@@ -15,6 +15,7 @@ INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 PAUSE_FILE = INSTALL_DIR / ".paused"
 TRIGGER_SCRIPT = INSTALL_DIR / "camera_offloader_trigger.sh"
 DASHBOARD_SCRIPT = INSTALL_DIR / "photo_offloader_ui.py"
+IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
 BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
 USB_VOLUME = Path("/Volumes/Photos")
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
@@ -25,9 +26,11 @@ class PhotoOffloaderMenuBar(rumps.App):
         super().__init__("Photo Offloader", title="📷", quit_button=None)
         self.pause_item = rumps.MenuItem(self.pause_title(), callback=self.toggle_pause)
         self.backup_item = rumps.MenuItem("Copy to USB Drive", callback=self.copy_to_usb)
+        self.catalog_item = rumps.MenuItem("Update File Catalog", callback=self.update_catalog)
         self.menu = [
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
             self.backup_item,
+            self.catalog_item,
             self.pause_item,
             None,
             rumps.MenuItem("Quit Menu Bar App", callback=self.quit_app),
@@ -46,6 +49,16 @@ class PhotoOffloaderMenuBar(rumps.App):
                                "Missing files will be copied from the Mac archive.")
         except OSError as exc:
             rumps.notification("Photo Offloader", "Could not start USB backup", str(exc))
+
+    def update_catalog(self, _sender: object = None) -> None:
+        try:
+            subprocess.Popen([str(PYTHON), str(IMPORTER_SCRIPT), "--update-catalog"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.open_dashboard()
+            rumps.notification("Photo Offloader", "Catalog update started",
+                               "Scanning the Mac archive and mounted USB backup.")
+        except OSError as exc:
+            rumps.notification("Photo Offloader", "Could not update catalog", str(exc))
 
     @staticmethod
     def pause_title() -> str:

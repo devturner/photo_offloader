@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
+from datetime import datetime
 import time
 import tkinter as tk
 from collections import deque
@@ -16,8 +18,12 @@ INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 STATUS_FILE = Path(os.environ.get("PHOTO_OFFLOADER_STATUS_FILE", str(INSTALL_DIR / "status.json")))
 PAUSE_FILE = Path(os.environ.get("PHOTO_OFFLOADER_PAUSE_FILE", str(INSTALL_DIR / ".paused")))
 BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
+IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 USB_VOLUME = Path("/Volumes/Photos")
+LOCAL_ARCHIVE = Path.home() / "Pictures" / "CameraImports"
+USB_ARCHIVE = USB_VOLUME / "CameraImports"
+CATALOG_DB = Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "catalog.sqlite3"
 
 
 def format_bytes(value: float) -> str:
@@ -53,8 +59,10 @@ class Dashboard:
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Photo Offloader")
-        self.root.geometry("610x600")
-        self.root.minsize(540, 560)
+        # Leave enough vertical space for the live graph and both action buttons.
+        # The previous 610x600 default clipped the bottom controls on macOS.
+        self.root.geometry("900x820")
+        self.root.minsize(760, 700)
         self.root.configure(bg="#101827")
 
         style = ttk.Style(self.root)
@@ -115,6 +123,14 @@ class Dashboard:
         ttk.Label(outer, textvariable=self.message_var, style="Subtitle.TLabel",
                   wraplength=550).pack(anchor="w", pady=(9, 0))
 
+        ttk.Label(outer, text="DATABASE STATUS", style="Subtitle.TLabel").pack(anchor="w", pady=(12, 4))
+        catalog_status = ttk.Frame(outer, style="Card.TFrame", padding=10)
+        catalog_status.pack(fill="x")
+        self.local_catalog_var = tk.StringVar(value="Checking catalog…")
+        self.usb_catalog_var = tk.StringVar(value="Checking catalog…")
+        ttk.Label(catalog_status, textvariable=self.local_catalog_var, style="Body.TLabel").pack(anchor="w")
+        ttk.Label(catalog_status, textvariable=self.usb_catalog_var, style="Body.TLabel").pack(anchor="w", pady=(4, 0))
+
         ttk.Label(outer, text="TRANSFER SPEED", style="Subtitle.TLabel").pack(anchor="w", pady=(14, 4))
         self.speed_history = deque([0.0] * 60, maxlen=60)
         self.last_sample_time = time.monotonic()
@@ -124,8 +140,11 @@ class Dashboard:
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=(12, 0))
         ttk.Button(actions, text="Copy to USB Drive", command=self.start_usb_backup).pack(side="left")
-        ttk.Label(actions, text="Copies missing files from the Mac archive",
-                  style="Subtitle.TLabel").pack(side="left", padx=(10, 0))
+        ttk.Button(actions, text="Update File Catalog", command=self.start_catalog_update).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Label(outer, text="Catalog update scans the Mac archive and mounted USB drive; it reuses valid metadata and does not hash every file.",
+                  style="Subtitle.TLabel", wraplength=550).pack(anchor="w", pady=(6, 0))
 
         self.root.after(500, self.refresh)
         self.root.mainloop()
@@ -141,6 +160,70 @@ class Dashboard:
             self.message_var.set("Started USB backup. Existing matching files will be skipped.")
         except OSError as exc:
             self.message_var.set(f"Could not start USB backup: {exc}")
+
+    def refresh_catalog_status(self, status: Dict[str, Any]) -> None:
+        state = str(status.get("state", "idle"))
+        phase = str(status.get("phase", ""))
+        current_path = str(status.get("current_path", "") or "")
+        catalog_root = str(status.get("catalog_root", "") or "")
+        catalog_running = state == "scanning" and phase == "catalog-update"
+
+        try:
+            if not CATALOG_DB.is_file():
+                local_count = usb_count = 0
+                refreshes = {}
+            else:
+                with sqlite3.connect(f"file:{CATALOG_DB}?mode=ro", uri=True, timeout=0.5) as db:
+                    local_root = str(LOCAL_ARCHIVE.resolve())
+                    usb_root = str(USB_ARCHIVE.resolve())
+                    local_count = db.execute(
+                        "SELECT COUNT(*) FROM file_locations WHERE root = ?", (local_root,)
+                    ).fetchone()[0]
+                    usb_count = db.execute(
+                        "SELECT COUNT(*) FROM file_locations WHERE root = ?", (usb_root,)
+                    ).fetchone()[0]
+                    try:
+                        refreshes = {row[0]: (row[1], row[2], row[3]) for row in db.execute(
+                            "SELECT root, last_updated, files_scanned, status FROM catalog_refreshes"
+                        )}
+                    except sqlite3.OperationalError:
+                        refreshes = {}
+        except (OSError, sqlite3.Error) as exc:
+            self.local_catalog_var.set(f"Internal SSD database: Status unavailable ({exc})")
+            self.usb_catalog_var.set("Backup USB database: Status unavailable")
+            return
+
+        def line(label: str, root: Path, count: int) -> str:
+            key = str(root.resolve())
+            if catalog_running and (catalog_root == key or current_path == key
+                                      or current_path.startswith(key + os.sep)):
+                scanned = int(status.get("catalog_scanned", 0) or 0)
+                return f"{label}: Updating • {scanned:,} files scanned • {count:,} indexed so far"
+            info = refreshes.get(key)
+            if info:
+                updated, scanned, refresh_state = info
+                when = datetime.fromtimestamp(updated).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+                return f"{label}: {refresh_state.title()} • Last updated {when} • {scanned:,} files scanned • {count:,} indexed"
+            if count:
+                return f"{label}: Catalog exists • Last refresh time not recorded • {count:,} indexed"
+            if label == "Backup USB" and not USB_VOLUME.is_dir():
+                return f"{label}: Drive not mounted • Previous catalog records are preserved"
+            return f"{label}: Not yet updated"
+
+        self.local_catalog_var.set(line("Internal SSD", LOCAL_ARCHIVE, local_count))
+        if not USB_VOLUME.is_dir():
+            self.usb_catalog_var.set(line("Backup USB", USB_ARCHIVE, usb_count))
+        else:
+            self.usb_catalog_var.set(line("Backup USB", USB_ARCHIVE, usb_count))
+
+    def start_catalog_update(self) -> None:
+        try:
+            subprocess.Popen([str(PYTHON), str(IMPORTER_SCRIPT), "--update-catalog"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            self.message_var.set("Started catalog update. Progress will appear here.")
+        except OSError as exc:
+            self.message_var.set(f"Could not update catalog: {exc}")
 
     def draw_speed_graph(self) -> None:
         self.graph.delete("all")
@@ -203,8 +286,21 @@ class Dashboard:
         else:
             self.eta_var.set("Estimating…" if state == "scanning" else "—")
 
-        percent = min(100.0, (done / total * 100.0) if total else 0.0)
-        self.progress.configure(value=percent)
+        catalog_running = state == "scanning" and status.get("phase") == "catalog-update"
+        if catalog_running:
+            # Catalog scans have no reliable total byte count. Use an indeterminate
+            # bar instead of snapping a determinate bar back to zero between roots.
+            self.progress.configure(mode="indeterminate")
+            if not getattr(self, "_catalog_progress_animating", False):
+                self.progress.start(12)
+                self._catalog_progress_animating = True
+        else:
+            if getattr(self, "_catalog_progress_animating", False):
+                self.progress.stop()
+                self._catalog_progress_animating = False
+            self.progress.configure(mode="determinate")
+            percent = min(100.0, (done / total * 100.0) if total else 0.0)
+            self.progress.configure(value=percent)
         if state == "copying":
             self.progress_var.set(f"{format_bytes(done)} of {format_bytes(total)} processed  •  {percent:.0f}%")
         elif state == "complete":
@@ -212,7 +308,24 @@ class Dashboard:
         elif state == "failed":
             self.progress_var.set("Import stopped — see the Photo Offloader log")
         elif state == "scanning":
-            self.progress_var.set(str(status.get("message", "") or "Scanning source and checking destination space…"))
+            if status.get("phase") == "catalog-update":
+                root_index = int(status.get("catalog_root_index", 1) or 1)
+                roots_total = int(status.get("catalog_roots_total", 1) or 1)
+                scanned = int(status.get("catalog_total_scanned", status.get("catalog_scanned", 0)) or 0)
+                root = str(status.get("catalog_root", "") or "")
+                location = "Internal SSD" if "CameraImports" in root and "/Volumes/" not in root else "Backup USB"
+                stage = str(status.get("catalog_stage", "Indexing files") or "Indexing files")
+                if stage == "Finding files needing metadata":
+                    detail = f"checking files • {int(status.get('catalog_discovered', 0) or 0):,} found"
+                elif stage == "Reading metadata batches":
+                    detail = f"reading metadata for {int(status.get('catalog_candidates', 0) or 0):,} new/changed files"
+                else:
+                    detail = f"{scanned:,} files scanned"
+                self.progress_var.set(
+                    f"Updating database • {location} ({root_index} of {roots_total}) • {stage}: {detail}"
+                )
+            else:
+                self.progress_var.set(str(status.get("message", "") or "Scanning source and checking destination space…"))
         elif state == "canceled":
             self.progress_var.set("Import canceled")
         elif PAUSE_FILE.exists():
@@ -220,10 +333,15 @@ class Dashboard:
         else:
             self.progress_var.set("Waiting for a camera card")
 
+        self.refresh_catalog_status(status)
+
         current_file = str(status.get("current_file", "") or "")
         self.file_var.set(current_file if current_file else "No active import")
         self.source_var.set(f"Source: {status.get('source', '—') or '—'}")
-        self.message_var.set(str(status.get("message", "") or ""))
+        message = str(status.get("message", "") or "")
+        # The progress line already presents catalog scan progress; don't repeat it.
+        self.message_var.set("" if state == "scanning" and status.get("phase") == "catalog-update"
+                             else message)
         self.root.after(1000, self.refresh)
 
 

@@ -11,7 +11,15 @@ All notable changes to Photo Offloader are documented here.
 - Atomic JSON progress status updates emitted during chunked file copies.
 - Windows-style rolling transfer-speed graph in the dashboard, with recent throughput samples.
 - Independent **Copy to USB Drive** actions in the menu bar and dashboard; USB sync can run without a camera card.
-- SQLite file-location catalog at `~/Library/Application Support/PhotoOffloader/catalog.sqlite3`, tracking known paths, file fingerprints, cached capture month/camera metadata, and verified SHA-256 hashes.
+- SQLite file-location catalog at `~/Library/Application Support/PhotoOffloaderData/catalog.sqlite3`, tracking known paths, file fingerprints, cached capture month/camera metadata, and verified SHA-256 hashes.
+- **Update File Catalog** action in the menu bar and dashboard plus `--update-catalog` CLI mode to initialize/refresh local and mounted USB inventories, prune stale paths for scanned roots, and preserve cached hashes without rehashing every file.
+- Dashboard **Database Status** panel with separate internal-SSD and backup-USB inventory counts, refresh-in-progress indicators, and per-volume last-successful-update timestamps.
+- Faster repeat catalog refreshes: unchanged files with valid cached metadata now require only a fingerprint check and catalog lookup, avoiding redundant metadata lookups and SQLite writes.
+- Batch ExifTool reads for uncached files during catalog refresh, with the existing per-file/Pillow fallback retained for missing or failed batch metadata.
+- Added `benchmark_catalog.py` to compare cold-build and repeat-refresh times using a temporary catalog without modifying production database, log, or status files.
+- Stabilized dashboard catalog progress across roots and media folders: the progress bar is indeterminate during catalog scans, the overall file count no longer resets at drive boundaries, and metadata-discovery/batch-reading stages are shown explicitly.
+- Clearer catalog progress text identifies the active drive and per-drive scan count, and removes the duplicate progress message.
+- One-time migration from the legacy catalog path; the database now lives outside the uninstallable application directory and survives upgrades/uninstall.
 - Cache reuse for unchanged media to avoid repeatedly invoking ExifTool/Pillow metadata decoding and hashing unchanged local/USB file pairs.
 - Shared lock for USB backup requests from the menu bar and dashboard; repeated requests are ignored while a backup launch is active.
 - Acquire the importer session lock before initializing progress state, so duplicate launches do not overwrite the active dashboard status; lock collisions exit cleanly without a traceback.
@@ -26,6 +34,7 @@ All notable changes to Photo Offloader are documented here.
 - Video camera identity now uses embedded Make/Model metadata through optional `exiftool` support when available, so compatible MOV/MP4 files are grouped with the correct camera.
 
 ### Fixed
+- Increased the dashboard’s default window size and minimum dimensions so the bottom action buttons remain visible when opened from the menu bar.
 - Nikon and other supported camera RAW files now use ExifTool for capture date and camera make/model when Pillow cannot decode the RAW format.
 - Video metadata detection now checks standard Homebrew/MacPorts install paths when launchd's restricted PATH cannot locate `exiftool`.
 - ExifTool executable discovery is cached for the importer session to avoid repeating the same lookup/debug message for every RAW file.

@@ -71,7 +71,8 @@ VERIFY_WITH_SHA256 = False
 USE_FILE_BIRTH_TIME = True
 MIN_FREE_SPACE_BUFFER_BYTES = 100 * 1024 * 1024
 STATUS_FILE_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "status.json"
-CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "catalog.sqlite3"
+CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "catalog.sqlite3"
+LEGACY_CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "catalog.sqlite3"
 BUILD_INFO_PATH = Path(__file__).resolve().with_name("build_info.json")
 VERSION_PATH = Path(__file__).resolve().with_name("VERSION")
 _PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
@@ -184,6 +185,13 @@ def catalog_connection() -> sqlite3.Connection:
     """Open the persistent media/location catalog, initializing its schema once per path."""
     global _CATALOG_INITIALIZED_PATH
     CATALOG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not CATALOG_DB_PATH.exists() and LEGACY_CATALOG_DB_PATH.is_file():
+        try:
+            shutil.copy2(LEGACY_CATALOG_DB_PATH, CATALOG_DB_PATH)
+            logger.info("Migrated legacy file catalog to persistent data location: %s", CATALOG_DB_PATH)
+        except OSError as exc:
+            logger.warning("Could not migrate legacy catalog; using the existing catalog location: %s", exc)
+            return sqlite3.connect(LEGACY_CATALOG_DB_PATH, timeout=10)
     connection = sqlite3.connect(CATALOG_DB_PATH, timeout=10)
     catalog_path = str(CATALOG_DB_PATH.resolve())
     if _CATALOG_INITIALIZED_PATH != catalog_path:
@@ -200,6 +208,14 @@ def catalog_connection() -> sqlite3.Connection:
                 camera_model TEXT,
                 media_folder TEXT,
                 indexed_at REAL NOT NULL
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS catalog_refreshes (
+                root TEXT PRIMARY KEY,
+                last_updated REAL NOT NULL,
+                files_scanned INTEGER NOT NULL,
+                status TEXT NOT NULL
             )
         """)
         connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_root ON file_locations(root)")
@@ -532,6 +548,33 @@ RAW_EXTENSIONS = {
     ".srf", ".srw", ".x3f",
 }
 VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}
+
+
+def get_exiftool_metadata_batch(paths: List[Path], tags: List[str], batch_size: int = 100) -> dict:
+    """Read selected tags for many files per ExifTool process, keyed by absolute path."""
+    exiftool = find_exiftool()
+    if not exiftool or not paths:
+        return {}
+    results = {}
+    for offset in range(0, len(paths), batch_size):
+        batch = paths[offset:offset + batch_size]
+        try:
+            result = subprocess.run(
+                [exiftool, "-j", "-charset", "filename=UTF8", *tags, *map(str, batch)],
+                check=False, capture_output=True, text=True, timeout=max(15, len(batch) // 2),
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                logger.warning("ExifTool batch returned no metadata (batch starting at %d): %s",
+                               offset, result.stderr.strip())
+                continue
+            records = json.loads(result.stdout)
+            for record in records if isinstance(records, list) else []:
+                if not isinstance(record, dict) or not record.get("SourceFile"):
+                    continue
+                results[str(Path(record["SourceFile"]).resolve())] = record
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+            logger.warning("ExifTool batch metadata read failed at offset %d: %s", offset, exc)
+    return results
 
 
 def get_exiftool_metadata(path: Path, tags: List[str]) -> dict:
@@ -886,6 +929,186 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
             bar()
 
 
+def update_file_catalog() -> Dict[str, int]:
+    """Index the local archive and mounted USB archive, refreshing cached metadata.
+
+    This operation does not hash every file: hashes already verified by copy/backup
+    operations are preserved for unchanged files, while new/changed files are
+    indexed without a hash until a verification operation computes one.
+    """
+    roots: List[Path] = []
+    if LOCAL_DEST_ROOT.is_dir():
+        roots.append(LOCAL_DEST_ROOT)
+    else:
+        logger.warning("Local archive is not available for catalog update: %s", LOCAL_DEST_ROOT)
+    if usb_is_mounted():
+        if USB_DEST_ROOT.is_dir():
+            roots.append(USB_DEST_ROOT)
+    else:
+        logger.info("USB volume is not mounted; skipping USB catalog refresh.")
+
+    if not roots:
+        raise RuntimeError("No archive locations are available to update the catalog.")
+
+    totals = {"scanned": 0, "metadata_refreshed": 0, "roots": len(roots)}
+    update_status(state="scanning", phase="catalog-update", catalog_stage="Preparing metadata",
+                  catalog_scanned=0, catalog_total_scanned=0, catalog_candidates=0,
+                  catalog_root="", catalog_root_index=0, catalog_roots_total=len(roots),
+                  source="; ".join(map(str, roots)), message="Preparing catalog metadata batches",
+                  current_file="", current_path="")
+    logger.info("Starting catalog update for %d root(s).", len(roots))
+
+    for root_index, root in enumerate(roots, start=1):
+        root = root.resolve()
+        update_status(catalog_root=str(root), catalog_root_index=root_index,
+                      catalog_roots_total=len(roots), catalog_scanned=0,
+                      message=f"Scanning location {root_index} of {len(roots)}: {root}")
+        logger.info("Scanning catalog root %d/%d: %s", root_index, len(roots), root)
+        seen: List[str] = []
+        root_scanned = 0
+        candidates = []
+        discovered = 0
+        for candidate in root.rglob("*"):
+            try:
+                if (candidate.is_file() and not candidate.is_symlink()
+                        and not any(part.startswith(".") for part in candidate.relative_to(root).parts)
+                        and candidate.suffix.lower() in MEDIA_EXTENSIONS):
+                    discovered += 1
+                    fingerprint = file_fingerprint(candidate)
+                    cached = catalog_row(candidate, fingerprint)
+                    if not (cached and cached[4] and cached[5] and cached[6]):
+                        candidates.append(candidate)
+                    if discovered % 100 == 0:
+                        update_status(catalog_stage="Finding files needing metadata",
+                                      catalog_root=str(root), catalog_root_index=root_index,
+                                      catalog_roots_total=len(roots),
+                                      catalog_scanned=totals["scanned"],
+                                      catalog_total_scanned=totals["scanned"],
+                                      catalog_discovered=discovered,
+                                      catalog_candidates=len(candidates),
+                                      current_file=candidate.name, current_path=str(candidate),
+                                      message=f"Preparing metadata batch • {discovered:,} media files checked")
+            except (OSError, sqlite3.Error) as exc:
+                logger.warning("Could not inspect catalog candidate %s: %s", candidate, exc)
+
+        update_status(catalog_stage="Reading metadata batches", catalog_candidates=len(candidates),
+                      catalog_discovered=discovered, current_file="", current_path="",
+                      message=f"Reading metadata for {len(candidates):,} new or changed files")
+        batch_metadata = get_exiftool_metadata_batch(
+            candidates,
+            ["-DateTimeOriginal", "-CreateDate", "-DateTimeDigitized", "-ModifyDate", "-Make", "-Model"],
+        )
+        logger.info("ExifTool batch metadata available for %d/%d uncached files under %s",
+                    len(batch_metadata), len(candidates), root)
+
+        for path in sorted(root.rglob("*"), key=lambda item: str(item).lower()):
+            try:
+                if (not path.is_file() or path.is_symlink()
+                        or any(part.startswith(".") for part in path.relative_to(root).parts)
+                        or path.suffix.lower() not in MEDIA_EXTENSIONS):
+                    continue
+                resolved_path = str(path.resolve())
+                seen.append(resolved_path)
+                totals["scanned"] += 1
+                root_scanned += 1
+
+                # The common case is an unchanged file already fully indexed.
+                # Validate its fingerprint once and avoid redundant SQLite writes
+                # and repeated metadata lookups for every cached field.
+                fingerprint = file_fingerprint(path)
+                cached = catalog_row(path, fingerprint)
+                if cached and cached[4] and cached[5] and cached[6]:
+                    if totals["scanned"] % 100 == 0:
+                        update_status(catalog_stage="Indexing files",
+                                      current_file=path.name, current_path=str(path),
+                                      catalog_scanned=totals["scanned"],
+                                      catalog_total_scanned=totals["scanned"],
+                                      catalog_root=str(root),
+                                      catalog_roots_total=len(roots),
+                                      catalog_root_index=root_index,
+                                      catalog_files_found=totals["scanned"],
+                                      catalog_candidates=len(candidates),
+                                      message=f"Indexing cached entries • {totals['scanned']:,} media files scanned")
+                        logger.info("Catalog update progress: %d files scanned.", totals["scanned"])
+                    continue
+
+                update_status(catalog_stage="Indexing files",
+                              current_file=path.name, current_path=str(path),
+                              catalog_scanned=totals["scanned"],
+                              catalog_total_scanned=totals["scanned"],
+                              catalog_root=str(root),
+                              catalog_roots_total=len(roots),
+                              catalog_root_index=root_index,
+                              catalog_files_found=totals["scanned"],
+                              catalog_candidates=len(candidates),
+                              message=f"Indexing {path.name} • {totals['scanned']:,} media files scanned")
+                metadata = batch_metadata.get(resolved_path)
+                if metadata:
+                    timestamp = None
+                    for tag in ("DateTimeOriginal", "CreateDate", "DateTimeDigitized", "ModifyDate"):
+                        value = metadata.get(tag)
+                        if isinstance(value, str):
+                            timestamp = _parse_exif_datetime_value(value)
+                            if timestamp:
+                                break
+                    if timestamp is None:
+                        info = path.stat()
+                        birth = getattr(info, "st_birthtime", None) if USE_FILE_BIRTH_TIME else None
+                        timestamp = datetime.fromtimestamp(birth if birth is not None else info.st_mtime)
+                    month = timestamp.strftime("%Y-%m")
+                    model = normalize_camera_model(metadata.get("Make"), metadata.get("Model")) or "Unknown-Camera"
+                    catalog_record(path, capture_month=month, camera_model=model,
+                                   media_folder=get_media_type_folder(path))
+                else:
+                    # Preserve the established Pillow/ExifTool fallback when batch
+                    # metadata is unavailable or ExifTool is not installed.
+                    catalog_record(path, media_folder=get_media_type_folder(path))
+                    get_month_folder(path)
+                    get_camera_model(path)
+                totals["metadata_refreshed"] += 1
+                if totals["scanned"] % 100 == 0:
+                    logger.info("Catalog update progress: %d files scanned.", totals["scanned"])
+            except (OSError, sqlite3.Error) as exc:
+                logger.warning("Could not catalog %s: %s", path, exc)
+
+        # Never reconcile an unmounted USB volume as empty; only scanned roots
+        # have stale path records removed.
+        try:
+            with catalog_connection() as db:
+                db.execute("CREATE TEMP TABLE IF NOT EXISTS catalog_seen_paths (path TEXT PRIMARY KEY)")
+                db.execute("DELETE FROM catalog_seen_paths")
+                db.executemany("INSERT OR IGNORE INTO catalog_seen_paths(path) VALUES (?)",
+                               ((item,) for item in seen))
+                db.execute("DELETE FROM file_locations WHERE root = ? AND path NOT IN "
+                           "(SELECT path FROM catalog_seen_paths)", (str(root),))
+                db.execute("DELETE FROM catalog_seen_paths")
+        except sqlite3.Error as exc:
+            logger.warning("Could not reconcile catalog entries under %s: %s", root, exc)
+
+        try:
+            with catalog_connection() as db:
+                db.execute(
+                    """INSERT INTO catalog_refreshes(root, last_updated, files_scanned, status)
+                       VALUES (?, ?, ?, 'complete')
+                       ON CONFLICT(root) DO UPDATE SET
+                         last_updated=excluded.last_updated,
+                         files_scanned=excluded.files_scanned,
+                         status=excluded.status""",
+                    (str(root), time.time(), len(seen)),
+                )
+        except sqlite3.Error as exc:
+            logger.warning("Could not save catalog refresh timestamp for %s: %s", root, exc)
+
+        logger.info("Catalog root updated: %s (%d media files).", root, len(seen))
+
+    update_status(state="complete", phase="catalog-update", current_file="",
+                  message=f"Catalog update complete: {totals['scanned']} files scanned")
+    logger.info("Catalog update complete: scanned=%d roots=%d", totals["scanned"], totals["roots"])
+    notify("Photo Offloader Catalog Updated",
+           f"Scanned {totals['scanned']} media files across {totals['roots']} location(s).")
+    return totals
+
+
 def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None) -> ImportStats:
     """Copy only missing local archive files to USB; never overwrite mismatches."""
     if not usb_is_mounted():
@@ -1040,6 +1263,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--source", type=Path, help="Camera volume or DCIM path.")
     parser.add_argument("--no-usb", action="store_true", help="Import to the Mac SSD only; do not start a USB backup.")
     parser.add_argument("--backup-usb", action="store_true", help="Sync missing files from the Mac archive to the USB backup; no camera card required.")
+    parser.add_argument("--update-catalog", action="store_true", help="Initialize/update the SQLite catalog by scanning the local archive and mounted USB backup.")
     parser.add_argument("--no-eject", action="store_true", help="Do not eject the camera card.")
     parser.add_argument("--sha256", action="store_true", help="Use SHA-256 for all copy verification.")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
@@ -1099,6 +1323,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                               "bytes_total": 0, "bytes_transferred": 0, "current_file": "",
                               "source": "", "message": "Preparing Photo Offloader"})
             update_status()
+
+            if args.update_catalog:
+                logger.info("Starting explicit file catalog update.")
+                catalog_stats = update_file_catalog()
+                logger.info("Catalog update summary: %s", catalog_stats)
+                print("Catalog update complete:")
+                for key, value in catalog_stats.items():
+                    print(f"  {key}: {value}")
+                return 0
 
             if args.backup_usb:
                 logger.info("Starting independent local-to-USB backup.")
