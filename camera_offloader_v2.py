@@ -312,6 +312,107 @@ def catalog_hash_matches(source: Path, destination: Path) -> Optional[bool]:
         return source_row[3] == destination_row[3]
     return None
 
+CARD_MANIFEST_DIR = ".photo-offloader"
+CARD_MANIFEST_NAME = "manifest-v1.json"
+
+
+def card_manifest_path(dcim_folder: Path) -> Path:
+    """Return the optional sidecar manifest location at the card volume root."""
+    return dcim_folder.resolve().parent / CARD_MANIFEST_DIR / CARD_MANIFEST_NAME
+
+
+def load_card_manifest(dcim_folder: Path) -> Dict[str, dict]:
+    """Read a card-side hash cache; corrupt or unavailable manifests are ignored."""
+    path = card_manifest_path(dcim_folder)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("schema") == 1 and isinstance(payload.get("files"), dict):
+            return payload["files"]
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {}
+
+
+def save_card_manifest(dcim_folder: Path, files: Dict[str, dict]) -> bool:
+    """Atomically persist optional card metadata without making import depend on writes."""
+    path = card_manifest_path(dcim_folder)
+    temp_path: Optional[Path] = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=".manifest-", suffix=".tmp", dir=path.parent)
+        temp_path = Path(temp_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"schema": 1, "files": files}, handle, separators=(",", ":"), sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        return True
+    except (OSError, TypeError, ValueError) as exc:
+        logger.info("Card-side cache is unavailable; continuing with Mac catalog: %s", exc)
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return False
+
+
+def card_manifest_entry(
+    manifest: Dict[str, dict], source: Path, dcim_folder: Path,
+) -> Optional[str]:
+    """Return a card-cached hash only when relative path, size, and mtime still match."""
+    try:
+        relative = source.resolve().relative_to(dcim_folder.resolve()).as_posix()
+        entry = manifest.get(relative)
+        fingerprint = file_fingerprint(source)
+        if (isinstance(entry, dict) and entry.get("size") == fingerprint.size
+                and entry.get("mtime_ns") == fingerprint.mtime_ns
+                and isinstance(entry.get("sha256"), str)):
+            return entry["sha256"]
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def update_card_manifest_entry(
+    manifest: Dict[str, dict], source: Path, dcim_folder: Path, digest: str,
+) -> None:
+    """Cache a verified source hash keyed by card-relative path and stable fingerprint."""
+    try:
+        relative = source.resolve().relative_to(dcim_folder.resolve()).as_posix()
+        fingerprint = file_fingerprint(source)
+        manifest[relative] = {
+            "size": fingerprint.size,
+            "mtime_ns": fingerprint.mtime_ns,
+            "sha256": digest,
+        }
+    except (OSError, ValueError):
+        pass
+
+
+def hash_for_copy_decision(
+    source: Path, destination: Path, dcim_folder: Path, manifest: Dict[str, dict],
+) -> Tuple[str, str]:
+    """Reuse trustworthy cached hashes, hashing file contents only when cache data is missing."""
+    source_row = catalog_row(source)
+    source_hash = card_manifest_entry(manifest, source, dcim_folder)
+    if source_hash is None and source_row and source_row[3]:
+        source_hash = str(source_row[3])
+    destination_row = catalog_row(destination)
+    destination_hash = (
+        str(destination_row[3])
+        if destination_row and destination_row[3]
+        else None
+    )
+    if source_hash is None:
+        source_hash = sha256_file(source)
+    if destination_hash is None:
+        destination_hash = sha256_file(destination)
+    catalog_record(source, sha256=source_hash)
+    catalog_record(destination, sha256=destination_hash)
+    update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
+    return source_hash, destination_hash
+
 
 def load_build_info() -> Dict[str, str]:
     """Identify the exact source/build installed when this process was launched."""
@@ -778,17 +879,34 @@ def copy_file_with_progress(source: Path, destination: Path) -> None:
     shutil.copystat(source, destination, follow_symlinks=True)
 
 
-def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: Path) -> DestinationResult:
+def copy_one_to_destination(
+    source: Path, dcim_folder: Path, destination_base: Path,
+    card_manifest: Optional[Dict[str, dict]] = None,
+) -> DestinationResult:
     before = file_fingerprint(source)
-    update_status(current_file=source.name, current_path=str(source), message=f"Copying to {destination_base}")
+    manifest = card_manifest if card_manifest is not None else load_card_manifest(dcim_folder)
+    update_status(state="scanning", phase="copy-decision", current_file=source.name,
+                  current_path=str(source), message=f"Checking existing file: {source.name}",
+                  decision_files_checked=int(_PROGRESS.get("decision_files_checked", 0)),
+                  decision_files_total=int(_PROGRESS.get("decision_files_total", 0)))
     final_path = build_destination_path(source, dcim_folder, destination_base)
     final_path.parent.mkdir(parents=True, exist_ok=True)
     catalog_record(source)
 
-    if final_path.exists():
-        if final_path.is_file() and files_match(source, final_path, force_sha256=True):
-            add_progress_bytes(before.size)
-            return DestinationResult(destination_base, "skipped", final_path, "already exists and matches source")
+    if final_path.exists() and final_path.is_file():
+        try:
+            source_hash, destination_hash = hash_for_copy_decision(
+                source, final_path, dcim_folder, manifest
+            )
+            if source_hash == destination_hash:
+                add_progress_bytes(before.size)
+                update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
+                save_card_manifest(dcim_folder, manifest)
+                update_status(state="copying", phase="copy", message="Existing file verified; continuing")
+                return DestinationResult(destination_base, "skipped", final_path,
+                                         "already exists and matches cached/verified hash")
+        except OSError as exc:
+            logger.warning("Could not verify existing file %s: %s", final_path, exc)
         stem, suffix = final_path.stem, final_path.suffix
         counter = 1
         while True:
@@ -827,6 +945,18 @@ def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: P
         # imported photos/videos. Imported media should be regular user files,
         # not executables, while remaining private to the importing user.
         os.chmod(final_path, stat.S_IRUSR | stat.S_IWUSR)
+        # Persist content hashes after a successful copy so later card insertions
+        # can compare cached source/destination hashes without rereading large RAWs.
+        source_hash = sha256_file(source)
+        destination_hash = sha256_file(final_path)
+        if source_hash == destination_hash:
+            catalog_record(source, sha256=source_hash)
+            catalog_record(final_path, sha256=destination_hash)
+            update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
+            save_card_manifest(dcim_folder, manifest)
+        else:
+            raise IOError(f"SHA-256 verification failed after copy: {source}")
+        update_status(state="copying", phase="copy", message="Copy verified")
         return DestinationResult(destination_base, "copied", final_path, "copied and verified")
     finally:
         if temp_path is not None:
@@ -912,14 +1042,21 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
     if not files:
         return
     logger.info("%s: processing %d file(s)", label, len(files))
-    update_status(category=label, message=f"Processing {len(files)} {label} file(s)")
+    update_status(state="scanning", phase="copy-decision", category=label,
+                  decision_files_checked=0, decision_files_total=len(files),
+                  message=f"Checking {len(files)} {label} file(s)")
+    card_manifest = load_card_manifest(dcim_folder)
     with alive_bar(len(files), title=label, bar="filling", monitor=True, force_tty=False) as bar:
-        for source in files:
-            update_status(current_file=source.name, current_path=str(source), category=label)
+        for file_index, source in enumerate(files, start=1):
+            update_status(state="scanning", phase="copy-decision", current_file=source.name,
+                          current_path=str(source), category=label,
+                          decision_files_checked=file_index - 1,
+                          decision_files_total=len(files),
+                          message=f"Checking existing files ({file_index}/{len(files)}): {source.name}")
             results: List[DestinationResult] = []
             for destination in destinations:
                 try:
-                    result = copy_one_to_destination(source, dcim_folder, destination)
+                    result = copy_one_to_destination(source, dcim_folder, destination, card_manifest)
                     results.append(result)
                     if result.status == "copied":
                         stats.destination_copies += 1
@@ -937,7 +1074,12 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
                     logger.exception(message)
             if len(results) != len(destinations):
                 logger.error("One or more destinations failed for %s", source)
+            update_status(state="scanning", phase="copy-decision",
+                          decision_files_checked=file_index,
+                          decision_files_total=len(files),
+                          message=f"Checked {file_index} of {len(files)} {label} files")
             bar()
+    save_card_manifest(dcim_folder, card_manifest)
 
 
 def update_file_catalog() -> Dict[str, int]:
