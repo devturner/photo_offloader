@@ -188,8 +188,8 @@ class TestCameraOffloader(unittest.TestCase):
         media.parent.mkdir(parents=True)
         media.write_bytes(b"photo bytes")
         with patch.object(app, "usb_is_mounted", return_value=False), patch.object(
-            app, "get_month_folder", return_value="2026-10"
-        ), patch.object(app, "get_camera_model", return_value="NIKON-Z-8"), patch.object(
+            app, "get_month_folder", side_effect=lambda p: (app.catalog_record(p, capture_month="2026-10") or "2026-10")
+        ), patch.object(app, "get_camera_model", side_effect=lambda p: (app.catalog_record(p, camera_model="NIKON-Z-8") or "NIKON-Z-8")), patch.object(
             app, "notify"
         ):
             result = app.update_file_catalog()
