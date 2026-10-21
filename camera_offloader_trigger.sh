@@ -32,6 +32,23 @@ if [[ ! -x "$PYTHON" || ! -f "$IMPORTER" ]]; then
     exit 0
 fi
 
+BUILD_INFO_LOG="$("$PYTHON" - "$INSTALL_DIR/build_info.json" <<'PYBUILDINFO' 2>/dev/null || printf 'version=unknown git_commit=unknown git_branch=unknown'
+import json
+import sys
+from pathlib import Path
+
+info = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print("version={version} git_commit={git_commit} git_branch={git_branch} git_tag={git_tag} git_dirty={git_dirty}".format(
+    version=info.get("version", "unknown"),
+    git_commit=info.get("git_commit", "unknown"),
+    git_branch=info.get("git_branch", "unknown"),
+    git_tag=info.get("git_tag", "unknown"),
+    git_dirty=info.get("git_dirty", "unknown"),
+))
+PYBUILDINFO
+)"
+log "Build provenance: $BUILD_INFO_LOG"
+
 mkdir -p "$(dirname "$STATE_FILE")"
 
 # launchd can deliver several /Volumes events while a device is mounting. Use
