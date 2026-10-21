@@ -12,6 +12,8 @@ All notable changes to Photo Offloader are documented here.
 - Independent **Copy to USB Drive** actions in the menu bar and dashboard; USB sync can run without a camera card.
 - SQLite file-location catalog at `~/Library/Application Support/PhotoOffloader/catalog.sqlite3`, tracking known paths, file fingerprints, cached capture month/camera metadata, and verified SHA-256 hashes.
 - Cache reuse for unchanged media to avoid repeatedly invoking ExifTool/Pillow metadata decoding and hashing unchanged local/USB file pairs.
+- Shared lock for USB backup requests from the menu bar and dashboard; repeated requests are ignored while a backup launch is active.
+- Acquire the importer session lock before initializing progress state, so duplicate launches do not overwrite the active dashboard status; lock collisions exit cleanly without a traceback.
 - Dashboard opens at the end of installation and automatically when a camera import starts; menu-bar and dashboard logs are retained for troubleshooting.
 
 ### Changed

@@ -15,7 +15,7 @@ from typing import Any, Dict
 INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 STATUS_FILE = Path(os.environ.get("PHOTO_OFFLOADER_STATUS_FILE", str(INSTALL_DIR / "status.json")))
 PAUSE_FILE = Path(os.environ.get("PHOTO_OFFLOADER_PAUSE_FILE", str(INSTALL_DIR / ".paused")))
-IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
+BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 USB_VOLUME = Path("/Volumes/Photos")
 
@@ -135,7 +135,7 @@ class Dashboard:
             self.message_var.set("USB backup drive is not mounted at /Volumes/Photos.")
             return
         try:
-            subprocess.Popen([str(PYTHON), str(IMPORTER_SCRIPT), "--backup-usb"],
+            subprocess.Popen([str(PYTHON), str(BACKUP_LAUNCHER_SCRIPT)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
             self.message_var.set("Started USB backup. Existing matching files will be skipped.")

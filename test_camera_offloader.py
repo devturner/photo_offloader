@@ -308,6 +308,13 @@ class TestCameraOffloader(unittest.TestCase):
         b.write_bytes(b"abc")
         self.assertTrue(app.files_match(a, b, force_sha256=True))
 
+    @patch("camera_offloader_v2.update_status")
+    @patch("camera_offloader_v2.import_session_lock",
+           side_effect=RuntimeError("Another Photo Offloader import session is already running."))
+    def test_duplicate_session_does_not_reset_active_progress(self, lock, update_status):
+        self.assertEqual(app.main(["--backup-usb"]), 0)
+        update_status.assert_not_called()
+
     def test_import_session_lock_acquires_and_releases(self):
         with app.import_session_lock():
             self.assertTrue(self.lock.exists())
