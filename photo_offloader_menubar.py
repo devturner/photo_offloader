@@ -46,8 +46,12 @@ class PhotoOffloaderMenuBar(rumps.App):
             self.pause_item.title = self.pause_title()
             rumps.notification("Photo Offloader", "Automatic imports resumed",
                                "Checking for a camera card now.")
-            # A card may have been inserted while paused, so evaluate the
-            # current mount state immediately rather than waiting for another event.
+            # Reset trigger deduplication: a card may have been inserted while paused.
+            # Evaluate the current mount state immediately instead of waiting for another event.
+            try:
+                (INSTALL_DIR / ".last_camera_source").unlink(missing_ok=True)
+            except OSError:
+                pass
             subprocess.Popen(["/bin/bash", str(TRIGGER_SCRIPT)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
