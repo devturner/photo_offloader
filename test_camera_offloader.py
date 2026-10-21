@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import errno
 import plistlib
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,7 +32,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.original = {k: getattr(app, k) for k in (
             "LOCAL_DEST_ROOT", "USB_DEST_ROOT", "USB_DEST_VOLUME",
             "LOG_FILE_PATH", "SESSION_LOCK_PATH", "VERIFY_WITH_SHA256",
-            "USE_FILE_BIRTH_TIME", "PRESERVE_CAMERA_SUBFOLDERS", "WAIT_SECONDS",
+            "USE_FILE_BIRTH_TIME", "WAIT_SECONDS",
             "EJECT_CARD_AFTER_SUCCESS", "MIN_FREE_SPACE_BUFFER_BYTES",
         )}
         app.LOCAL_DEST_ROOT = self.local
@@ -41,7 +42,6 @@ class TestCameraOffloader(unittest.TestCase):
         app.SESSION_LOCK_PATH = self.lock
         app.VERIFY_WITH_SHA256 = False
         app.USE_FILE_BIRTH_TIME = False
-        app.PRESERVE_CAMERA_SUBFOLDERS = True
         app.WAIT_SECONDS = 0
         app.EJECT_CARD_AFTER_SUCCESS = True
         app.MIN_FREE_SPACE_BUFFER_BYTES = 0
@@ -127,13 +127,71 @@ class TestCameraOffloader(unittest.TestCase):
         with patch("camera_offloader_v2.time.monotonic", side_effect=[0, 1]), patch("camera_offloader_v2.time.sleep"):
             self.assertEqual(app.scan_with_retry(self.dcim), found)
 
-    def test_destination_path(self):
+    def test_normalize_camera_model(self):
+        self.assertEqual(app.normalize_camera_model("NIKON", "Z 8"), "NIKON-Z-8")
+        self.assertEqual(app.normalize_camera_model("SONY", "ILCE-7M4"), "SONY-ILCE-7M4")
+        self.assertEqual(app.normalize_camera_model("NIKON", "NIKON Z 8"), "NIKON-Z-8")
+        self.assertEqual(app.normalize_camera_model(None, None), "Unknown-Camera")
+
+    def test_get_camera_model_from_exif(self):
+        fake_image = MagicMock()
+        fake_image.__enter__.return_value = fake_image
+        fake_image.getexif.return_value = {271: "NIKON", 272: "Z 8"}
+        with patch("camera_offloader_v2.Image.open", return_value=fake_image):
+            self.assertEqual(app.get_camera_model(self.root / "IMG.JPG"), "NIKON-Z-8")
+
+    def test_get_camera_model_missing_exif(self):
+        fake_image = MagicMock()
+        fake_image.__enter__.return_value = fake_image
+        fake_image.getexif.return_value = {}
+        with patch("camera_offloader_v2.Image.open", return_value=fake_image):
+            self.assertEqual(app.get_camera_model(self.root / "IMG.JPG"), "Unknown-Camera")
+
+    @patch("camera_offloader_v2.shutil.which", return_value="/opt/homebrew/bin/exiftool")
+    @patch("camera_offloader_v2.subprocess.run")
+    def test_get_camera_model_from_mov_metadata(self, run, which):
+        run.return_value = MagicMock(
+            returncode=0,
+            stdout='[{"SourceFile":"clip.MOV","Make":"Canon","Model":"Canon PowerShot S100"}]',
+            stderr="",
+        )
+        path = self.root / "clip.MOV"
+        self.assertEqual(app.get_camera_model(path), "Canon-PowerShot-S100")
+        which.assert_called_once_with("exiftool")
+        run.assert_called_once_with(
+            [
+                "/opt/homebrew/bin/exiftool",
+                "-j",
+                "-Make",
+                "-Model",
+                str(path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    @patch("camera_offloader_v2.shutil.which", return_value=None)
+    def test_get_camera_model_mov_without_exiftool(self, which):
+        self.assertEqual(app.get_camera_model(self.root / "clip.MOV"), "Unknown-Camera")
+        which.assert_called_once_with("exiftool")
+
+    def test_media_type_folders(self):
+        self.assertEqual(app.get_media_type_folder(Path("photo.jpg")), "Photos")
+        self.assertEqual(app.get_media_type_folder(Path("photo.nef")), "Raws")
+        self.assertEqual(app.get_media_type_folder(Path("clip.mov")), "Movies")
+
+    def test_destination_path_uses_month_camera_model_and_media_type(self):
         source = self.dcim / "100NIKON" / "IMG.JPG"
         source.parent.mkdir(parents=True)
         source.write_bytes(b"x")
-        month = app.get_month_folder(source)
-        result = app.build_destination_path(source, self.dcim, self.local)
-        self.assertEqual(result, self.local / month / "100NIKON" / "IMG.JPG")
+        with (
+            patch.object(app, "get_month_folder", return_value="2026-08"),
+            patch.object(app, "get_camera_model", return_value="NIKON-Z-8"),
+        ):
+            result = app.build_destination_path(source, self.dcim, self.local)
+        self.assertEqual(result, self.local / "2026-08" / "NIKON-Z-8" / "Photos" / "IMG.JPG")
 
     def test_files_match_requires_sha_for_existing_duplicate(self):
         a, b = self.root / "a", self.root / "b"
@@ -171,9 +229,12 @@ class TestCameraOffloader(unittest.TestCase):
 
     def test_copy_and_verify(self):
         source = self.media()["RAW"]
+        source.chmod(0o700)
         result = app.copy_one_to_destination(source, self.dcim, self.local)
         self.assertEqual(result.status, "copied")
         self.assertEqual(result.path.read_bytes(), b"raw")
+        self.assertEqual(stat.S_IMODE(result.path.stat().st_mode), 0o600)
+
 
     def test_matching_duplicate_is_content_verified(self):
         source = self.media()["RAW"]

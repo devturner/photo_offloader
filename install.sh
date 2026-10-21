@@ -12,7 +12,7 @@ PLIST_PATH="$HOME/Library/LaunchAgents/com.user.photooffloader.plist"
 LABEL="com.user.photooffloader"
 
 echo "==========================================="
-echo " Installing Photo Offloader v2.2"
+echo " Installing Photo Offloader v2.3"
 echo "==========================================="
 
 mkdir -p "$INSTALL_DIR" "$HOME/Library/LaunchAgents"
@@ -48,6 +48,8 @@ cat > "$PLIST_PATH" <<EOF
     <array>
         <string>/Volumes</string>
     </array>
+    <key>ThrottleInterval</key>
+    <integer>2</integer>
     <key>ProcessType</key>
     <string>Background</string>
 </dict>
@@ -59,7 +61,15 @@ plutil -lint "$PLIST_PATH"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
 
+if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+  echo "LaunchAgent loaded successfully."
+else
+  echo "Error: LaunchAgent did not load successfully."
+  exit 1
+fi
+
 echo "Installation complete."
 echo "Importer: $SCRIPT_PATH"
 echo "Trigger:   $TRIGGER_PATH"
 echo "Log:       ~/.camera_transfer.log"
+echo "Trigger log: ~/.camera_transfer_trigger.log"
