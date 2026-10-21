@@ -370,12 +370,31 @@ def normalize_camera_model(make: object, model: object) -> str:
     return combined or "Unknown-Camera"
 
 
+def find_exiftool() -> Optional[str]:
+    """Find exiftool even when launchd provides a minimal PATH."""
+    exiftool = shutil.which("exiftool")
+    if exiftool:
+        return exiftool
+
+    # launchd jobs often do not inherit Homebrew's PATH entries.
+    for candidate in (
+        Path("/opt/homebrew/bin/exiftool"),
+        Path("/usr/local/bin/exiftool"),
+        Path("/opt/local/bin/exiftool"),
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            logger.debug("Found exiftool at its standard install path: %s", candidate)
+            return str(candidate)
+    return None
+
+
 def get_camera_model_from_exiftool(path: Path) -> str:
     """Read camera make/model from video metadata when exiftool is available."""
     if path.suffix.lower() not in {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}:
         return "Unknown-Camera"
-    exiftool = shutil.which("exiftool")
+    exiftool = find_exiftool()
     if not exiftool:
+        logger.debug("exiftool is unavailable; video camera identity will be Unknown-Camera for %s", path)
         return "Unknown-Camera"
     try:
         result = subprocess.run(

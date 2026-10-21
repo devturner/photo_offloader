@@ -126,6 +126,8 @@ For video files such as MOV and MP4, the importer can read embedded camera Make/
 
 If `exiftool` is not installed or a video does not contain usable camera metadata, the importer falls back to `Unknown-Camera`.
 
+Because macOS LaunchAgents may start with a restricted `PATH`, the importer also checks common executable locations including `/opt/homebrew/bin/exiftool`, `/usr/local/bin/exiftool`, and `/opt/local/bin/exiftool`.
+
 `exiftool` is not installed automatically by Photo Offloader. On a Homebrew-based Mac, install it with:
 
 ```bash

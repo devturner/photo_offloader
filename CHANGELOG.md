@@ -10,6 +10,7 @@ All notable changes to Photo Offloader are documented here.
 - Video camera identity now uses embedded Make/Model metadata through optional `exiftool` support when available, so compatible MOV/MP4 files are grouped with the correct camera.
 
 ### Fixed
+- Video metadata detection now checks standard Homebrew/MacPorts install paths when launchd's restricted PATH cannot locate `exiftool`.
 - Imported media no longer inherits executable or owner-only source mode bits such as 0700; new destination files are normalized to user read/write (0600).
 - Trigger regression test now matches the shell-escaped path format produced by bash `%q`.
 - CI regression test now matches the list-form argument vector used by `subprocess.run` for `exiftool`.
