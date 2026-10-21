@@ -668,6 +668,7 @@ def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: P
     update_status(current_file=source.name, current_path=str(source), message=f"Copying to {destination_base}")
     final_path = build_destination_path(source, dcim_folder, destination_base)
     final_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_record(source)
 
     if final_path.exists():
         if final_path.is_file() and files_match(source, final_path, force_sha256=True):
@@ -908,18 +909,24 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
             copy_file_with_progress(source, temp_path)
             if file_fingerprint(source) != before:
                 raise IOError(f"Local source changed during backup: {source}")
-            if not files_match(source, temp_path, force_sha256=True):
+            source_hash = sha256_file(source)
+            temp_hash = sha256_file(temp_path)
+            if source_hash != temp_hash:
                 raise IOError(f"SHA-256 verification failed for USB temporary copy: {source}")
             if not install_without_overwrite(temp_path, destination):
                 if files_match(source, destination, force_sha256=True):
                     stats.destination_skips += 1
                     stats.verified_copies += 1
+                    catalog_record(source, sha256=source_hash)
+                    catalog_record(destination, sha256=source_hash)
                     continue
                 raise FileExistsError(f"USB destination appeared and differs from source: {destination}")
-            if not files_match(source, destination, force_sha256=True):
+            if sha256_file(destination) != source_hash:
                 destination.unlink(missing_ok=True)
                 raise IOError(f"SHA-256 verification failed for USB copy: {destination}")
             os.chmod(destination, stat.S_IRUSR | stat.S_IWUSR)
+            catalog_record(source, sha256=source_hash)
+            catalog_record(destination, sha256=source_hash)
             stats.destination_copies += 1
             stats.verified_copies += 1
         except Exception as exc:
