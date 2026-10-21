@@ -24,7 +24,7 @@ The importer also accepts a volume or `DCIM` path through `--source`.
 
 ### 🖥️ Menu-bar dashboard and pause control
 
-The installer launches a native macOS menu-bar item and opens the dashboard window at the end of installation. When a camera import starts, the dashboard is opened automatically (or reused if already running). Select **Open Dashboard** from the menu-bar item at any time to view the current source, file being processed, progress, effective copy throughput, and estimated time remaining.
+The installer launches a native macOS menu-bar item and opens the dashboard window at the end of installation. When a camera import starts, the dashboard is opened automatically (or reused if already running). Select **Open Dashboard** from the menu-bar item at any time to view the current source, file being processed, progress, live transfer speed, a rolling speed graph, and estimated time remaining. Use **Copy to USB Drive** in the menu bar or dashboard to run a USB-only sync without a camera card.
 
 Use **Pause Automatic Imports** before inserting a card when you do not want automatic copying to start. Pausing prevents new automatic import sessions; it does not interrupt a copy already in progress. Choose **Resume Automatic Imports** to re-enable the service and immediately re-check any camera card that is already mounted.
 
@@ -71,15 +71,20 @@ Local storage defaults to:
 ~/Pictures/CameraImports/
 ```
 
-When `/Volumes/Photos` is mounted when an import begins, a second copy is written to:
+A camera import now runs in two stages:
 
-```text
-/Volumes/Photos/CameraImports/
+1. **Card → Mac SSD:** media is copied to `~/Pictures/CameraImports/` and verified.
+2. **Mac SSD → USB:** if `/Volumes/Photos` is mounted, Photo Offloader compares the local archive with `/Volumes/Photos/CameraImports/` and copies only files missing from the USB backup. Existing files are SHA-256 checked; matching files are skipped, and mismatching files are reported as conflicts rather than overwritten.
+
+Once the local SSD stage has succeeded, the camera card can be ejected while the USB backup continues. A USB backup failure therefore does not invalidate the verified local import; rerun the USB-only sync after reconnecting the drive.
+
+Use `--no-usb` to skip USB backup during a camera import. USB backup can also be run independently at any time with the drive mounted, even when no camera card is connected:
+
+```bash
+python3 camera_offloader_v2.py --backup-usb
 ```
 
-The USB destination is snapshotted at the beginning of the session. If the expected USB volume disappears or is replaced during the import, the session fails and the camera card is not automatically ejected.
-
-Use `--no-usb` when a second backup is intentionally not required.
+The USB-only mode scans the local archive, verifies existing same-name files by SHA-256, copies missing files, and never overwrites a differing existing file.
 
 ### 🛡️ Collision safety
 
@@ -183,13 +188,7 @@ The importer uses native `osascript` notifications for successful, incomplete, c
 
 ### ⏏️ Safe ejection
 
-The card is automatically ejected only when:
-
-- all required destinations succeeded;
-- the expected USB backup volume is still present and matches its recorded identity; and
-- `--no-eject` was not specified.
-
-If an import fails, the card remains mounted for investigation or retry.
+The card is automatically ejected after the complete local SSD stage succeeds, provided `--no-eject` was not specified. If the local stage fails, the card remains mounted for investigation or retry. The USB stage checks the expected volume identity before copying; USB failures are reported separately and can be retried with `--backup-usb`.
 
 ## 📋 Requirements
 
@@ -247,10 +246,16 @@ The test suite includes filesystem-level copy tests, hardening regressions, lock
 
 ## ⚙️ Manual operation
 
-Import a specific camera volume:
+Import a specific camera volume (copy to the Mac SSD, then sync missing files to USB if mounted):
 
 ```bash
 python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8"
+```
+
+Sync the Mac archive to USB without a camera card:
+
+```bash
+python3 camera_offloader_v2.py --backup-usb
 ```
 
 Import without the USB destination:
