@@ -22,6 +22,7 @@ import os
 import plistlib
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -69,6 +70,7 @@ VERIFY_WITH_SHA256 = False
 USE_FILE_BIRTH_TIME = True
 MIN_FREE_SPACE_BUFFER_BYTES = 100 * 1024 * 1024
 STATUS_FILE_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "status.json"
+CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "catalog.sqlite3"
 _PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
 _PROGRESS_STARTED: Optional[float] = None
 
@@ -170,6 +172,115 @@ class FileFingerprint:
     size: int
     mtime_ns: int
     inode: int
+
+
+_CATALOG_INITIALIZED_PATH: Optional[str] = None
+
+
+def catalog_connection() -> sqlite3.Connection:
+    """Open the persistent media/location catalog, initializing its schema once per path."""
+    global _CATALOG_INITIALIZED_PATH
+    CATALOG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(CATALOG_DB_PATH, timeout=10)
+    catalog_path = str(CATALOG_DB_PATH.resolve())
+    if _CATALOG_INITIALIZED_PATH != catalog_path:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS file_locations (
+                path TEXT PRIMARY KEY,
+                root TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                inode INTEGER NOT NULL,
+                sha256 TEXT,
+                capture_month TEXT,
+                camera_model TEXT,
+                media_folder TEXT,
+                indexed_at REAL NOT NULL
+            )
+        """)
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_root ON file_locations(root)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_relative ON file_locations(root, relative_path)")
+        connection.commit()
+        _CATALOG_INITIALIZED_PATH = catalog_path
+    return connection
+
+
+def catalog_row(path: Path, fingerprint: Optional[FileFingerprint] = None) -> Optional[tuple]:
+    """Return cached catalog metadata only when the filesystem fingerprint still matches."""
+    try:
+        fingerprint = fingerprint or file_fingerprint(path)
+        with catalog_connection() as db:
+            row = db.execute(
+                "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
+                "FROM file_locations WHERE path = ?", (str(path.resolve()),)
+            ).fetchone()
+        if row and row[:3] == (fingerprint.size, fingerprint.mtime_ns, fingerprint.inode):
+            return row
+    except (OSError, sqlite3.Error) as exc:
+        logger.debug("Catalog lookup failed for %s: %s", path, exc)
+    return None
+
+
+def catalog_record(path: Path, *, sha256: Optional[str] = None,
+                   capture_month: Optional[str] = None,
+                   camera_model: Optional[str] = None,
+                   media_folder: Optional[str] = None) -> None:
+    """Record a file location while preserving cached fields for an unchanged file."""
+    try:
+        fingerprint = file_fingerprint(path)
+        resolved = path.resolve()
+        known_root = next(
+            (candidate.resolve() for candidate in (LOCAL_DEST_ROOT, USB_DEST_ROOT)
+             if resolved == candidate.resolve() or candidate.resolve() in resolved.parents),
+            None,
+        )
+        if known_root is not None:
+            root = str(known_root)
+            relative = str(resolved.relative_to(known_root))
+        else:
+            # Camera-card paths are still catalogued by their absolute location.
+            root = str(resolved.anchor)
+            relative = str(resolved).lstrip("/")
+        with catalog_connection() as db:
+            old = db.execute(
+                "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
+                "FROM file_locations WHERE path = ?", (str(resolved),)
+            ).fetchone()
+            same = old and old[:3] == (fingerprint.size, fingerprint.mtime_ns, fingerprint.inode)
+            values = (
+                str(resolved), root, relative, fingerprint.size, fingerprint.mtime_ns,
+                fingerprint.inode,
+                sha256 if sha256 is not None else (old[3] if same else None),
+                capture_month if capture_month is not None else (old[4] if same else None),
+                camera_model if camera_model is not None else (old[5] if same else None),
+                media_folder if media_folder is not None else (old[6] if same else None),
+                time.time(),
+            )
+            db.execute("""
+                INSERT INTO file_locations
+                (path, root, relative_path, size, mtime_ns, inode, sha256,
+                 capture_month, camera_model, media_folder, indexed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    root=excluded.root, relative_path=excluded.relative_path,
+                    size=excluded.size, mtime_ns=excluded.mtime_ns, inode=excluded.inode,
+                    sha256=excluded.sha256, capture_month=excluded.capture_month,
+                    camera_model=excluded.camera_model, media_folder=excluded.media_folder,
+                    indexed_at=excluded.indexed_at
+            """, values)
+    except (OSError, sqlite3.Error) as exc:
+        # Catalog is an optimization, never a reason to interrupt a safe import.
+        logger.debug("Could not update file catalog for %s: %s", path, exc)
+
+
+def catalog_hash_matches(source: Path, destination: Path) -> Optional[bool]:
+    """Use cached hashes only when both paths still match their indexed fingerprints."""
+    source_row = catalog_row(source)
+    destination_row = catalog_row(destination)
+    if source_row and destination_row and source_row[3] and destination_row[3]:
+        return source_row[3] == destination_row[3]
+    return None
 
 
 def configure_logging(verbose: bool = False) -> None:
@@ -502,29 +613,42 @@ def get_camera_model_from_exiftool(path: Path) -> str:
 
 
 def get_camera_model(path: Path) -> str:
-    """Read camera make/model, using Pillow first and ExifTool for RAW/video."""
+    """Read camera make/model once per unchanged file and cache it in SQLite."""
+    cached = catalog_row(path)
+    if cached and cached[5]:
+        return str(cached[5])
     suffix = path.suffix.lower()
+    model = ""
     if suffix in VIDEO_EXTENSIONS or suffix in RAW_EXTENSIONS:
-        return get_camera_model_from_exiftool(path)
-    if Image is not None:
-        try:
-            with Image.open(path) as image:
-                exif = image.getexif()
-                if exif:
-                    return normalize_camera_model(exif.get(271), exif.get(272))
-        except Exception as exc:  # best effort
-            logger.debug("Could not read camera EXIF for %s: %s", path, exc)
-    metadata = get_exiftool_metadata(path, ["-Make", "-Model"])
-    return normalize_camera_model(metadata.get("Make"), metadata.get("Model"))
+        model = get_camera_model_from_exiftool(path)
+    else:
+        if Image is not None:
+            try:
+                with Image.open(path) as image:
+                    exif = image.getexif()
+                    if exif:
+                        model = normalize_camera_model(exif.get(271), exif.get(272))
+            except Exception as exc:  # best effort
+                logger.debug("Could not read camera EXIF for %s: %s", path, exc)
+        if not model or model == "Unknown-Camera":
+            metadata = get_exiftool_metadata(path, ["-Make", "-Model"])
+            model = normalize_camera_model(metadata.get("Make"), metadata.get("Model"))
+    catalog_record(path, camera_model=model or "Unknown-Camera")
+    return model or "Unknown-Camera"
 
 
 def get_month_folder(source: Path) -> str:
+    cached = catalog_row(source)
+    if cached and cached[4]:
+        return str(cached[4])
     timestamp = get_exif_datetime(source)
     if timestamp is None:
         info = source.stat()
         birth = getattr(info, "st_birthtime", None) if USE_FILE_BIRTH_TIME else None
         timestamp = datetime.fromtimestamp(birth if birth is not None else info.st_mtime)
-    return timestamp.strftime("%Y-%m")
+    month = timestamp.strftime("%Y-%m")
+    catalog_record(source, capture_month=month)
+    return month
 
 
 def get_media_type_folder(source: Path) -> str:
@@ -562,6 +686,7 @@ def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: P
     update_status(current_file=source.name, current_path=str(source), message=f"Copying to {destination_base}")
     final_path = build_destination_path(source, dcim_folder, destination_base)
     final_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_record(source)
 
     if final_path.exists():
         if final_path.is_file() and files_match(source, final_path, force_sha256=True):
@@ -750,8 +875,17 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
         destination = destination_root / source.relative_to(source_root)
         try:
             fingerprint = file_fingerprint(source)
+            catalog_record(source)
             if destination.exists():
-                if destination.is_file() and files_match(source, destination, force_sha256=True):
+                cached_match = catalog_hash_matches(source, destination)
+                if cached_match is None:
+                    source_hash = sha256_file(source)
+                    destination_hash = sha256_file(destination) if destination.is_file() else ""
+                    catalog_record(source, sha256=source_hash)
+                    if destination.is_file():
+                        catalog_record(destination, sha256=destination_hash)
+                    cached_match = bool(destination_hash) and source_hash == destination_hash
+                if destination.is_file() and cached_match:
                     stats.destination_skips += 1
                     stats.verified_copies += 1
                 else:
@@ -794,18 +928,24 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
             copy_file_with_progress(source, temp_path)
             if file_fingerprint(source) != before:
                 raise IOError(f"Local source changed during backup: {source}")
-            if not files_match(source, temp_path, force_sha256=True):
+            source_hash = sha256_file(source)
+            temp_hash = sha256_file(temp_path)
+            if source_hash != temp_hash:
                 raise IOError(f"SHA-256 verification failed for USB temporary copy: {source}")
             if not install_without_overwrite(temp_path, destination):
                 if files_match(source, destination, force_sha256=True):
                     stats.destination_skips += 1
                     stats.verified_copies += 1
+                    catalog_record(source, sha256=source_hash)
+                    catalog_record(destination, sha256=source_hash)
                     continue
                 raise FileExistsError(f"USB destination appeared and differs from source: {destination}")
-            if not files_match(source, destination, force_sha256=True):
+            if sha256_file(destination) != source_hash:
                 destination.unlink(missing_ok=True)
                 raise IOError(f"SHA-256 verification failed for USB copy: {destination}")
             os.chmod(destination, stat.S_IRUSR | stat.S_IWUSR)
+            catalog_record(source, sha256=source_hash)
+            catalog_record(destination, sha256=source_hash)
             stats.destination_copies += 1
             stats.verified_copies += 1
         except Exception as exc:

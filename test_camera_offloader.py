@@ -30,7 +30,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.usb.mkdir()
         self.usb_volume.mkdir()
         self.original = {k: getattr(app, k) for k in (
-            "LOCAL_DEST_ROOT", "USB_DEST_ROOT", "USB_DEST_VOLUME",
+            "LOCAL_DEST_ROOT", "USB_DEST_ROOT", "USB_DEST_VOLUME", "CATALOG_DB_PATH",
             "LOG_FILE_PATH", "SESSION_LOCK_PATH", "VERIFY_WITH_SHA256",
             "USE_FILE_BIRTH_TIME", "WAIT_SECONDS",
             "EJECT_CARD_AFTER_SUCCESS", "MIN_FREE_SPACE_BUFFER_BYTES", "STATUS_FILE_PATH",
@@ -47,6 +47,7 @@ class TestCameraOffloader(unittest.TestCase):
         app.EJECT_CARD_AFTER_SUCCESS = True
         app.MIN_FREE_SPACE_BUFFER_BYTES = 0
         app.STATUS_FILE_PATH = self.root / "status.json"
+        app.CATALOG_DB_PATH = self.root / "catalog.sqlite3"
         app._PROGRESS_STARTED = None
         app._PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
         app.find_exiftool.cache_clear()
@@ -147,6 +148,33 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(app.find_exiftool(), "/opt/homebrew/bin/exiftool")
         self.assertEqual(app.find_exiftool(), "/opt/homebrew/bin/exiftool")
         which.assert_called_once_with("exiftool")
+
+    def test_camera_metadata_is_cached_for_unchanged_file(self):
+        path = self.root / "cached.NEF"
+        path.write_bytes(b"raw image")
+        with patch.object(app, "get_camera_model_from_exiftool", return_value="NIKON-Z-8") as read_metadata:
+            self.assertEqual(app.get_camera_model(path), "NIKON-Z-8")
+            self.assertEqual(app.get_camera_model(path), "NIKON-Z-8")
+        read_metadata.assert_called_once_with(path)
+
+    def test_catalog_invalidates_cached_metadata_when_file_changes(self):
+        path = self.root / "changed.NEF"
+        path.write_bytes(b"first")
+        with patch.object(app, "get_camera_model_from_exiftool", return_value="NIKON-Z-8") as read_metadata:
+            self.assertEqual(app.get_camera_model(path), "NIKON-Z-8")
+            path.write_bytes(b"second content")
+            self.assertEqual(app.get_camera_model(path), "NIKON-Z-8")
+        self.assertEqual(read_metadata.call_count, 2)
+
+    def test_catalog_records_file_locations(self):
+        path = self.root / "catalog-photo.jpg"
+        path.write_bytes(b"photo")
+        app.catalog_record(path, sha256=app.sha256_file(path), capture_month="2026-10",
+                           camera_model="NIKON-Z-8", media_folder="Photos")
+        row = app.catalog_row(path)
+        self.assertIsNotNone(row)
+        self.assertEqual(row[3], app.sha256_file(path))
+        self.assertEqual(row[4:7], ("2026-10", "NIKON-Z-8", "Photos"))
 
     def test_get_camera_model_from_exif(self):
         fake_image = MagicMock()
