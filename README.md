@@ -103,6 +103,12 @@ For an existing same-name file:
 3. If it matches, the file is skipped.
 4. If it differs, a conflict name such as `DSC_1234__conflict-1.NEF` is used.
 
+### ⚡ Fast repeat imports
+
+Photo Offloader keeps verified SHA-256 hashes in the Mac SQLite catalog and, when the card is writable, an optional hidden sidecar manifest at `.photo-offloader/manifest-v1.json` on the card. On later insertions, the manifest is matched by card-relative path, size, and modification time; the destination hash is reused only when its catalog fingerprint is still valid. When both hashes are available, the decision can be made without reading the large RAW file contents again.
+
+The card manifest is a cache, not a source of truth. It is written atomically, never contains the media itself, and is optional: read-only cards, unsupported filesystems, missing manifests, and stale entries fall back to content hashing. Directory enumeration still runs on insertion so newly added files are discovered. During the decision phase, the dashboard reports files checked, checks per second, and an estimated time remaining.
+
 ### 🔐 Copy verification
 
 Every copied file is verified after the copy completes.
