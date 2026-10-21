@@ -21,7 +21,7 @@ echo "==========================================="
 
 mkdir -p "$INSTALL_DIR" "$HOME/Library/LaunchAgents"
 
-for file in "$SCRIPT_NAME" "$TRIGGER_NAME" "$UI_NAME" "$MENUBAR_NAME" "photo_offloader_backup_launcher.py" "requirements.txt" "requirements-ui.txt"; do
+for file in "$SCRIPT_NAME" "$TRIGGER_NAME" "$UI_NAME" "$MENUBAR_NAME" "photo_offloader_backup_launcher.py" "VERSION" "requirements.txt" "requirements-ui.txt"; do
   if [[ ! -f "$SCRIPT_DIR/$file" ]]; then
     echo "Error: $file not found in $SCRIPT_DIR."
     exit 1
