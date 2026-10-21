@@ -14,6 +14,8 @@ INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 PAUSE_FILE = INSTALL_DIR / ".paused"
 TRIGGER_SCRIPT = INSTALL_DIR / "camera_offloader_trigger.sh"
 DASHBOARD_SCRIPT = INSTALL_DIR / "photo_offloader_ui.py"
+IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
+USB_VOLUME = Path("/Volumes/Photos")
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 
 
@@ -21,8 +23,10 @@ class PhotoOffloaderMenuBar(rumps.App):
     def __init__(self) -> None:
         super().__init__("Photo Offloader", title="📷", quit_button=None)
         self.pause_item = rumps.MenuItem(self.pause_title(), callback=self.toggle_pause)
+        self.backup_item = rumps.MenuItem("Copy to USB Drive", callback=self.copy_to_usb)
         self.menu = [
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
+            self.backup_item,
             self.pause_item,
             None,
             rumps.MenuItem("Quit Menu Bar App", callback=self.quit_app),
