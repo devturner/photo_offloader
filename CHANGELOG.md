@@ -9,7 +9,14 @@ All notable changes to Photo Offloader are documented here.
 - Uninstall now stops the separately launched Tkinter dashboard before removing application files, so its window does not remain open after uninstall.
 - Close SQLite catalog connections after each lookup, record, and refresh transaction to prevent file-descriptor exhaustion during large catalog scans.
 
+### Changed
+- Repeat card imports now reuse fingerprint-validated hashes from an optional card-side manifest and the Mac SQLite catalog, avoiding full RAW-file reads when both source and destination hashes are already known.
+- Copy-decision progress is reported separately from transfer progress, including files checked, checks per second, and an estimated time remaining.
+
 ### Added
+- Optional atomic card-side manifest at `.photo-offloader/manifest-v1.json`; it stores only relative media paths, size/mtime fingerprints, and verified SHA-256 hashes. If the card is read-only or the manifest is unavailable, imports continue using the Mac catalog and safe fallback verification.
+- Verified SHA-256 hashes are recorded for successfully copied files and existing matching destination files, making subsequent repeat imports faster.
+
 - Per-run provenance logging with application version, full Git commit, branch, tag, dirty-source state, build timestamp, Python runtime, script path, and run ID; installer persists build metadata for installed copies.
 - Native macOS menu-bar controller with a dashboard for live import speed, progress, and estimated completion time.
 - Menu-bar pause/resume control that blocks new automatic imports without interrupting an active copy; resuming re-checks already-mounted camera cards.
