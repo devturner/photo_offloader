@@ -8,9 +8,14 @@ All notable changes to Photo Offloader are documented here.
 - Native macOS menu-bar controller with a dashboard for live import speed, progress, and estimated completion time.
 - Menu-bar pause/resume control that blocks new automatic imports without interrupting an active copy; resuming re-checks already-mounted camera cards.
 - Atomic JSON progress status updates emitted during chunked file copies.
+- Windows-style rolling transfer-speed graph in the dashboard, with recent throughput samples.
+- Independent **Copy to USB Drive** actions in the menu bar and dashboard; USB sync can run without a camera card.
 - Dashboard opens at the end of installation and automatically when a camera import starts; menu-bar and dashboard logs are retained for troubleshooting.
 
 ### Changed
+- Camera imports now complete and verify the Mac SSD stage before starting a separate Mac-to-USB backup stage.
+- The camera card can be ejected after the verified local SSD stage while the USB backup continues.
+- USB backup sync copies missing files only, SHA-256 checks existing files, and reports conflicting files without overwriting them.
 - Camera import output now opens in iTerm2 by default, with `PHOTO_OFFLOADER_TERMINAL_APP` available to override the terminal application.
 - Imported media is now organized as `YYYY-MM/Camera-Model/Media-Type/filename`, using `Photos`, `Raws`, and `Movies` folders; camera identity comes from EXIF make/model when available, with `Unknown-Camera` as a fallback.
 - Video camera identity now uses embedded Make/Model metadata through optional `exiftool` support when available, so compatible MOV/MP4 files are grouped with the correct camera.

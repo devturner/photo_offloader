@@ -14,6 +14,8 @@ INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 PAUSE_FILE = INSTALL_DIR / ".paused"
 TRIGGER_SCRIPT = INSTALL_DIR / "camera_offloader_trigger.sh"
 DASHBOARD_SCRIPT = INSTALL_DIR / "photo_offloader_ui.py"
+IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
+USB_VOLUME = Path("/Volumes/Photos")
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 
 
@@ -21,12 +23,28 @@ class PhotoOffloaderMenuBar(rumps.App):
     def __init__(self) -> None:
         super().__init__("Photo Offloader", title="📷", quit_button=None)
         self.pause_item = rumps.MenuItem(self.pause_title(), callback=self.toggle_pause)
+        self.backup_item = rumps.MenuItem("Copy to USB Drive", callback=self.copy_to_usb)
         self.menu = [
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
+            self.backup_item,
             self.pause_item,
             None,
             rumps.MenuItem("Quit Menu Bar App", callback=self.quit_app),
         ]
+
+    def copy_to_usb(self, _sender: object = None) -> None:
+        if not USB_VOLUME.is_mount():
+            rumps.notification("Photo Offloader", "USB drive not found",
+                               "Mount the Photos drive to run the backup.")
+            return
+        try:
+            subprocess.Popen([str(PYTHON), str(IMPORTER_SCRIPT), "--backup-usb"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.open_dashboard()
+            rumps.notification("Photo Offloader", "USB backup started",
+                               "Missing files will be copied from the Mac archive.")
+        except OSError as exc:
+            rumps.notification("Photo Offloader", "Could not start USB backup", str(exc))
 
     @staticmethod
     def pause_title() -> str:
