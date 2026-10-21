@@ -33,7 +33,8 @@ class TestCameraOffloader(unittest.TestCase):
             "LOCAL_DEST_ROOT", "USB_DEST_ROOT", "USB_DEST_VOLUME",
             "LOG_FILE_PATH", "SESSION_LOCK_PATH", "VERIFY_WITH_SHA256",
             "USE_FILE_BIRTH_TIME", "WAIT_SECONDS",
-            "EJECT_CARD_AFTER_SUCCESS", "MIN_FREE_SPACE_BUFFER_BYTES",
+            "EJECT_CARD_AFTER_SUCCESS", "MIN_FREE_SPACE_BUFFER_BYTES", "STATUS_FILE_PATH",
+            "_PROGRESS_STARTED", "_PROGRESS",
         )}
         app.LOCAL_DEST_ROOT = self.local
         app.USB_DEST_ROOT = self.usb
@@ -45,6 +46,9 @@ class TestCameraOffloader(unittest.TestCase):
         app.WAIT_SECONDS = 0
         app.EJECT_CARD_AFTER_SUCCESS = True
         app.MIN_FREE_SPACE_BUFFER_BYTES = 0
+        app.STATUS_FILE_PATH = self.root / "status.json"
+        app._PROGRESS_STARTED = None
+        app._PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
         app.logger.handlers.clear()
 
     def tearDown(self):
@@ -299,13 +303,13 @@ class TestCameraOffloader(unittest.TestCase):
 
     def test_source_mutation_is_rejected(self):
         source = self.media()["RAW"]
-        original_copy = app.shutil.copy2
+        original_copy = app.copy_file_with_progress
 
         def mutate(src, dst):
             original_copy(src, dst)
             Path(src).write_bytes(b"RAW")  # changes size
 
-        with patch("camera_offloader_v2.shutil.copy2", side_effect=mutate):
+        with patch("camera_offloader_v2.copy_file_with_progress", side_effect=mutate):
             with self.assertRaisesRegex(IOError, "Source changed"):
                 app.copy_one_to_destination(source, self.dcim, self.local)
 
