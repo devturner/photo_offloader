@@ -175,7 +175,7 @@ Trigger activity is written to:
 ~/.camera_transfer_trigger.log
 ```
 
-Dashboard startup errors are written to `~/Library/Application Support/PhotoOffloader/dashboard.log`; menu-bar app output and errors are written to `~/Library/Application Support/PhotoOffloader/menubar.log`.
+Dashboard startup errors are written to `~/Library/Application Support/PhotoOffloader/dashboard.log`; menu-bar app output is written to `~/Library/Application Support/PhotoOffloader/menubar.log` and errors to `~/Library/Application Support/PhotoOffloader/menubar-error.log`.
 
 ### 🔔 macOS notifications
 
