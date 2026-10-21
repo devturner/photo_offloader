@@ -135,6 +135,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(app.normalize_camera_model("NIKON", "Z 8"), "NIKON-Z-8")
         self.assertEqual(app.normalize_camera_model("SONY", "ILCE-7M4"), "SONY-ILCE-7M4")
         self.assertEqual(app.normalize_camera_model("NIKON", "NIKON Z 8"), "NIKON-Z-8")
+        self.assertEqual(app.normalize_camera_model("NIKON CORPORATION", "NIKON Z 8"), "NIKON-Z-8")
         self.assertEqual(app.normalize_camera_model(None, None), "Unknown-Camera")
 
     def test_get_camera_model_from_exif(self):
@@ -153,7 +154,7 @@ class TestCameraOffloader(unittest.TestCase):
             stderr="",
         )
         path = self.root / "photo.NEF"
-        self.assertEqual(app.get_camera_model(path), "NIKON-CORPORATION-NIKON-Z-8")
+        self.assertEqual(app.get_camera_model(path), "NIKON-Z-8")
         which.assert_called_once_with("exiftool")
         self.assertEqual(run.call_args.args[0], [
             "/opt/homebrew/bin/exiftool", "-j", "-Make", "-Model", str(path)
