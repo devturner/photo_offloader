@@ -203,8 +203,9 @@ class TestCameraOffloader(unittest.TestCase):
             timeout=5,
         )
 
+    @patch.object(Path, "is_file", return_value=False)
     @patch("camera_offloader_v2.shutil.which", return_value=None)
-    def test_get_camera_model_mov_without_exiftool(self, which):
+    def test_get_camera_model_mov_without_exiftool(self, which, is_file):
         self.assertEqual(app.get_camera_model(self.root / "clip.MOV"), "Unknown-Camera")
         which.assert_called_once_with("exiftool")
 
