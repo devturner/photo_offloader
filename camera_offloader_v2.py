@@ -595,20 +595,28 @@ def get_camera_model_from_exiftool(path: Path) -> str:
 
 
 def get_camera_model(path: Path) -> str:
-    """Read camera make/model, using Pillow first and ExifTool for RAW/video."""
+    """Read camera make/model once per unchanged file and cache it in SQLite."""
+    cached = catalog_row(path)
+    if cached and cached[5]:
+        return str(cached[5])
     suffix = path.suffix.lower()
+    model = ""
     if suffix in VIDEO_EXTENSIONS or suffix in RAW_EXTENSIONS:
-        return get_camera_model_from_exiftool(path)
-    if Image is not None:
-        try:
-            with Image.open(path) as image:
-                exif = image.getexif()
-                if exif:
-                    return normalize_camera_model(exif.get(271), exif.get(272))
-        except Exception as exc:  # best effort
-            logger.debug("Could not read camera EXIF for %s: %s", path, exc)
-    metadata = get_exiftool_metadata(path, ["-Make", "-Model"])
-    return normalize_camera_model(metadata.get("Make"), metadata.get("Model"))
+        model = get_camera_model_from_exiftool(path)
+    else:
+        if Image is not None:
+            try:
+                with Image.open(path) as image:
+                    exif = image.getexif()
+                    if exif:
+                        model = normalize_camera_model(exif.get(271), exif.get(272))
+            except Exception as exc:  # best effort
+                logger.debug("Could not read camera EXIF for %s: %s", path, exc)
+        if not model or model == "Unknown-Camera":
+            metadata = get_exiftool_metadata(path, ["-Make", "-Model"])
+            model = normalize_camera_model(metadata.get("Make"), metadata.get("Model"))
+    catalog_record(path, camera_model=model or "Unknown-Camera")
+    return model or "Unknown-Camera"
 
 
 def get_month_folder(source: Path) -> str:
