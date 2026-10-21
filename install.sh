@@ -70,7 +70,7 @@ info = {
     "source_path": os.environ.get("SCRIPT_PATH", "unknown"),
 }
 target = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "build_info.json"
-target.write_text(json.dumps(info, indent=2) + "\\n", encoding="utf-8")
+target.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
 print("Build provenance: " + " ".join(f"{key}={value}" for key, value in info.items()))
 PYBUILD
 
