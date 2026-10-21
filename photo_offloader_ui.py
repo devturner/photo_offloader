@@ -165,6 +165,7 @@ class Dashboard:
         state = str(status.get("state", "idle"))
         phase = str(status.get("phase", ""))
         current_path = str(status.get("current_path", "") or "")
+        catalog_root = str(status.get("catalog_root", "") or "")
         catalog_running = state == "scanning" and phase == "catalog-update"
 
         try:
@@ -194,8 +195,10 @@ class Dashboard:
 
         def line(label: str, root: Path, count: int) -> str:
             key = str(root.resolve())
-            if catalog_running and (current_path == key or current_path.startswith(key + os.sep)):
-                return f"{label}: Updating catalog… {count:,} indexed files currently recorded"
+            if catalog_running and (catalog_root == key or current_path == key
+                                      or current_path.startswith(key + os.sep)):
+                scanned = int(status.get("catalog_scanned", 0) or 0)
+                return f"{label}: Updating • {scanned:,} files scanned • {count:,} indexed so far"
             info = refreshes.get(key)
             if info:
                 updated, scanned, refresh_state = info
@@ -292,7 +295,18 @@ class Dashboard:
         elif state == "failed":
             self.progress_var.set("Import stopped — see the Photo Offloader log")
         elif state == "scanning":
-            self.progress_var.set(str(status.get("message", "") or "Scanning source and checking destination space…"))
+            if status.get("phase") == "catalog-update":
+                root_index = int(status.get("catalog_root_index", 1) or 1)
+                roots_total = int(status.get("catalog_roots_total", 1) or 1)
+                scanned = int(status.get("catalog_scanned", 0) or 0)
+                root = str(status.get("catalog_root", "") or "")
+                location = "Internal SSD" if "CameraImports" in root and "/Volumes/" not in root else "Backup USB"
+                self.progress_var.set(
+                    f"Updating database • {location} ({root_index} of {roots_total}) • "
+                    f"{scanned:,} files scanned"
+                )
+            else:
+                self.progress_var.set(str(status.get("message", "") or "Scanning source and checking destination space…"))
         elif state == "canceled":
             self.progress_var.set("Import canceled")
         elif PAUSE_FILE.exists():
@@ -305,7 +319,10 @@ class Dashboard:
         current_file = str(status.get("current_file", "") or "")
         self.file_var.set(current_file if current_file else "No active import")
         self.source_var.set(f"Source: {status.get('source', '—') or '—'}")
-        self.message_var.set(str(status.get("message", "") or ""))
+        message = str(status.get("message", "") or "")
+        # The progress line already presents catalog scan progress; don't repeat it.
+        self.message_var.set("" if state == "scanning" and status.get("phase") == "catalog-update"
+                             else message)
         self.root.after(1000, self.refresh)
 
 
