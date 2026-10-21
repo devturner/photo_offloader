@@ -68,6 +68,43 @@ EJECT_CARD_AFTER_SUCCESS = True
 VERIFY_WITH_SHA256 = False
 USE_FILE_BIRTH_TIME = True
 MIN_FREE_SPACE_BUFFER_BYTES = 100 * 1024 * 1024
+STATUS_FILE_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "status.json"
+_PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
+_PROGRESS_STARTED: Optional[float] = None
+
+
+def update_status(**updates: object) -> None:
+    """Atomically publish importer progress for the menu-bar dashboard."""
+    global _PROGRESS_STARTED
+    if _PROGRESS_STARTED is None:
+        _PROGRESS_STARTED = time.monotonic()
+    _PROGRESS.update(updates)
+    elapsed = max(time.monotonic() - _PROGRESS_STARTED, 0.001)
+    done = int(_PROGRESS.get("bytes_done", 0))
+    total = int(_PROGRESS.get("bytes_total", 0))
+    speed = done / elapsed
+    remaining = max(total - done, 0)
+    status = dict(_PROGRESS)
+    status.update({
+        "speed_bps": speed,
+        "eta_seconds": remaining / speed if speed > 0 and total > done else 0,
+        "elapsed_seconds": elapsed,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    })
+    try:
+        STATUS_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp = STATUS_FILE_PATH.with_suffix(".tmp")
+        temp.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
+        os.replace(temp, STATUS_FILE_PATH)
+    except OSError as exc:
+        logger.debug("Could not publish dashboard status: %s", exc)
+
+
+def add_progress_bytes(amount: int, transferred: bool = False) -> None:
+    _PROGRESS["bytes_done"] = int(_PROGRESS.get("bytes_done", 0)) + amount
+    if transferred:
+        _PROGRESS["bytes_transferred"] = int(_PROGRESS.get("bytes_transferred", 0)) + amount
+    update_status()
 
 MEDIA_EXTENSIONS = {
     ".jpg": "JPG", ".jpeg": "JPG", ".heic": "JPG", ".heif": "JPG",
@@ -457,13 +494,29 @@ def build_destination_path(source: Path, dcim_folder: Path, destination_base: Pa
     )
 
 
+def copy_file_with_progress(source: Path, destination: Path) -> None:
+    """Copy in chunks so progress and ETA update even for large video files."""
+    with source.open("rb") as input_file, destination.open("wb") as output_file:
+        while True:
+            chunk = input_file.read(1024 * 1024)
+            if not chunk:
+                break
+            output_file.write(chunk)
+            add_progress_bytes(len(chunk), transferred=True)
+        output_file.flush()
+        os.fsync(output_file.fileno())
+    shutil.copystat(source, destination, follow_symlinks=True)
+
+
 def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: Path) -> DestinationResult:
     before = file_fingerprint(source)
+    update_status(current_file=source.name, current_path=str(source), message=f"Copying to {destination_base}")
     final_path = build_destination_path(source, dcim_folder, destination_base)
     final_path.parent.mkdir(parents=True, exist_ok=True)
 
     if final_path.exists():
         if final_path.is_file() and files_match(source, final_path, force_sha256=True):
+            add_progress_bytes(before.size)
             return DestinationResult(destination_base, "skipped", final_path, "already exists and matches source")
         stem, suffix = final_path.stem, final_path.suffix
         counter = 1
@@ -480,7 +533,7 @@ def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: P
         fd, temp_name = tempfile.mkstemp(prefix=".photo-copy-", suffix=".tmp", dir=final_path.parent)
         os.close(fd)
         temp_path = Path(temp_name)
-        shutil.copy2(source, temp_path)
+        copy_file_with_progress(source, temp_path)
         after_copy = file_fingerprint(source)
         if after_copy != before:
             raise IOError(f"Source changed during copy: {source}")
@@ -488,6 +541,7 @@ def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: P
             raise IOError(f"Verification failed for temporary copy: {source}")
         if not install_without_overwrite(temp_path, final_path):
             if files_match(source, final_path, force_sha256=True):
+                add_progress_bytes(before.size)
                 return DestinationResult(destination_base, "skipped", final_path,
                                          "another process created a matching file")
             raise FileExistsError(f"Destination appeared during copy and does not match source: {final_path}")
@@ -588,8 +642,10 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
     if not files:
         return
     logger.info("%s: processing %d file(s)", label, len(files))
+    update_status(category=label, message=f"Processing {len(files)} {label} file(s)")
     with alive_bar(len(files), title=label, bar="filling", monitor=True, force_tty=False) as bar:
         for source in files:
+            update_status(current_file=source.name, current_path=str(source), category=label)
             results: List[DestinationResult] = []
             for destination in destinations:
                 try:
@@ -670,6 +726,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     VERIFY_WITH_SHA256 = args.sha256
     configure_logging(args.verbose)
     logger.info("--- Starting new photo offloader session ---")
+    global _PROGRESS_STARTED
+    _PROGRESS_STARTED = time.monotonic()
+    _PROGRESS.update({"state": "scanning", "bytes_done": 0, "bytes_total": 0,
+                      "bytes_transferred": 0, "current_file": "", "source": "",
+                      "message": "Looking for camera media"})
+    update_status()
 
     try:
         with import_session_lock():
@@ -680,6 +742,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 dcim_folder = find_card_dcim()
             card_volume = dcim_folder.parent.resolve()
             logger.info("Source card volume: %s", card_volume)
+            update_status(source=str(card_volume), state="scanning", message="Scanning camera card")
             logger.info("Scanning: %s", dcim_folder)
             time.sleep(1)
             files = scan_with_retry(dcim_folder)
@@ -693,6 +756,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             snapshot = snapshot_destinations(args.no_usb)
             validate_destinations(snapshot.destinations, stats.source_bytes)
             logger.info("Import destinations: %s", ", ".join(map(str, snapshot.destinations)))
+            _PROGRESS.update({"bytes_total": stats.source_bytes * len(snapshot.destinations),
+                              "bytes_done": 0, "state": "copying", "message": "Starting copy"})
+            update_status()
             if snapshot.usb_expected:
                 logger.info("USB destination is mounted and will be used.")
             else:
@@ -715,6 +781,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 eject_success = eject_volume(card_volume)
 
             print_summary(dcim_folder, snapshot.destinations, stats, eject_attempted, eject_success)
+            update_status(state="complete" if stats.failed == 0 else "failed",
+                          message="Import complete" if stats.failed == 0 else f"Import failed: {stats.failed} failure(s)",
+                          current_file="", current_path="")
             if stats.failed:
                 logger.error("Import completed with %d failure(s). Card was not automatically ejected.", stats.failed)
                 notify("Photo Import Incomplete", f"{stats.failed} import failure(s). Card was not automatically ejected.")
@@ -728,10 +797,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             notify("Photo Import Complete", f"{total_found} media files processed successfully.")
             return 0
     except KeyboardInterrupt:
+        update_status(state="canceled", message="Import canceled", current_file="")
         logger.warning("Process canceled by user.")
         notify("Photo Import Canceled", "The import was canceled.")
         return 130
     except Exception as exc:
+        update_status(state="failed", message=str(exc), current_file="")
         logger.exception("Fatal error: %s", exc)
         notify("Photo Import Stopped", str(exc))
         return 1
