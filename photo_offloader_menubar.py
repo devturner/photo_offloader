@@ -14,7 +14,7 @@ INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 PAUSE_FILE = INSTALL_DIR / ".paused"
 TRIGGER_SCRIPT = INSTALL_DIR / "camera_offloader_trigger.sh"
 DASHBOARD_SCRIPT = INSTALL_DIR / "photo_offloader_ui.py"
-IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
+BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
 USB_VOLUME = Path("/Volumes/Photos")
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 
@@ -38,7 +38,7 @@ class PhotoOffloaderMenuBar(rumps.App):
                                "Mount the Photos drive to run the backup.")
             return
         try:
-            subprocess.Popen([str(PYTHON), str(IMPORTER_SCRIPT), "--backup-usb"],
+            subprocess.Popen([str(PYTHON), str(BACKUP_LAUNCHER_SCRIPT)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.open_dashboard()
             rumps.notification("Photo Offloader", "USB backup started",
