@@ -4,6 +4,10 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- Uninstall now stops the separately launched Tkinter dashboard before removing application files, so its window does not remain open after uninstall.
+- Close SQLite catalog connections after each lookup, record, and refresh transaction to prevent file-descriptor exhaustion during large catalog scans.
+
 ### Added
 - Per-run provenance logging with application version, full Git commit, branch, tag, dirty-source state, build timestamp, Python runtime, script path, and run ID; installer persists build metadata for installed copies.
 - Native macOS menu-bar controller with a dashboard for live import speed, progress, and estimated completion time.
@@ -18,6 +22,8 @@ All notable changes to Photo Offloader are documented here.
 - Batch ExifTool reads for uncached files during catalog refresh, with the existing per-file/Pillow fallback retained for missing or failed batch metadata.
 - Added `benchmark_catalog.py` to compare cold-build and repeat-refresh times using a temporary catalog without modifying production database, log, or status files.
 - Stabilized dashboard catalog progress across roots and media folders: the progress bar is indeterminate during catalog scans, the overall file count no longer resets at drive boundaries, and metadata-discovery/batch-reading stages are shown explicitly.
+- Fixed **Quit Menu Bar App** so it unloads the launchd agent to prevent automatic relaunch and closes dashboard windows started by this installation. Active photo transfers and catalog updates are intentionally left running.
+- Fixed **Quit Menu Bar App** so it unloads the launchd agent to prevent automatic relaunch and closes dashboard windows started by this installation. Active photo transfers and catalog updates are intentionally left running.
 - Clearer catalog progress text identifies the active drive and per-drive scan count, and removes the duplicate progress message.
 - One-time migration from the legacy catalog path; the database now lives outside the uninstallable application directory and survives upgrades/uninstall.
 - Cache reuse for unchanged media to avoid repeatedly invoking ExifTool/Pillow metadata decoding and hashing unchanged local/USB file pairs.

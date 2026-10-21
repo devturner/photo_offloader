@@ -225,11 +225,22 @@ def catalog_connection() -> sqlite3.Connection:
     return connection
 
 
+@contextmanager
+def catalog_db() -> Iterator[sqlite3.Connection]:
+    """Use a catalog connection for one transaction and always close its file handles."""
+    connection = catalog_connection()
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
 def catalog_row(path: Path, fingerprint: Optional[FileFingerprint] = None) -> Optional[tuple]:
     """Return cached catalog metadata only when the filesystem fingerprint still matches."""
     try:
         fingerprint = fingerprint or file_fingerprint(path)
-        with catalog_connection() as db:
+        with catalog_db() as db:
             row = db.execute(
                 "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
                 "FROM file_locations WHERE path = ?", (str(path.resolve()),)
@@ -261,7 +272,7 @@ def catalog_record(path: Path, *, sha256: Optional[str] = None,
             # Camera-card paths are still catalogued by their absolute location.
             root = str(resolved.anchor)
             relative = str(resolved).lstrip("/")
-        with catalog_connection() as db:
+        with catalog_db() as db:
             old = db.execute(
                 "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
                 "FROM file_locations WHERE path = ?", (str(resolved),)
@@ -1074,7 +1085,7 @@ def update_file_catalog() -> Dict[str, int]:
         # Never reconcile an unmounted USB volume as empty; only scanned roots
         # have stale path records removed.
         try:
-            with catalog_connection() as db:
+            with catalog_db() as db:
                 db.execute("CREATE TEMP TABLE IF NOT EXISTS catalog_seen_paths (path TEXT PRIMARY KEY)")
                 db.execute("DELETE FROM catalog_seen_paths")
                 db.executemany("INSERT OR IGNORE INTO catalog_seen_paths(path) VALUES (?)",
@@ -1086,7 +1097,7 @@ def update_file_catalog() -> Dict[str, int]:
             logger.warning("Could not reconcile catalog entries under %s: %s", root, exc)
 
         try:
-            with catalog_connection() as db:
+            with catalog_db() as db:
                 db.execute(
                     """INSERT INTO catalog_refreshes(root, last_updated, files_scanned, status)
                        VALUES (?, ?, ?, 'complete')

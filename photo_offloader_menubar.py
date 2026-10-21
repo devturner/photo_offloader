@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
+import sys
 from pathlib import Path
 
 try:
@@ -98,6 +101,36 @@ class PhotoOffloaderMenuBar(rumps.App):
                                "Already-running copies will continue safely.")
 
     def quit_app(self, _sender: object = None) -> None:
+        """Stop the dashboard and unload the KeepAlive menu-bar agent before exiting."""
+        # launchd has KeepAlive=true for login startup. Simply quitting the process
+        # makes launchd immediately restart it, so unload the agent first.
+        try:
+            subprocess.run(
+                ["/bin/launchctl", "bootout", f"gui/{os.getuid()}/{UI_LABEL}"],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            rumps.notification("Photo Offloader", "Could not disable menu-bar auto-restart", str(exc))
+            return
+
+        # The dashboard is a separate Tk process. Close dashboard instances started
+        # from this installation, but deliberately leave any active importer/backup
+        # running so quitting the UI cannot interrupt a photo transfer or catalog write.
+        try:
+            result = subprocess.run(
+                ["/usr/bin/pgrep", "-f", str(DASHBOARD_SCRIPT)],
+                check=False, capture_output=True, text=True, timeout=3,
+            )
+            for line in result.stdout.splitlines():
+                try:
+                    pid = int(line)
+                    if pid != os.getpid() and pid != os.getppid():
+                        os.kill(pid, signal.SIGTERM)
+                except (ValueError, ProcessLookupError, PermissionError):
+                    continue
+        except (OSError, subprocess.TimeoutExpired):
+            pass
         rumps.quit_application()
 
 

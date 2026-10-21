@@ -173,6 +173,18 @@ class TestCameraOffloader(unittest.TestCase):
             self.assertEqual(app.get_camera_model(path), "NIKON-Z-8")
         self.assertEqual(read_metadata.call_count, 2)
 
+    @patch("camera_offloader_v2.catalog_connection")
+    def test_catalog_db_closes_connection_after_transaction(self, connect):
+        connection = MagicMock()
+        connect.return_value = connection
+
+        with app.catalog_db() as db:
+            self.assertIs(db, connection)
+
+        connection.__enter__.assert_called_once_with()
+        connection.__exit__.assert_called_once()
+        connection.close.assert_called_once_with()
+
     def test_catalog_migrates_from_legacy_install_directory(self):
         app.LEGACY_CATALOG_DB_PATH.parent.mkdir(parents=True)
         with sqlite3.connect(app.LEGACY_CATALOG_DB_PATH) as legacy:
