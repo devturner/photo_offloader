@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Camera Card Offloader v2.3.
+"""Camera Card Offloader v2.4.
 
 Conservative macOS media ingestion:
     discover -> lock -> snapshot -> scan -> capacity check -> copy -> verify
