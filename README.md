@@ -8,6 +8,12 @@ The importer follows:
 
 Files are never deleted from the camera card and existing destination files are never overwritten. A local SQLite catalog tracks known file locations, filesystem fingerprints, cached camera/date metadata, and verified hashes. It avoids repeatedly decoding unchanged RAW/video metadata and re-hashing unchanged local/USB file pairs. The filesystem is still checked for newly added or changed files; the catalog is an optimization, not the source of truth.
 
+## Build provenance in logs
+
+Every importer session writes a `Run provenance` entry to `~/.camera_transfer.log` with a unique run ID, app version, full Git commit, branch, tag, dirty-checkout flag, build timestamp, Python version/executable, script path, and command-line arguments. The installer writes `build_info.json` next to the installed scripts so logs still identify the source revision after the code has been copied out of the repository. Direct source-checkout runs fall back to Git metadata. The volume trigger logs version/commit/branch to `~/.camera_transfer_trigger.log`, and the menu-bar app and dashboard log startup provenance to their respective stdout logs.
+
+The installed `build_info.json` records the revision and checkout state at install time. Re-run `./install.sh` after updating the checkout to refresh this metadata; `git_dirty=true` means the installation source contained uncommitted changes.
+
 ## ✨ Features
 
 ### Camera card detection
