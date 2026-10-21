@@ -718,10 +718,12 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
             bar()
 
 
-def copy_local_archive_to_usb() -> ImportStats:
+def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None) -> ImportStats:
     """Copy only missing local archive files to USB; never overwrite mismatches."""
     if not usb_is_mounted():
         raise RuntimeError(f"USB backup volume is not mounted at {USB_DEST_VOLUME}")
+    if expected_identity is None:
+        expected_identity = get_volume_identity(USB_DEST_VOLUME)
     source_root = LOCAL_DEST_ROOT
     destination_root = USB_DEST_ROOT
     if not source_root.is_dir():
@@ -771,6 +773,14 @@ def copy_local_archive_to_usb() -> ImportStats:
     update_status()
     for source, destination, before in pending:
         temp_path: Optional[Path] = None
+        if not usb_is_mounted() or not volume_identity_matches(
+            expected_identity, get_volume_identity(USB_DEST_VOLUME)
+        ):
+            stats.failed += 1
+            message = "USB backup volume was disconnected or replaced during the backup."
+            stats.errors.append((str(USB_DEST_VOLUME), message))
+            logger.error(message)
+            break
         update_status(current_file=source.name, current_path=str(source),
                       message=f"USB backup: {source.name}")
         try:
@@ -806,6 +816,15 @@ def copy_local_archive_to_usb() -> ImportStats:
                     temp_path.unlink(missing_ok=True)
                 except OSError:
                     logger.warning("Could not remove temporary backup file %s", temp_path)
+
+    if not usb_is_mounted() or not volume_identity_matches(
+        expected_identity, get_volume_identity(USB_DEST_VOLUME)
+    ):
+        stats.failed += 1
+        message = "USB backup volume was disconnected or replaced during the backup."
+        if not any(existing_message == message for _, existing_message in stats.errors):
+            stats.errors.append((str(USB_DEST_VOLUME), message))
+        logger.error(message)
 
     update_status(state="complete" if stats.failed == 0 else "failed",
                   message=f"USB backup complete: {stats.destination_copies} copied, {stats.destination_skips} already matched"
@@ -881,7 +900,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         with import_session_lock():
             if args.backup_usb:
                 logger.info("Starting independent local-to-USB backup.")
-                backup_stats = copy_local_archive_to_usb()
+                backup_stats = copy_local_archive_to_usb(usb_identity)
                 print_summary(LOCAL_DEST_ROOT, [LOCAL_DEST_ROOT, USB_DEST_ROOT], backup_stats, False, False)
                 if backup_stats.failed:
                     notify("USB Backup Incomplete", f"{backup_stats.failed} backup failure(s).")
