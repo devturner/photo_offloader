@@ -773,11 +773,9 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
     update_status()
     for source, destination, before in pending:
         temp_path: Optional[Path] = None
-        if not usb_is_mounted() or not volume_identity_matches(
-            expected_identity, get_volume_identity(USB_DEST_VOLUME)
-        ):
+        if not usb_is_mounted():
             stats.failed += 1
-            message = "USB backup volume was disconnected or replaced during the backup."
+            message = "USB backup volume was disconnected during the backup."
             stats.errors.append((str(USB_DEST_VOLUME), message))
             logger.error(message)
             break
