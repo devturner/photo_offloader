@@ -174,27 +174,35 @@ class FileFingerprint:
     inode: int
 
 
+_CATALOG_INITIALIZED_PATH: Optional[str] = None
+
+
 def catalog_connection() -> sqlite3.Connection:
-    """Open the persistent media/location catalog and ensure its schema exists."""
+    """Open the persistent media/location catalog, initializing its schema once per path."""
+    global _CATALOG_INITIALIZED_PATH
     CATALOG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(CATALOG_DB_PATH, timeout=10)
-    connection.execute("""
-        CREATE TABLE IF NOT EXISTS file_locations (
-            path TEXT PRIMARY KEY,
-            root TEXT NOT NULL,
-            relative_path TEXT NOT NULL,
-            size INTEGER NOT NULL,
-            mtime_ns INTEGER NOT NULL,
-            inode INTEGER NOT NULL,
-            sha256 TEXT,
-            capture_month TEXT,
-            camera_model TEXT,
-            media_folder TEXT,
-            indexed_at REAL NOT NULL
-        )
-    """)
-    connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_root ON file_locations(root)")
-    connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_relative ON file_locations(root, relative_path)")
+    catalog_path = str(CATALOG_DB_PATH.resolve())
+    if _CATALOG_INITIALIZED_PATH != catalog_path:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS file_locations (
+                path TEXT PRIMARY KEY,
+                root TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                inode INTEGER NOT NULL,
+                sha256 TEXT,
+                capture_month TEXT,
+                camera_model TEXT,
+                media_folder TEXT,
+                indexed_at REAL NOT NULL
+            )
+        """)
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_root ON file_locations(root)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_relative ON file_locations(root, relative_path)")
+        connection.commit()
+        _CATALOG_INITIALIZED_PATH = catalog_path
     return connection
 
 
@@ -222,8 +230,18 @@ def catalog_record(path: Path, *, sha256: Optional[str] = None,
     try:
         fingerprint = file_fingerprint(path)
         resolved = path.resolve()
-        root = str(resolved.anchor)
-        relative = str(resolved).lstrip("/")
+        known_root = next(
+            (candidate.resolve() for candidate in (LOCAL_DEST_ROOT, USB_DEST_ROOT)
+             if resolved == candidate.resolve() or candidate.resolve() in resolved.parents),
+            None,
+        )
+        if known_root is not None:
+            root = str(known_root)
+            relative = str(resolved.relative_to(known_root))
+        else:
+            # Camera-card paths are still catalogued by their absolute location.
+            root = str(resolved.anchor)
+            relative = str(resolved).lstrip("/")
         with catalog_connection() as db:
             old = db.execute(
                 "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
