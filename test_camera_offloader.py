@@ -33,7 +33,8 @@ class TestCameraOffloader(unittest.TestCase):
             "LOCAL_DEST_ROOT", "USB_DEST_ROOT", "USB_DEST_VOLUME",
             "LOG_FILE_PATH", "SESSION_LOCK_PATH", "VERIFY_WITH_SHA256",
             "USE_FILE_BIRTH_TIME", "WAIT_SECONDS",
-            "EJECT_CARD_AFTER_SUCCESS", "MIN_FREE_SPACE_BUFFER_BYTES",
+            "EJECT_CARD_AFTER_SUCCESS", "MIN_FREE_SPACE_BUFFER_BYTES", "STATUS_FILE_PATH",
+            "_PROGRESS_STARTED", "_PROGRESS",
         )}
         app.LOCAL_DEST_ROOT = self.local
         app.USB_DEST_ROOT = self.usb
@@ -45,6 +46,9 @@ class TestCameraOffloader(unittest.TestCase):
         app.WAIT_SECONDS = 0
         app.EJECT_CARD_AFTER_SUCCESS = True
         app.MIN_FREE_SPACE_BUFFER_BYTES = 0
+        app.STATUS_FILE_PATH = self.root / "status.json"
+        app._PROGRESS_STARTED = None
+        app._PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
         app.logger.handlers.clear()
 
     def tearDown(self):
