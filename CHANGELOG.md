@@ -8,6 +8,7 @@ All notable changes to Photo Offloader are documented here.
 - Native macOS menu-bar controller with a dashboard for live import speed, progress, and estimated completion time.
 - Menu-bar pause/resume control that blocks new automatic imports without interrupting an active copy; resuming re-checks already-mounted camera cards.
 - Atomic JSON progress status updates emitted during chunked file copies.
+- Dashboard opens at the end of installation and automatically when a camera import starts; menu-bar and dashboard logs are retained for troubleshooting.
 
 ### Changed
 - Camera import output now opens in iTerm2 by default, with `PHOTO_OFFLOADER_TERMINAL_APP` available to override the terminal application.
@@ -17,6 +18,7 @@ All notable changes to Photo Offloader are documented here.
 ### Fixed
 - Nikon and other supported camera RAW files now use ExifTool for capture date and camera make/model when Pillow cannot decode the RAW format.
 - Video metadata detection now checks standard Homebrew/MacPorts install paths when launchd's restricted PATH cannot locate `exiftool`.
+- ExifTool executable discovery is cached for the importer session to avoid repeating the same lookup/debug message for every RAW file.
 - Imported media no longer inherits executable or owner-only source mode bits such as 0700; new destination files are normalized to user read/write (0600).
 - Trigger regression test now matches the shell-escaped path format produced by bash `%q`.
 - CI regression test now matches the list-form argument vector used by `subprocess.run` for `exiftool`.
