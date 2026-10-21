@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 import tkinter as tk
 from collections import deque
 from pathlib import Path
@@ -116,6 +117,8 @@ class Dashboard:
 
         ttk.Label(outer, text="TRANSFER SPEED", style="Subtitle.TLabel").pack(anchor="w", pady=(14, 4))
         self.speed_history = deque([0.0] * 60, maxlen=60)
+        self.last_sample_time = time.monotonic()
+        self.last_transferred_bytes = 0
         self.graph = tk.Canvas(outer, height=110, bg="#1b2638", highlightthickness=0)
         self.graph.pack(fill="x", expand=False)
         actions = ttk.Frame(outer)
@@ -172,12 +175,23 @@ class Dashboard:
         state = str(status.get("state", "idle"))
         done = int(status.get("bytes_done", 0) or 0)
         total = int(status.get("bytes_total", 0) or 0)
-        speed = float(status.get("transfer_speed_bps", 0) or 0)
+        average_speed = float(status.get("transfer_speed_bps", 0) or 0)
+        transferred = int(status.get("bytes_transferred", 0) or 0)
+        now = time.monotonic()
+        sample_elapsed = max(now - self.last_sample_time, 0.001)
+        if transferred >= self.last_transferred_bytes:
+            speed = (transferred - self.last_transferred_bytes) / sample_elapsed
+        else:
+            # A new copy stage resets its byte counter; don't draw a false spike.
+            speed = 0.0
+        self.last_sample_time = now
+        self.last_transferred_bytes = transferred
         eta = float(status.get("eta_seconds", 0) or 0)
         self.speed_history.append(max(speed, 0.0))
         self.draw_speed_graph()
 
-        self.speed_var.set(f"{format_bytes(speed)}/s" if speed > 0 else "—")
+        display_speed = speed if speed > 0 else average_speed if state == "copying" else 0
+        self.speed_var.set(f"{format_bytes(display_speed)}/s" if display_speed > 0 else "—")
         if state == "copying" and total > done and speed > 0:
             self.eta_var.set(format_duration(eta))
         elif state == "complete":
