@@ -30,6 +30,8 @@ Use **Pause Automatic Imports** before inserting a card when you do not want aut
 
 The menu-bar controller uses `rumps`; the dashboard uses Python's `tkinter` UI. The menu-bar dependency is declared in `requirements-ui.txt` and installed by `install.sh`.
 
+Some Homebrew Python installations package Tk support separately. If the installer reports that `tkinter` is missing, install the matching formula, for example `brew install python-tk@3.14` for Python 3.14, then rerun `./install.sh`.
+
 ### iTerm2 output
 
 The automatic camera trigger opens the importer in **iTerm2** by default. To use another terminal application, set `PHOTO_OFFLOADER_TERMINAL_APP` in the LaunchAgent environment before installing/loading the trigger.
