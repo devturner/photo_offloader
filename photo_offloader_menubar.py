@@ -19,7 +19,7 @@ PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 
 class PhotoOffloaderMenuBar(rumps.App):
     def __init__(self) -> None:
-        super().__init__("📷", title="Photo Offloader", quit_button=None)
+        super().__init__("Photo Offloader", title="📷", quit_button=None)
         self.pause_item = rumps.MenuItem(self.pause_title(), callback=self.toggle_pause)
         self.menu = [
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
