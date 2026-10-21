@@ -901,7 +901,6 @@ def copy_one_to_destination(
             if source_hash == destination_hash:
                 add_progress_bytes(before.size)
                 update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
-                save_card_manifest(dcim_folder, manifest)
                 update_status(state="copying", phase="copy", message="Existing file verified; continuing")
                 return DestinationResult(destination_base, "skipped", final_path,
                                          "already exists and matches cached/verified hash")
@@ -953,8 +952,11 @@ def copy_one_to_destination(
             catalog_record(source, sha256=source_hash)
             catalog_record(final_path, sha256=destination_hash)
             update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
-            save_card_manifest(dcim_folder, manifest)
         else:
+            try:
+                final_path.unlink(missing_ok=True)
+            except OSError:
+                logger.exception("Could not remove hash-mismatched destination %s", final_path)
             raise IOError(f"SHA-256 verification failed after copy: {source}")
         update_status(state="copying", phase="copy", message="Copy verified")
         return DestinationResult(destination_base, "copied", final_path, "copied and verified")
