@@ -5,6 +5,7 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Uninstall now stops the separately launched Tkinter dashboard before removing application files, so its window does not remain open after uninstall.
 - Close SQLite catalog connections after each lookup, record, and refresh transaction to prevent file-descriptor exhaustion during large catalog scans.
 
 ### Added
