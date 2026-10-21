@@ -32,6 +32,20 @@ class PhotoOffloaderMenuBar(rumps.App):
             rumps.MenuItem("Quit Menu Bar App", callback=self.quit_app),
         ]
 
+    def copy_to_usb(self, _sender: object = None) -> None:
+        if not USB_VOLUME.is_mount():
+            rumps.notification("Photo Offloader", "USB drive not found",
+                               "Mount the Photos drive to run the backup.")
+            return
+        try:
+            subprocess.Popen([str(PYTHON), str(IMPORTER_SCRIPT), "--backup-usb"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.open_dashboard()
+            rumps.notification("Photo Offloader", "USB backup started",
+                               "Missing files will be copied from the Mac archive.")
+        except OSError as exc:
+            rumps.notification("Photo Offloader", "Could not start USB backup", str(exc))
+
     @staticmethod
     def pause_title() -> str:
         return "Resume Automatic Imports" if PAUSE_FILE.exists() else "Pause Automatic Imports"
