@@ -16,6 +16,7 @@ INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 STATUS_FILE = Path(os.environ.get("PHOTO_OFFLOADER_STATUS_FILE", str(INSTALL_DIR / "status.json")))
 PAUSE_FILE = Path(os.environ.get("PHOTO_OFFLOADER_PAUSE_FILE", str(INSTALL_DIR / ".paused")))
 BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
+IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 USB_VOLUME = Path("/Volumes/Photos")
 
@@ -124,8 +125,11 @@ class Dashboard:
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=(12, 0))
         ttk.Button(actions, text="Copy to USB Drive", command=self.start_usb_backup).pack(side="left")
-        ttk.Label(actions, text="Copies missing files from the Mac archive",
-                  style="Subtitle.TLabel").pack(side="left", padx=(10, 0))
+        ttk.Button(actions, text="Update File Catalog", command=self.start_catalog_update).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Label(outer, text="Catalog update scans the Mac archive and mounted USB drive; it reuses valid metadata and does not hash every file.",
+                  style="Subtitle.TLabel", wraplength=550).pack(anchor="w", pady=(6, 0))
 
         self.root.after(500, self.refresh)
         self.root.mainloop()
@@ -141,6 +145,15 @@ class Dashboard:
             self.message_var.set("Started USB backup. Existing matching files will be skipped.")
         except OSError as exc:
             self.message_var.set(f"Could not start USB backup: {exc}")
+
+    def start_catalog_update(self) -> None:
+        try:
+            subprocess.Popen([str(PYTHON), str(IMPORTER_SCRIPT), "--update-catalog"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            self.message_var.set("Started catalog update. Progress will appear here.")
+        except OSError as exc:
+            self.message_var.set(f"Could not update catalog: {exc}")
 
     def draw_speed_graph(self) -> None:
         self.graph.delete("all")
