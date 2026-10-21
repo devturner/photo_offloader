@@ -371,22 +371,81 @@ def _parse_exif_datetime_value(value: str) -> Optional[datetime]:
     return None
 
 
-def get_exif_datetime(path: Path) -> Optional[datetime]:
-    if Image is None or path.suffix.lower() in {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}:
-        return None
+RAW_EXTENSIONS = {
+    ".3fr", ".arw", ".cr2", ".cr3", ".dcr", ".dng", ".erf", ".fff",
+    ".gpr", ".iiq", ".k25", ".kdc", ".mef", ".mos", ".mrw", ".nef",
+    ".nrw", ".orf", ".pef", ".raf", ".raw", ".rw2", ".rwl", ".sr2",
+    ".srf", ".srw", ".x3f",
+}
+VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}
+
+
+def get_exiftool_metadata(path: Path, tags: List[str]) -> dict:
+    """Read selected metadata with ExifTool for formats Pillow cannot decode."""
+    exiftool = find_exiftool()
+    if not exiftool:
+        logger.debug("exiftool is unavailable; metadata fallback skipped for %s", path)
+        return {}
     try:
-        with Image.open(path) as image:
-            exif = image.getexif()
-            for tag in (36867, 36868, 306):
-                value = exif.get(tag) if exif else None
-                if isinstance(value, bytes):
-                    value = value.decode("utf-8", errors="ignore")
-                if isinstance(value, str):
-                    parsed = _parse_exif_datetime_value(value)
-                    if parsed:
-                        return parsed
-    except Exception as exc:  # best effort
-        logger.debug("Could not read EXIF date for %s: %s", path, exc)
+        result = subprocess.run(
+            [exiftool, "-j", *tags, str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            logger.debug("ExifTool returned no metadata for %s: %s", path, result.stderr.strip())
+            return {}
+        metadata = json.loads(result.stdout)
+        return metadata[0] if metadata and isinstance(metadata[0], dict) else {}
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+        logger.debug("Could not read ExifTool metadata for %s: %s", path, exc)
+        return {}
+
+
+def get_exif_datetime(path: Path) -> Optional[datetime]:
+    if path.suffix.lower() in VIDEO_EXTENSIONS:
+        return None
+
+    # Pillow often cannot identify proprietary camera RAW formats such as Nikon NEF.
+    if path.suffix.lower() in RAW_EXTENSIONS:
+        metadata = get_exiftool_metadata(
+            path, ["-DateTimeOriginal", "-CreateDate", "-DateTimeDigitized", "-ModifyDate"]
+        )
+        for tag in ("DateTimeOriginal", "CreateDate", "DateTimeDigitized", "ModifyDate"):
+            value = metadata.get(tag)
+            if isinstance(value, str):
+                parsed = _parse_exif_datetime_value(value)
+                if parsed:
+                    return parsed
+        return None
+
+    if Image is not None:
+        try:
+            with Image.open(path) as image:
+                exif = image.getexif()
+                for tag in (36867, 36868, 306):
+                    value = exif.get(tag) if exif else None
+                    if isinstance(value, bytes):
+                        value = value.decode("utf-8", errors="ignore")
+                    if isinstance(value, str):
+                        parsed = _parse_exif_datetime_value(value)
+                        if parsed:
+                            return parsed
+        except Exception as exc:  # best effort
+            logger.debug("Could not read EXIF date for %s: %s", path, exc)
+
+    # Fallback is useful for formats that Pillow cannot open despite having EXIF.
+    metadata = get_exiftool_metadata(
+        path, ["-DateTimeOriginal", "-CreateDate", "-DateTimeDigitized", "-ModifyDate"]
+    )
+    for tag in ("DateTimeOriginal", "CreateDate", "DateTimeDigitized", "ModifyDate"):
+        value = metadata.get(tag)
+        if isinstance(value, str):
+            parsed = _parse_exif_datetime_value(value)
+            if parsed:
+                return parsed
     return None
 
 
@@ -429,47 +488,28 @@ def find_exiftool() -> Optional[str]:
 
 
 def get_camera_model_from_exiftool(path: Path) -> str:
-    """Read camera make/model from video metadata when exiftool is available."""
-    if path.suffix.lower() not in {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}:
+    """Read camera make/model from video or camera RAW metadata."""
+    if path.suffix.lower() not in VIDEO_EXTENSIONS and path.suffix.lower() not in RAW_EXTENSIONS:
         return "Unknown-Camera"
-    exiftool = find_exiftool()
-    if not exiftool:
-        logger.debug("exiftool is unavailable; video camera identity will be Unknown-Camera for %s", path)
-        return "Unknown-Camera"
-    try:
-        result = subprocess.run(
-            [exiftool, "-j", "-Make", "-Model", str(path)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return "Unknown-Camera"
-        metadata = json.loads(result.stdout)
-        if not metadata:
-            return "Unknown-Camera"
-        item = metadata[0]
-        return normalize_camera_model(item.get("Make"), item.get("Model"))
-    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
-        logger.debug("Could not read video camera metadata for %s: %s", path, exc)
-        return "Unknown-Camera"
+    metadata = get_exiftool_metadata(path, ["-Make", "-Model"])
+    return normalize_camera_model(metadata.get("Make"), metadata.get("Model"))
 
 
 def get_camera_model(path: Path) -> str:
-    """Read camera make/model, using EXIF or video metadata when available."""
-    if path.suffix.lower() in {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}:
+    """Read camera make/model, using Pillow first and ExifTool for RAW/video."""
+    suffix = path.suffix.lower()
+    if suffix in VIDEO_EXTENSIONS or suffix in RAW_EXTENSIONS:
         return get_camera_model_from_exiftool(path)
-    if Image is None:
-        return "Unknown-Camera"
-    try:
-        with Image.open(path) as image:
-            exif = image.getexif()
-            if exif:
-                return normalize_camera_model(exif.get(271), exif.get(272))
-    except Exception as exc:  # best effort
-        logger.debug("Could not read camera EXIF for %s: %s", path, exc)
-    return "Unknown-Camera"
+    if Image is not None:
+        try:
+            with Image.open(path) as image:
+                exif = image.getexif()
+                if exif:
+                    return normalize_camera_model(exif.get(271), exif.get(272))
+        except Exception as exc:  # best effort
+            logger.debug("Could not read camera EXIF for %s: %s", path, exc)
+    metadata = get_exiftool_metadata(path, ["-Make", "-Model"])
+    return normalize_camera_model(metadata.get("Make"), metadata.get("Model"))
 
 
 def get_month_folder(source: Path) -> str:
