@@ -900,7 +900,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         with import_session_lock():
             if args.backup_usb:
                 logger.info("Starting independent local-to-USB backup.")
-                backup_stats = copy_local_archive_to_usb(usb_identity)
+                backup_stats = copy_local_archive_to_usb()
                 print_summary(LOCAL_DEST_ROOT, [LOCAL_DEST_ROOT, USB_DEST_ROOT], backup_stats, False, False)
                 if backup_stats.failed:
                     notify("USB Backup Incomplete", f"{backup_stats.failed} backup failure(s).")
