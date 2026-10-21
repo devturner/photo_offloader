@@ -719,6 +719,102 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
             bar()
 
 
+def copy_local_archive_to_usb() -> ImportStats:
+    """Copy only missing local archive files to USB; never overwrite mismatches."""
+    if not usb_is_mounted():
+        raise RuntimeError(f"USB backup volume is not mounted at {USB_DEST_VOLUME}")
+    source_root = LOCAL_DEST_ROOT
+    destination_root = USB_DEST_ROOT
+    if not source_root.is_dir():
+        raise RuntimeError(f"Local archive does not exist: {source_root}")
+
+    files: List[Path] = []
+    for path in source_root.rglob("*"):
+        try:
+            if path.is_file() and not path.is_symlink() and not any(part.startswith(".") for part in path.relative_to(source_root).parts):
+                files.append(path)
+        except OSError as exc:
+            logger.warning("Could not inspect local archive file %s: %s", path, exc)
+    files.sort(key=lambda path: str(path).lower())
+    stats = ImportStats(found=len(files))
+    pending: List[Tuple[Path, Path, FileFingerprint]] = []
+
+    update_status(state="scanning", phase="USB backup", source=str(source_root),
+                  message="Comparing local archive with USB backup", current_file="")
+    for source in files:
+        destination = destination_root / source.relative_to(source_root)
+        try:
+            fingerprint = file_fingerprint(source)
+            if destination.exists():
+                if destination.is_file() and files_match(source, destination, force_sha256=True):
+                    stats.destination_skips += 1
+                    stats.verified_copies += 1
+                else:
+                    stats.failed += 1
+                    message = f"USB file differs from local archive; not overwriting: {destination}"
+                    stats.errors.append((str(source), message))
+                    logger.error(message)
+                continue
+            pending.append((source, destination, fingerprint))
+            stats.source_bytes += fingerprint.size
+        except OSError as exc:
+            stats.failed += 1
+            stats.errors.append((str(source), str(exc)))
+            logger.exception("Could not inspect backup candidate %s", source)
+
+    validate_destinations([destination_root], stats.source_bytes if pending else 0)
+    global _PROGRESS_STARTED
+    _PROGRESS_STARTED = time.monotonic()
+    _PROGRESS.update({"state": "copying", "phase": "USB backup", "bytes_done": 0,
+                      "bytes_total": stats.source_bytes, "bytes_transferred": 0,
+                      "current_file": "", "current_path": "",
+                      "message": f"Copying {len(pending)} missing file(s) to USB"})
+    update_status()
+    for source, destination, before in pending:
+        temp_path: Optional[Path] = None
+        update_status(current_file=source.name, current_path=str(source),
+                      message=f"USB backup: {source.name}")
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_name = tempfile.mkstemp(prefix=".photo-backup-", suffix=".tmp",
+                                             dir=destination.parent)
+            os.close(fd)
+            temp_path = Path(temp_name)
+            copy_file_with_progress(source, temp_path)
+            if file_fingerprint(source) != before:
+                raise IOError(f"Local source changed during backup: {source}")
+            if not files_match(source, temp_path, force_sha256=True):
+                raise IOError(f"SHA-256 verification failed for USB temporary copy: {source}")
+            if not install_without_overwrite(temp_path, destination):
+                if files_match(source, destination, force_sha256=True):
+                    stats.destination_skips += 1
+                    stats.verified_copies += 1
+                    continue
+                raise FileExistsError(f"USB destination appeared and differs from source: {destination}")
+            if not files_match(source, destination, force_sha256=True):
+                destination.unlink(missing_ok=True)
+                raise IOError(f"SHA-256 verification failed for USB copy: {destination}")
+            os.chmod(destination, stat.S_IRUSR | stat.S_IWUSR)
+            stats.destination_copies += 1
+            stats.verified_copies += 1
+        except Exception as exc:
+            stats.failed += 1
+            stats.errors.append((str(source), f"{destination}: {exc}"))
+            logger.exception("USB backup failed for %s", source)
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Could not remove temporary backup file %s", temp_path)
+
+    update_status(state="complete" if stats.failed == 0 else "failed",
+                  message=f"USB backup complete: {stats.destination_copies} copied, {stats.destination_skips} already matched"
+                  if stats.failed == 0 else f"USB backup incomplete: {stats.failed} failure(s)",
+                  current_file="", current_path="")
+    return stats
+
+
 def eject_volume(volume_path: Path) -> bool:
     if not volume_path.is_mount():
         logger.info("Skipping eject: %s is not mounted.", volume_path)
@@ -739,7 +835,8 @@ def eject_volume(volume_path: Path) -> bool:
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Safely import camera media to local and backup storage.")
     parser.add_argument("--source", type=Path, help="Camera volume or DCIM path.")
-    parser.add_argument("--no-usb", action="store_true", help="Use local storage only.")
+    parser.add_argument("--no-usb", action="store_true", help="Import to the Mac SSD only; do not start a USB backup.")
+    parser.add_argument("--backup-usb", action="store_true", help="Sync missing files from the Mac archive to the USB backup; no camera card required.")
     parser.add_argument("--no-eject", action="store_true", help="Do not eject the camera card.")
     parser.add_argument("--sha256", action="store_true", help="Use SHA-256 for all copy verification.")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
@@ -771,19 +868,28 @@ def print_summary(dcim_folder: Path, destinations: Sequence[Path], stats: Import
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    global VERIFY_WITH_SHA256
+    global VERIFY_WITH_SHA256, _PROGRESS_STARTED
     VERIFY_WITH_SHA256 = args.sha256
     configure_logging(args.verbose)
     logger.info("--- Starting new photo offloader session ---")
-    global _PROGRESS_STARTED
     _PROGRESS_STARTED = time.monotonic()
-    _PROGRESS.update({"state": "scanning", "bytes_done": 0, "bytes_total": 0,
-                      "bytes_transferred": 0, "current_file": "", "source": "",
-                      "message": "Looking for camera media"})
+    _PROGRESS.update({"state": "scanning", "phase": "startup", "bytes_done": 0,
+                      "bytes_total": 0, "bytes_transferred": 0, "current_file": "",
+                      "source": "", "message": "Preparing Photo Offloader"})
     update_status()
 
     try:
         with import_session_lock():
+            if args.backup_usb:
+                logger.info("Starting independent local-to-USB backup.")
+                backup_stats = copy_local_archive_to_usb()
+                print_summary(LOCAL_DEST_ROOT, [LOCAL_DEST_ROOT, USB_DEST_ROOT], backup_stats, False, False)
+                if backup_stats.failed:
+                    notify("USB Backup Incomplete", f"{backup_stats.failed} backup failure(s).")
+                    return 1
+                notify("USB Backup Complete", f"{backup_stats.destination_copies} files copied; {backup_stats.destination_skips} already matched.")
+                return 0
+
             if args.source:
                 logger.info("Using explicit source path: %s", args.source)
                 dcim_folder = resolve_dcim_path(args.source)
@@ -791,7 +897,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 dcim_folder = find_card_dcim()
             card_volume = dcim_folder.parent.resolve()
             logger.info("Source card volume: %s", card_volume)
-            update_status(source=str(card_volume), state="scanning", message="Scanning camera card")
+            update_status(source=str(card_volume), state="scanning", phase="card-to-ssd",
+                          message="Scanning camera card")
             logger.info("Scanning: %s", dcim_folder)
             time.sleep(1)
             files = scan_with_retry(dcim_folder)
@@ -799,65 +906,93 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 raise RuntimeError(f"No supported media files found under {dcim_folder}")
 
             total_found = sum(len(items) for items in files.values())
-            stats = ImportStats(found=total_found, source_bytes=required_source_bytes(files))
+            source_bytes = required_source_bytes(files)
+            local_stats = ImportStats(found=total_found, source_bytes=source_bytes)
             logger.info("Scan complete: %d files (%d JPG, %d RAW, %d VIDEO)",
                         total_found, len(files["JPG"]), len(files["RAW"]), len(files["VIDEO"]))
-            snapshot = snapshot_destinations(args.no_usb)
-            validate_destinations(snapshot.destinations, stats.source_bytes)
-            logger.info("Import destinations: %s", ", ".join(map(str, snapshot.destinations)))
-            _PROGRESS_STARTED = time.monotonic()
-            _PROGRESS.update({"bytes_total": stats.source_bytes * len(snapshot.destinations),
-                              "bytes_done": 0, "bytes_transferred": 0,
-                              "state": "copying", "message": "Starting copy"})
-            update_status()
-            if snapshot.usb_expected:
-                logger.info("USB destination is mounted and will be used.")
+
+            usb_expected = not args.no_usb and usb_is_mounted()
+            usb_identity = get_volume_identity(USB_DEST_VOLUME) if usb_expected else None
+            validate_destinations([LOCAL_DEST_ROOT], source_bytes)
+            logger.info("Stage 1 destination: %s", LOCAL_DEST_ROOT)
+            if usb_expected:
+                logger.info("USB backup is mounted; it will be synchronized after the local SSD import.")
             else:
-                logger.info("USB destination is not required for this run.")
+                logger.info("USB backup not selected or not mounted; local SSD import only.")
 
+            _PROGRESS_STARTED = time.monotonic()
+            _PROGRESS.update({"bytes_total": source_bytes, "bytes_done": 0,
+                              "bytes_transferred": 0, "state": "copying",
+                              "phase": "card-to-ssd", "message": "Copying camera card to Mac SSD"})
+            update_status()
             for category in ("JPG", "RAW", "VIDEO"):
-                copy_category(files[category], dcim_folder, snapshot.destinations, category, stats)
+                copy_category(files[category], dcim_folder, [LOCAL_DEST_ROOT], category, local_stats)
 
-            if snapshot.usb_expected:
-                if not usb_is_mounted() or not volume_identity_matches(snapshot.usb_identity, get_volume_identity(USB_DEST_VOLUME)):
-                    stats.failed += 1
-                    message = "Configured USB backup volume was disconnected or replaced during the import."
-                    stats.errors.append((str(USB_DEST_VOLUME), message))
-                    logger.error(message)
+            if local_stats.failed:
+                print_summary(dcim_folder, [LOCAL_DEST_ROOT], local_stats, False, False)
+                update_status(state="failed", phase="card-to-ssd",
+                              message=f"Local SSD import failed: {local_stats.failed} failure(s)",
+                              current_file="", current_path="")
+                logger.error("Local SSD import failed; card was not ejected and USB backup was not started.")
+                notify("Photo Import Incomplete", "Local SSD copy failed. Card remains mounted; USB backup was not started.")
+                return 1
 
+            # The card is safe to release as soon as the complete local archive is verified.
             eject_attempted = False
             eject_success = False
-            if stats.failed == 0 and EJECT_CARD_AFTER_SUCCESS and not args.no_eject:
+            if EJECT_CARD_AFTER_SUCCESS and not args.no_eject:
                 eject_attempted = True
                 eject_success = eject_volume(card_volume)
 
-            print_summary(dcim_folder, snapshot.destinations, stats, eject_attempted, eject_success)
-            update_status(state="complete" if stats.failed == 0 else "failed",
-                          message="Import complete" if stats.failed == 0 else f"Import failed: {stats.failed} failure(s)",
-                          current_file="", current_path="")
-            if stats.failed:
-                logger.error("Import completed with %d failure(s). Card was not automatically ejected.", stats.failed)
-                notify("Photo Import Incomplete", f"{stats.failed} import failure(s). Card was not automatically ejected.")
+            backup_stats = ImportStats()
+            if usb_expected:
+                if not usb_is_mounted() or not volume_identity_matches(
+                    usb_identity, get_volume_identity(USB_DEST_VOLUME)
+                ):
+                    backup_stats.failed += 1
+                    message = "Configured USB backup volume was disconnected or replaced before backup."
+                    backup_stats.errors.append((str(USB_DEST_VOLUME), message))
+                    logger.error(message)
+                else:
+                    try:
+                        backup_stats = copy_local_archive_to_usb()
+                    except Exception as exc:
+                        backup_stats.failed += 1
+                        backup_stats.errors.append((str(USB_DEST_VOLUME), str(exc)))
+                        logger.exception("USB backup stage failed: %s", exc)
+            else:
+                update_status(state="complete", phase="card-to-ssd",
+                              message="Mac SSD import complete; USB backup skipped",
+                              current_file="", current_path="")
+
+            print_summary(dcim_folder, [LOCAL_DEST_ROOT] + ([USB_DEST_ROOT] if usb_expected else []),
+                          backup_stats if usb_expected else local_stats, eject_attempted, eject_success)
+            if backup_stats.failed:
+                update_status(state="failed", phase="usb-backup",
+                              message=f"Local import succeeded; USB backup has {backup_stats.failed} failure(s)",
+                              current_file="", current_path="")
+                notify("USB Backup Incomplete", "The card was copied to the Mac. USB backup needs attention.")
                 return 1
             if eject_attempted and not eject_success:
-                logger.error("Import succeeded, but automatic card ejection failed.")
-                notify("Photo Import Complete — Eject Failed", "All files imported successfully, but the camera card could not be ejected.")
+                logger.error("Local import and USB backup succeeded, but automatic card ejection failed.")
+                notify("Photo Import Complete — Eject Failed", "Copies completed, but the camera card could not be ejected.")
                 return 2
-            logger.info("Import completed successfully: %d destination copies, %d destination skips.",
-                        stats.destination_copies, stats.destination_skips)
-            notify("Photo Import Complete", f"{total_found} media files processed successfully.")
+            logger.info("Photo Offloader finished. Local copies: %d; USB copies: %d; USB skips: %d.",
+                        local_stats.destination_copies, backup_stats.destination_copies,
+                        backup_stats.destination_skips)
+            notify("Photo Import Complete", f"{total_found} media files copied to the Mac; USB backup " +
+                   ("completed." if usb_expected else "was not run."))
             return 0
     except KeyboardInterrupt:
-        update_status(state="canceled", message="Import canceled", current_file="")
+        update_status(state="canceled", message="Operation canceled", current_file="")
         logger.warning("Process canceled by user.")
-        notify("Photo Import Canceled", "The import was canceled.")
+        notify("Photo Offloader Canceled", "The operation was canceled.")
         return 130
     except Exception as exc:
         update_status(state="failed", message=str(exc), current_file="")
         logger.exception("Fatal error: %s", exc)
-        notify("Photo Import Stopped", str(exc))
+        notify("Photo Offloader Stopped", str(exc))
         return 1
-
 
 if __name__ == "__main__":
     sys.exit(main())
