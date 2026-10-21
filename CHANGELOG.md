@@ -4,6 +4,11 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Added
+- Native macOS menu-bar controller with a dashboard for live import speed, progress, and estimated completion time.
+- Menu-bar pause/resume control that blocks new automatic imports without interrupting an active copy; resuming re-checks already-mounted camera cards.
+- Atomic JSON progress status updates emitted during chunked file copies.
+
 ### Changed
 - Camera import output now opens in iTerm2 by default, with `PHOTO_OFFLOADER_TERMINAL_APP` available to override the terminal application.
 - Imported media is now organized as `YYYY-MM/Camera-Model/Media-Type/filename`, using `Photos`, `Raws`, and `Movies` folders; camera identity comes from EXIF make/model when available, with `Unknown-Camera` as a fallback.
