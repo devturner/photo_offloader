@@ -724,6 +724,10 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
         raise RuntimeError(f"USB backup volume is not mounted at {USB_DEST_VOLUME}")
     if expected_identity is None:
         expected_identity = get_volume_identity(USB_DEST_VOLUME)
+    if not usb_is_mounted() or not volume_identity_matches(
+        expected_identity, get_volume_identity(USB_DEST_VOLUME)
+    ):
+        raise RuntimeError("USB backup volume identity changed before backup started.")
     source_root = LOCAL_DEST_ROOT
     destination_root = USB_DEST_ROOT
     if not source_root.is_dir():
