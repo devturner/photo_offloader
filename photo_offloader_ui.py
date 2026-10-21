@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
+from datetime import datetime
 import time
 import tkinter as tk
 from collections import deque
@@ -19,6 +21,9 @@ BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
 IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 USB_VOLUME = Path("/Volumes/Photos")
+LOCAL_ARCHIVE = Path.home() / "Pictures" / "CameraImports"
+USB_ARCHIVE = USB_VOLUME / "CameraImports"
+CATALOG_DB = Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "catalog.sqlite3"
 
 
 def format_bytes(value: float) -> str:
@@ -118,6 +123,14 @@ class Dashboard:
         ttk.Label(outer, textvariable=self.message_var, style="Subtitle.TLabel",
                   wraplength=550).pack(anchor="w", pady=(9, 0))
 
+        ttk.Label(outer, text="DATABASE STATUS", style="Subtitle.TLabel").pack(anchor="w", pady=(12, 4))
+        catalog_status = ttk.Frame(outer, style="Card.TFrame", padding=10)
+        catalog_status.pack(fill="x")
+        self.local_catalog_var = tk.StringVar(value="Checking catalog…")
+        self.usb_catalog_var = tk.StringVar(value="Checking catalog…")
+        ttk.Label(catalog_status, textvariable=self.local_catalog_var, style="Body.TLabel").pack(anchor="w")
+        ttk.Label(catalog_status, textvariable=self.usb_catalog_var, style="Body.TLabel").pack(anchor="w", pady=(4, 0))
+
         ttk.Label(outer, text="TRANSFER SPEED", style="Subtitle.TLabel").pack(anchor="w", pady=(14, 4))
         self.speed_history = deque([0.0] * 60, maxlen=60)
         self.last_sample_time = time.monotonic()
@@ -147,6 +160,58 @@ class Dashboard:
             self.message_var.set("Started USB backup. Existing matching files will be skipped.")
         except OSError as exc:
             self.message_var.set(f"Could not start USB backup: {exc}")
+
+    def refresh_catalog_status(self, status: Dict[str, Any]) -> None:
+        state = str(status.get("state", "idle"))
+        phase = str(status.get("phase", ""))
+        current_path = str(status.get("current_path", "") or "")
+        catalog_running = state == "scanning" and phase == "catalog-update"
+
+        try:
+            if not CATALOG_DB.is_file():
+                local_count = usb_count = 0
+                refreshes = {}
+            else:
+                with sqlite3.connect(f"file:{CATALOG_DB}?mode=ro", uri=True, timeout=0.5) as db:
+                    local_root = str(LOCAL_ARCHIVE.resolve())
+                    usb_root = str(USB_ARCHIVE.resolve())
+                    local_count = db.execute(
+                        "SELECT COUNT(*) FROM file_locations WHERE root = ?", (local_root,)
+                    ).fetchone()[0]
+                    usb_count = db.execute(
+                        "SELECT COUNT(*) FROM file_locations WHERE root = ?", (usb_root,)
+                    ).fetchone()[0]
+                    try:
+                        refreshes = {row[0]: (row[1], row[2], row[3]) for row in db.execute(
+                            "SELECT root, last_updated, files_scanned, status FROM catalog_refreshes"
+                        )}
+                    except sqlite3.OperationalError:
+                        refreshes = {}
+        except (OSError, sqlite3.Error) as exc:
+            self.local_catalog_var.set(f"Internal SSD database: Status unavailable ({exc})")
+            self.usb_catalog_var.set("Backup USB database: Status unavailable")
+            return
+
+        def line(label: str, root: Path, count: int) -> str:
+            key = str(root.resolve())
+            if catalog_running and (current_path == key or current_path.startswith(key + os.sep)):
+                return f"{label}: Updating catalog… {count:,} indexed files currently recorded"
+            info = refreshes.get(key)
+            if info:
+                updated, scanned, refresh_state = info
+                when = datetime.fromtimestamp(updated).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+                return f"{label}: {refresh_state.title()} • Last updated {when} • {scanned:,} files scanned • {count:,} indexed"
+            if count:
+                return f"{label}: Catalog exists • Last refresh time not recorded • {count:,} indexed"
+            if label == "Backup USB" and not USB_VOLUME.is_dir():
+                return f"{label}: Drive not mounted • Previous catalog records are preserved"
+            return f"{label}: Not yet updated"
+
+        self.local_catalog_var.set(line("Internal SSD", LOCAL_ARCHIVE, local_count))
+        if not USB_VOLUME.is_dir():
+            self.usb_catalog_var.set(line("Backup USB", USB_ARCHIVE, usb_count))
+        else:
+            self.usb_catalog_var.set(line("Backup USB", USB_ARCHIVE, usb_count))
 
     def start_catalog_update(self) -> None:
         try:
@@ -234,6 +299,8 @@ class Dashboard:
             self.progress_var.set("Automatic imports are paused")
         else:
             self.progress_var.set("Waiting for a camera card")
+
+        self.refresh_catalog_status(status)
 
         current_file = str(status.get("current_file", "") or "")
         self.file_var.set(current_file if current_file else "No active import")
