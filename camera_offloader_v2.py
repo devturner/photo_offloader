@@ -971,7 +971,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     logger.error(message)
                 else:
                     try:
-                        backup_stats = copy_local_archive_to_usb()
+                        backup_stats = copy_local_archive_to_usb(usb_identity)
                     except Exception as exc:
                         backup_stats.failed += 1
                         backup_stats.errors.append((str(USB_DEST_VOLUME), str(exc)))
