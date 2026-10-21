@@ -6,7 +6,7 @@ The importer follows:
 
 > **Discover → Lock → Snapshot → Scan → Capacity Check → Copy → Verify → Report → Eject**
 
-Files are never deleted from the camera card and existing destination files are never overwritten.
+Files are never deleted from the camera card and existing destination files are never overwritten. A local SQLite catalog tracks known file locations, filesystem fingerprints, cached camera/date metadata, and verified hashes. It avoids repeatedly decoding unchanged RAW/video metadata and re-hashing unchanged local/USB file pairs. The filesystem is still checked for newly added or changed files; the catalog is an optimization, not the source of truth.
 
 ## ✨ Features
 
@@ -174,6 +174,14 @@ Persistent logs are written to:
 ~/.camera_transfer.log
 ```
 
+The SQLite file catalog is stored at:
+
+```text
+~/Library/Application Support/PhotoOffloader/catalog.sqlite3
+```
+
+The catalog is updated as files are scanned and copied. Its cached metadata and hashes are reused only while size, modification time, and inode still match. If the database is missing or unreadable, the importer falls back to normal filesystem and metadata checks; it never relies on catalog data to overwrite files.
+
 Trigger activity is written to:
 
 ```text
@@ -242,7 +250,7 @@ Run Ruff:
 python -m ruff check camera_offloader_v2.py test_camera_offloader.py test_hardening_regressions.py test_camera_offloader_trigger.py
 ```
 
-The test suite includes filesystem-level copy tests, hardening regressions, lock behavior, USB identity checks, video camera metadata detection, and trigger tests covering volume names with spaces and repeated `/Volumes` events.
+The test suite includes filesystem-level copy tests, catalog caching/invalidation, hardening regressions, lock behavior, USB identity checks, video camera metadata detection, and trigger tests covering volume names with spaces and repeated `/Volumes` events.
 
 ## ⚙️ Manual operation
 
