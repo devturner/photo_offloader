@@ -886,6 +886,78 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
             bar()
 
 
+def update_file_catalog() -> Dict[str, int]:
+    """Index the local archive and mounted USB archive, refreshing cached metadata.
+
+    This operation does not hash every file: hashes already verified by copy/backup
+    operations are preserved for unchanged files, while new/changed files are
+    indexed without a hash until a verification operation computes one.
+    """
+    roots: List[Path] = []
+    if LOCAL_DEST_ROOT.is_dir():
+        roots.append(LOCAL_DEST_ROOT)
+    else:
+        logger.warning("Local archive is not available for catalog update: %s", LOCAL_DEST_ROOT)
+    if usb_is_mounted():
+        if USB_DEST_ROOT.is_dir():
+            roots.append(USB_DEST_ROOT)
+    else:
+        logger.info("USB volume is not mounted; skipping USB catalog refresh.")
+
+    if not roots:
+        raise RuntimeError("No archive locations are available to update the catalog.")
+
+    totals = {"scanned": 0, "metadata_refreshed": 0, "roots": len(roots)}
+    update_status(state="scanning", phase="catalog-update", source="; ".join(map(str, roots)),
+                  message="Updating file catalog", current_file="")
+    logger.info("Starting catalog update for %d root(s).", len(roots))
+
+    for root in roots:
+        root = root.resolve()
+        seen: List[str] = []
+        for path in sorted(root.rglob("*"), key=lambda item: str(item).lower()):
+            try:
+                if (not path.is_file() or path.is_symlink()
+                        or any(part.startswith(".") for part in path.relative_to(root).parts)
+                        or path.suffix.lower() not in MEDIA_EXTENSIONS):
+                    continue
+                seen.append(str(path.resolve()))
+                totals["scanned"] += 1
+                update_status(current_file=path.name, current_path=str(path),
+                              message=f"Cataloging {path.name} ({totals['scanned']} files)")
+                catalog_record(path, media_folder=get_media_type_folder(path))
+                get_month_folder(path)
+                get_camera_model(path)
+                totals["metadata_refreshed"] += 1
+                if totals["scanned"] % 100 == 0:
+                    logger.info("Catalog update progress: %d files scanned.", totals["scanned"])
+            except (OSError, sqlite3.Error) as exc:
+                logger.warning("Could not catalog %s: %s", path, exc)
+
+        # Never reconcile an unmounted USB volume as empty; only scanned roots
+        # have stale path records removed.
+        try:
+            with catalog_connection() as db:
+                db.execute("CREATE TEMP TABLE IF NOT EXISTS catalog_seen_paths (path TEXT PRIMARY KEY)")
+                db.execute("DELETE FROM catalog_seen_paths")
+                db.executemany("INSERT OR IGNORE INTO catalog_seen_paths(path) VALUES (?)",
+                               ((item,) for item in seen))
+                db.execute("DELETE FROM file_locations WHERE root = ? AND path NOT IN "
+                           "(SELECT path FROM catalog_seen_paths)", (str(root),))
+                db.execute("DELETE FROM catalog_seen_paths")
+        except sqlite3.Error as exc:
+            logger.warning("Could not reconcile catalog entries under %s: %s", root, exc)
+
+        logger.info("Catalog root updated: %s (%d media files).", root, len(seen))
+
+    update_status(state="complete", phase="catalog-update", current_file="",
+                  message=f"Catalog update complete: {totals['scanned']} files scanned")
+    logger.info("Catalog update complete: scanned=%d roots=%d", totals["scanned"], totals["roots"])
+    notify("Photo Offloader Catalog Updated",
+           f"Scanned {totals['scanned']} media files across {totals['roots']} location(s).")
+    return totals
+
+
 def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None) -> ImportStats:
     """Copy only missing local archive files to USB; never overwrite mismatches."""
     if not usb_is_mounted():
@@ -1040,6 +1112,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--source", type=Path, help="Camera volume or DCIM path.")
     parser.add_argument("--no-usb", action="store_true", help="Import to the Mac SSD only; do not start a USB backup.")
     parser.add_argument("--backup-usb", action="store_true", help="Sync missing files from the Mac archive to the USB backup; no camera card required.")
+    parser.add_argument("--update-catalog", action="store_true", help="Initialize/update the SQLite catalog by scanning the local archive and mounted USB backup.")
     parser.add_argument("--no-eject", action="store_true", help="Do not eject the camera card.")
     parser.add_argument("--sha256", action="store_true", help="Use SHA-256 for all copy verification.")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
@@ -1099,6 +1172,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                               "bytes_total": 0, "bytes_transferred": 0, "current_file": "",
                               "source": "", "message": "Preparing Photo Offloader"})
             update_status()
+
+            if args.update_catalog:
+                logger.info("Starting explicit file catalog update.")
+                catalog_stats = update_file_catalog()
+                logger.info("Catalog update summary: %s", catalog_stats)
+                print("Catalog update complete:")
+                for key, value in catalog_stats.items():
+                    print(f"  {key}: {value}")
+                return 0
 
             if args.backup_usb:
                 logger.info("Starting independent local-to-USB backup.")
