@@ -541,7 +541,6 @@ def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: P
             raise IOError(f"Verification failed for temporary copy: {source}")
         if not install_without_overwrite(temp_path, final_path):
             if files_match(source, final_path, force_sha256=True):
-                add_progress_bytes(before.size)
                 return DestinationResult(destination_base, "skipped", final_path,
                                          "another process created a matching file")
             raise FileExistsError(f"Destination appeared during copy and does not match source: {final_path}")
@@ -756,8 +755,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             snapshot = snapshot_destinations(args.no_usb)
             validate_destinations(snapshot.destinations, stats.source_bytes)
             logger.info("Import destinations: %s", ", ".join(map(str, snapshot.destinations)))
+            _PROGRESS_STARTED = time.monotonic()
             _PROGRESS.update({"bytes_total": stats.source_bytes * len(snapshot.destinations),
-                              "bytes_done": 0, "state": "copying", "message": "Starting copy"})
+                              "bytes_done": 0, "bytes_transferred": 0,
+                              "state": "copying", "message": "Starting copy"})
             update_status()
             if snapshot.usb_expected:
                 logger.info("USB destination is mounted and will be used.")
