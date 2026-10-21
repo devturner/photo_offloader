@@ -313,8 +313,28 @@ class Dashboard:
         self.draw_speed_graph()
 
         display_speed = speed if speed > 0 else average_speed if state == "copying" else 0
-        self.speed_var.set(f"{format_bytes(display_speed)}/s" if display_speed > 0 else "—")
-        if state == "copying" and total > done and speed > 0:
+        decision_phase = state == "scanning" and status.get("phase") == "copy-decision"
+        if decision_phase:
+            checked = int(status.get("decision_files_checked", 0) or 0)
+            decision_total = int(status.get("decision_files_total", 0) or 0)
+            self.speed_var.set(f"{checked / max(now - getattr(self, '_decision_started', now), 1):.1f} files/s"
+                               if checked else "Checking files…")
+            if not getattr(self, "_decision_started", 0) or checked < getattr(self, "_decision_last_checked", 0):
+                self._decision_started = now
+                self._decision_last_checked = checked
+            elapsed_decision = max(now - getattr(self, "_decision_started", now), 0.1)
+            if checked > 0 and decision_total > checked:
+                self.eta_var.set(format_duration((decision_total - checked) / (checked / elapsed_decision)))
+            elif decision_total and checked >= decision_total:
+                self.eta_var.set("Starting copy…")
+            else:
+                self.eta_var.set("Estimating…")
+            self._decision_last_checked = checked
+        else:
+            self.speed_var.set(f"{format_bytes(display_speed)}/s" if display_speed > 0 else "—")
+        if decision_phase:
+            pass
+        elif state == "copying" and total > done and speed > 0:
             self.eta_var.set(format_duration(eta))
         elif state == "complete":
             self.eta_var.set("Complete")
@@ -328,7 +348,16 @@ class Dashboard:
             self.eta_var.set("Estimating…" if state == "scanning" else "—")
 
         catalog_running = state == "scanning" and status.get("phase") == "catalog-update"
-        if catalog_running:
+        if decision_phase:
+            if getattr(self, "_catalog_progress_animating", False):
+                self.progress.stop()
+                self._catalog_progress_animating = False
+            self.progress.configure(mode="determinate")
+            decision_total = int(status.get("decision_files_total", 0) or 0)
+            decision_checked = int(status.get("decision_files_checked", 0) or 0)
+            self.progress.configure(value=min(100.0, decision_checked / decision_total * 100.0)
+                                    if decision_total else 0.0)
+        elif catalog_running:
             # Catalog scans have no reliable total byte count. Use an indeterminate
             # bar instead of snapping a determinate bar back to zero between roots.
             self.progress.configure(mode="indeterminate")
@@ -342,7 +371,12 @@ class Dashboard:
             self.progress.configure(mode="determinate")
             percent = min(100.0, (done / total * 100.0) if total else 0.0)
             self.progress.configure(value=percent)
-        if state == "copying":
+        if decision_phase:
+            self.progress_var.set(
+                f"Checking existing files  •  {int(status.get('decision_files_checked', 0) or 0)} "
+                f"of {int(status.get('decision_files_total', 0) or 0)}"
+            )
+        elif state == "copying":
             self.progress_var.set(f"{format_bytes(done)} of {format_bytes(total)} processed  •  {percent:.0f}%")
         elif state == "complete":
             self.progress_var.set(f"Import complete  •  {format_bytes(done)} processed")
