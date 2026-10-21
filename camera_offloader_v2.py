@@ -30,6 +30,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
@@ -474,8 +475,9 @@ def normalize_camera_model(make: object, model: object) -> str:
     return combined or "Unknown-Camera"
 
 
+@lru_cache(maxsize=1)
 def find_exiftool() -> Optional[str]:
-    """Find exiftool even when launchd provides a minimal PATH."""
+    """Find exiftool once per importer process, even with launchd’s minimal PATH."""
     exiftool = shutil.which("exiftool")
     if exiftool:
         return exiftool
