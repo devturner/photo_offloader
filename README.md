@@ -22,6 +22,14 @@ The automatic LaunchAgent watches `/Volumes`, but the trigger only launches when
 
 The importer also accepts a volume or `DCIM` path through `--source`.
 
+### 🖥️ Menu-bar dashboard and pause control
+
+The installer also launches a native macOS menu-bar item at login. Select **Open Dashboard** to view the current source, file being processed, progress, effective copy throughput, and estimated time remaining.
+
+Use **Pause Automatic Imports** before inserting a card when you do not want automatic copying to start. Pausing prevents new automatic import sessions; it does not interrupt a copy already in progress. Choose **Resume Automatic Imports** to re-enable the service and immediately re-check any camera card that is already mounted.
+
+The menu-bar controller uses `rumps`; the dashboard uses Python's `tkinter` UI. The menu-bar dependency is declared in `requirements-ui.txt` and installed by `install.sh`.
+
 ### iTerm2 output
 
 The automatic camera trigger opens the importer in **iTerm2** by default. To use another terminal application, set `PHOTO_OFFLOADER_TERMINAL_APP` in the LaunchAgent environment before installing/loading the trigger.
@@ -186,6 +194,7 @@ If an import fails, the card remains mounted for investigation or retry.
 - `diskutil` and `osascript` (provided by macOS)
 - `alive-progress`
 - `Pillow`
+- `rumps` for the native menu-bar controller (installed by the app installer)
 - Optional: `exiftool` for camera Make/Model metadata in video files
 
 Development/testing also uses Ruff.
