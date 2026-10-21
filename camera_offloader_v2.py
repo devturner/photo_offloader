@@ -71,7 +71,8 @@ VERIFY_WITH_SHA256 = False
 USE_FILE_BIRTH_TIME = True
 MIN_FREE_SPACE_BUFFER_BYTES = 100 * 1024 * 1024
 STATUS_FILE_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "status.json"
-CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "catalog.sqlite3"
+CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "catalog.sqlite3"
+LEGACY_CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "catalog.sqlite3"
 BUILD_INFO_PATH = Path(__file__).resolve().with_name("build_info.json")
 VERSION_PATH = Path(__file__).resolve().with_name("VERSION")
 _PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
@@ -184,6 +185,13 @@ def catalog_connection() -> sqlite3.Connection:
     """Open the persistent media/location catalog, initializing its schema once per path."""
     global _CATALOG_INITIALIZED_PATH
     CATALOG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not CATALOG_DB_PATH.exists() and LEGACY_CATALOG_DB_PATH.is_file():
+        try:
+            shutil.copy2(LEGACY_CATALOG_DB_PATH, CATALOG_DB_PATH)
+            logger.info("Migrated legacy file catalog to persistent data location: %s", CATALOG_DB_PATH)
+        except OSError as exc:
+            logger.warning("Could not migrate legacy catalog; using the existing catalog location: %s", exc)
+            return sqlite3.connect(LEGACY_CATALOG_DB_PATH, timeout=10)
     connection = sqlite3.connect(CATALOG_DB_PATH, timeout=10)
     catalog_path = str(CATALOG_DB_PATH.resolve())
     if _CATALOG_INITIALIZED_PATH != catalog_path:
