@@ -31,7 +31,7 @@ done
 cp "$SCRIPT_DIR/$SCRIPT_NAME" "$SCRIPT_PATH"
 cp "$SCRIPT_DIR/$TRIGGER_NAME" "$TRIGGER_PATH"
 cp "$SCRIPT_DIR/$UI_NAME" "$INSTALL_DIR/$UI_NAME"
-cp "$SCRIPT_DIR/$MENUBAR_NAME" "$INSTALL_DIR/$MENUBAR_NAME" "$INSTALL_DIR/photo_offloader_backup_launcher.py"
+cp "$SCRIPT_DIR/$MENUBAR_NAME" "$INSTALL_DIR/$MENUBAR_NAME"
 cp "$SCRIPT_DIR/photo_offloader_backup_launcher.py" "$INSTALL_DIR/photo_offloader_backup_launcher.py"
 cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
 cp "$SCRIPT_DIR/requirements-ui.txt" "$INSTALL_DIR/requirements-ui.txt"
