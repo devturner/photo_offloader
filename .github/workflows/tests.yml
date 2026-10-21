@@ -26,4 +26,4 @@ jobs:
         run: python -m unittest discover -v
 
       - name: Run Ruff
-        run: python -m ruff check camera_offloader_v2.py test_camera_offloader.py
+        run: python -m ruff check camera_offloader_v2.py photo_offloader_ui.py photo_offloader_menubar.py test_camera_offloader.py
