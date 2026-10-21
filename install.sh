@@ -93,7 +93,7 @@ cat > "$UI_PLIST_PATH" <<EOF
     <key>StandardOutPath</key>
     <string>$INSTALL_DIR/menubar.log</string>
     <key>StandardErrorPath</key>
-    <string>$INSTALL_DIR/menubar.log</string>
+    <string>$INSTALL_DIR/menubar-error.log</string>
 </dict>
 </plist>
 EOF
@@ -122,7 +122,8 @@ echo "Importer: $SCRIPT_PATH"
 echo "Trigger:   $TRIGGER_PATH"
 echo "Dashboard: $INSTALL_DIR/$UI_NAME"
 echo "Menu bar:  $INSTALL_DIR/$MENUBAR_NAME"
-echo "UI log:    $INSTALL_DIR/menubar.log"
+echo "Menu bar log: $INSTALL_DIR/menubar.log"
+echo "Menu bar errors: $INSTALL_DIR/menubar-error.log"
 echo "Dashboard log: $INSTALL_DIR/dashboard.log"
 echo "Log:       ~/.camera_transfer.log"
 echo "Trigger log: ~/.camera_transfer_trigger.log"
