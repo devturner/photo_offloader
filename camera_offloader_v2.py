@@ -928,8 +928,12 @@ def update_file_catalog() -> Dict[str, int]:
                   message="Updating file catalog", current_file="")
     logger.info("Starting catalog update for %d root(s).", len(roots))
 
-    for root in roots:
+    for root_index, root in enumerate(roots, start=1):
         root = root.resolve()
+        update_status(catalog_root=str(root), catalog_root_index=root_index,
+                      catalog_roots_total=len(roots), catalog_scanned=0,
+                      message=f"Scanning location {root_index} of {len(roots)}: {root}")
+        logger.info("Scanning catalog root %d/%d: %s", root_index, len(roots), root)
         seen: List[str] = []
         for path in sorted(root.rglob("*"), key=lambda item: str(item).lower()):
             try:
@@ -937,10 +941,34 @@ def update_file_catalog() -> Dict[str, int]:
                         or any(part.startswith(".") for part in path.relative_to(root).parts)
                         or path.suffix.lower() not in MEDIA_EXTENSIONS):
                     continue
-                seen.append(str(path.resolve()))
+                resolved_path = str(path.resolve())
+                seen.append(resolved_path)
                 totals["scanned"] += 1
+
+                # The common case is an unchanged file already fully indexed.
+                # Validate its fingerprint once and avoid redundant SQLite writes
+                # and repeated metadata lookups for every cached field.
+                fingerprint = file_fingerprint(path)
+                cached = catalog_row(path, fingerprint)
+                if cached and cached[4] and cached[5] and cached[6]:
+                    if totals["scanned"] % 100 == 0:
+                        update_status(current_file=path.name, current_path=str(path),
+                                      catalog_scanned=totals["scanned"],
+                                      catalog_root=str(root),
+                                      catalog_roots_total=len(roots),
+                                      catalog_root_index=roots.index(root) + 1,
+                                      catalog_files_found=totals["scanned"],
+                                      message=f"Cataloged {totals['scanned']:,} files; cached entries reused")
+                        logger.info("Catalog update progress: %d files scanned.", totals["scanned"])
+                    continue
+
                 update_status(current_file=path.name, current_path=str(path),
-                              message=f"Cataloging {path.name} ({totals['scanned']} files)")
+                              catalog_scanned=totals["scanned"],
+                              catalog_root=str(root),
+                              catalog_roots_total=len(roots),
+                              catalog_root_index=roots.index(root) + 1,
+                              catalog_files_found=totals["scanned"],
+                              message=f"Indexing metadata for {path.name} ({totals['scanned']:,} files scanned)")
                 catalog_record(path, media_folder=get_media_type_folder(path))
                 get_month_folder(path)
                 get_camera_model(path)
