@@ -10,6 +10,8 @@ All notable changes to Photo Offloader are documented here.
 - Atomic JSON progress status updates emitted during chunked file copies.
 - Windows-style rolling transfer-speed graph in the dashboard, with recent throughput samples.
 - Independent **Copy to USB Drive** actions in the menu bar and dashboard; USB sync can run without a camera card.
+- SQLite file-location catalog at `~/Library/Application Support/PhotoOffloader/catalog.sqlite3`, tracking known paths, file fingerprints, cached capture month/camera metadata, and verified SHA-256 hashes.
+- Cache reuse for unchanged media to avoid repeatedly invoking ExifTool/Pillow metadata decoding and hashing unchanged local/USB file pairs.
 - Dashboard opens at the end of installation and automatically when a camera import starts; menu-bar and dashboard logs are retained for troubleshooting.
 
 ### Changed
