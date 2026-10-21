@@ -79,6 +79,12 @@ if "$PGREP" -f "$IMPORTER" >/dev/null 2>&1; then
     exit 0
 fi
 
+# Check again immediately before launching in case the user paused after the scan.
+if [[ -f "$PAUSE_FILE" ]]; then
+    log "Automatic import was paused before launch; not starting a copy."
+    exit 0
+fi
+
 log "Recognized camera source: $camera_dcim"
 
 # Build a shell-safe command without interpolating the path into AppleScript.
