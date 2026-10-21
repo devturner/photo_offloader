@@ -857,7 +857,15 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
         try:
             fingerprint = file_fingerprint(source)
             if destination.exists():
-                if destination.is_file() and files_match(source, destination, force_sha256=True):
+                cached_match = catalog_hash_matches(source, destination)
+                if cached_match is None:
+                    source_hash = sha256_file(source)
+                    destination_hash = sha256_file(destination) if destination.is_file() else ""
+                    catalog_record(source, sha256=source_hash)
+                    if destination.is_file():
+                        catalog_record(destination, sha256=destination_hash)
+                    cached_match = bool(destination_hash) and source_hash == destination_hash
+                if destination.is_file() and cached_match:
                     stats.destination_skips += 1
                     stats.verified_copies += 1
                 else:
