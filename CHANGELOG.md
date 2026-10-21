@@ -13,6 +13,7 @@ All notable changes to Photo Offloader are documented here.
 - Independent **Copy to USB Drive** actions in the menu bar and dashboard; USB sync can run without a camera card.
 - SQLite file-location catalog at `~/Library/Application Support/PhotoOffloaderData/catalog.sqlite3`, tracking known paths, file fingerprints, cached capture month/camera metadata, and verified SHA-256 hashes.
 - **Update File Catalog** action in the menu bar and dashboard plus `--update-catalog` CLI mode to initialize/refresh local and mounted USB inventories, prune stale paths for scanned roots, and preserve cached hashes without rehashing every file.
+- Dashboard **Database Status** panel with separate internal-SSD and backup-USB inventory counts, refresh-in-progress indicators, and per-volume last-successful-update timestamps.
 - One-time migration from the legacy catalog path; the database now lives outside the uninstallable application directory and survives upgrades/uninstall.
 - Cache reuse for unchanged media to avoid repeatedly invoking ExifTool/Pillow metadata decoding and hashing unchanged local/USB file pairs.
 - Shared lock for USB backup requests from the menu bar and dashboard; repeated requests are ignored while a backup launch is active.
