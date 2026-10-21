@@ -28,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -71,6 +72,8 @@ USE_FILE_BIRTH_TIME = True
 MIN_FREE_SPACE_BUFFER_BYTES = 100 * 1024 * 1024
 STATUS_FILE_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "status.json"
 CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "catalog.sqlite3"
+BUILD_INFO_PATH = Path(__file__).resolve().with_name("build_info.json")
+VERSION_PATH = Path(__file__).resolve().with_name("VERSION")
 _PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
 _PROGRESS_STARTED: Optional[float] = None
 
@@ -281,6 +284,46 @@ def catalog_hash_matches(source: Path, destination: Path) -> Optional[bool]:
     if source_row and destination_row and source_row[3] and destination_row[3]:
         return source_row[3] == destination_row[3]
     return None
+
+
+def load_build_info() -> Dict[str, str]:
+    """Identify the exact source/build installed when this process was launched."""
+    info: Dict[str, str] = {}
+    try:
+        loaded = json.loads(BUILD_INFO_PATH.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            info.update({str(key): str(value) for key, value in loaded.items()})
+    except (OSError, ValueError):
+        pass
+
+    if not info.get("version"):
+        try:
+            info["version"] = VERSION_PATH.read_text(encoding="utf-8").strip()
+        except OSError:
+            info["version"] = "unknown"
+
+    # Source checkouts get useful provenance even when run without install.sh.
+    if not info.get("git_commit") or not info.get("git_branch"):
+        source_dir = Path(__file__).resolve().parent
+        def git_value(*args: str) -> str:
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(source_dir), *args],
+                    check=False, capture_output=True, text=True, timeout=2,
+                )
+                return result.stdout.strip() if result.returncode == 0 else "unknown"
+            except (OSError, subprocess.SubprocessError):
+                return "unknown"
+
+        info.setdefault("git_commit", git_value("rev-parse", "HEAD"))
+        info.setdefault("git_branch", git_value("branch", "--show-current"))
+        info.setdefault("git_tag", git_value("describe", "--tags", "--always"))
+        if "git_dirty" not in info:
+            info["git_dirty"] = str(bool(git_value("status", "--porcelain") not in ("", "unknown")))
+
+    info.setdefault("build_time_utc", "unknown")
+    info.setdefault("source_path", str(Path(__file__).resolve()))
+    return info
 
 
 def configure_logging(verbose: bool = False) -> None:
@@ -1032,11 +1075,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     VERIFY_WITH_SHA256 = args.sha256
     configure_logging(args.verbose)
 
+    build_info = load_build_info()
+    run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    logger.info(
+        "Run provenance: run_id=%s version=%s git_commit=%s git_branch=%s "
+        "git_tag=%s git_dirty=%s build_time_utc=%s python=%s executable=%s "
+        "script=%s argv=%r",
+        run_id, build_info.get("version", "unknown"),
+        build_info.get("git_commit", "unknown"), build_info.get("git_branch", "unknown"),
+        build_info.get("git_tag", "unknown"), build_info.get("git_dirty", "unknown"),
+        build_info.get("build_time_utc", "unknown"), sys.version.split()[0],
+        sys.executable, build_info.get("source_path", str(Path(__file__).resolve())),
+        list(argv) if argv is not None else sys.argv[1:],
+    )
+
     try:
         with import_session_lock():
             # Do not reset shared dashboard status until this process owns the
             # session lock; a duplicate launch must not hide the active session.
-            logger.info("--- Starting new photo offloader session ---")
+            logger.info("--- Starting new photo offloader session run_id=%s ---", run_id)
             _PROGRESS_STARTED = time.monotonic()
             _PROGRESS.update({"state": "scanning", "phase": "startup", "bytes_done": 0,
                               "bytes_total": 0, "bytes_transferred": 0, "current_file": "",
