@@ -276,8 +276,8 @@ class Dashboard:
             progress = int(status.get("catalog_discovered", 0) or 0)
             estimate_total = int(status.get("catalog_estimated_total", 0) or 0)
         else:
-            progress = int(status.get("catalog_scanned", 0) or 0)
-            estimate_total = int(status.get("catalog_estimated_total", 0) or 0)
+            progress = int(status.get("catalog_root_scanned", 0) or 0)
+            estimate_total = int(status.get("catalog_root_estimated_total", 0) or 0)
 
         previous_progress = int(getattr(self, "_catalog_eta_progress", 0) or 0)
         if progress < previous_progress:
