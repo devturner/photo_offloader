@@ -1031,15 +1031,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     global VERIFY_WITH_SHA256, _PROGRESS_STARTED
     VERIFY_WITH_SHA256 = args.sha256
     configure_logging(args.verbose)
-    logger.info("--- Starting new photo offloader session ---")
-    _PROGRESS_STARTED = time.monotonic()
-    _PROGRESS.update({"state": "scanning", "phase": "startup", "bytes_done": 0,
-                      "bytes_total": 0, "bytes_transferred": 0, "current_file": "",
-                      "source": "", "message": "Preparing Photo Offloader"})
-    update_status()
 
     try:
         with import_session_lock():
+            # Do not reset shared dashboard status until this process owns the
+            # session lock; a duplicate launch must not hide the active session.
+            logger.info("--- Starting new photo offloader session ---")
+            _PROGRESS_STARTED = time.monotonic()
+            _PROGRESS.update({"state": "scanning", "phase": "startup", "bytes_done": 0,
+                              "bytes_total": 0, "bytes_transferred": 0, "current_file": "",
+                              "source": "", "message": "Preparing Photo Offloader"})
+            update_status()
+
             if args.backup_usb:
                 logger.info("Starting independent local-to-USB backup.")
                 backup_stats = copy_local_archive_to_usb()
@@ -1148,6 +1151,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         logger.warning("Process canceled by user.")
         notify("Photo Offloader Canceled", "The operation was canceled.")
         return 130
+    except RuntimeError as exc:
+        if str(exc) == "Another Photo Offloader import session is already running.":
+            logger.warning("Duplicate launch ignored because another Photo Offloader session owns the lock.")
+            return 0
+        update_status(state="failed", message=str(exc), current_file="")
+        logger.exception("Fatal error: %s", exc)
+        notify("Photo Offloader Stopped", str(exc))
+        return 1
     except Exception as exc:
         update_status(state="failed", message=str(exc), current_file="")
         logger.exception("Fatal error: %s", exc)
