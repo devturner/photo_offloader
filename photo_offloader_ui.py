@@ -253,6 +253,45 @@ class Dashboard:
                                text=f"Peak {format_bytes(peak)}/s", fill="#9caec4",
                                font=("SF Pro Text", 9))
 
+    def catalog_eta(self, status: Dict[str, Any]) -> str:
+        """Estimate remaining catalog time only when a meaningful scan rate exists."""
+        stage = str(status.get("catalog_stage", "") or "")
+        if stage == "Reading metadata batches":
+            # ExifTool runs as a batch with no per-file progress callback.
+            return "Reading metadata…"
+        if stage == "Preparing metadata":
+            return "Preparing…"
+        if stage not in ("Finding files needing metadata", "Indexing files"):
+            return "Estimating…"
+
+        now = time.monotonic()
+        marker = (status.get("run_id"), status.get("catalog_root"), stage)
+        if getattr(self, "_catalog_eta_marker", None) != marker:
+            self._catalog_eta_marker = marker
+            self._catalog_eta_started = now
+            self._catalog_eta_progress = 0
+        elapsed = max(now - getattr(self, "_catalog_eta_started", now), 0.0)
+
+        if stage == "Finding files needing metadata":
+            progress = int(status.get("catalog_discovered", 0) or 0)
+            estimate_total = int(status.get("catalog_estimated_total", 0) or 0)
+        else:
+            progress = int(status.get("catalog_scanned", 0) or 0)
+            estimate_total = int(status.get("catalog_estimated_total", 0) or 0)
+
+        previous_progress = int(getattr(self, "_catalog_eta_progress", 0) or 0)
+        if progress < previous_progress:
+            self._catalog_eta_started = now
+            elapsed = 0.0
+        self._catalog_eta_progress = progress
+        if progress <= 0 or estimate_total <= progress or elapsed < 2:
+            return "Estimating…"
+        rate = progress / elapsed
+        if rate <= 0:
+            return "Estimating…"
+        remaining = max(estimate_total - progress, 0) / rate
+        return format_duration(remaining)
+
     def refresh(self) -> None:
         status = read_status()
         state = str(status.get("state", "idle"))
@@ -283,6 +322,8 @@ class Dashboard:
             self.eta_var.set("Stopped")
         elif state == "canceled":
             self.eta_var.set("Canceled")
+        elif state == "scanning" and status.get("phase") == "catalog-update":
+            self.eta_var.set(self.catalog_eta(status))
         else:
             self.eta_var.set("Estimating…" if state == "scanning" else "—")
 
