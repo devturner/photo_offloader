@@ -951,8 +951,11 @@ def update_file_catalog() -> Dict[str, int]:
         raise RuntimeError("No archive locations are available to update the catalog.")
 
     totals = {"scanned": 0, "metadata_refreshed": 0, "roots": len(roots)}
-    update_status(state="scanning", phase="catalog-update", source="; ".join(map(str, roots)),
-                  message="Updating file catalog", current_file="")
+    update_status(state="scanning", phase="catalog-update", catalog_stage="Preparing metadata",
+                  catalog_scanned=0, catalog_total_scanned=0, catalog_candidates=0,
+                  catalog_root="", catalog_root_index=0, catalog_roots_total=len(roots),
+                  source="; ".join(map(str, roots)), message="Preparing catalog metadata batches",
+                  current_file="", current_path="")
     logger.info("Starting catalog update for %d root(s).", len(roots))
 
     for root_index, root in enumerate(roots, start=1):
@@ -964,18 +967,33 @@ def update_file_catalog() -> Dict[str, int]:
         seen: List[str] = []
         root_scanned = 0
         candidates = []
+        discovered = 0
         for candidate in root.rglob("*"):
             try:
                 if (candidate.is_file() and not candidate.is_symlink()
                         and not any(part.startswith(".") for part in candidate.relative_to(root).parts)
                         and candidate.suffix.lower() in MEDIA_EXTENSIONS):
+                    discovered += 1
                     fingerprint = file_fingerprint(candidate)
                     cached = catalog_row(candidate, fingerprint)
                     if not (cached and cached[4] and cached[5] and cached[6]):
                         candidates.append(candidate)
+                    if discovered % 100 == 0:
+                        update_status(catalog_stage="Finding files needing metadata",
+                                      catalog_root=str(root), catalog_root_index=root_index,
+                                      catalog_roots_total=len(roots),
+                                      catalog_scanned=totals["scanned"],
+                                      catalog_total_scanned=totals["scanned"],
+                                      catalog_discovered=discovered,
+                                      catalog_candidates=len(candidates),
+                                      current_file=candidate.name, current_path=str(candidate),
+                                      message=f"Preparing metadata batch • {discovered:,} media files checked")
             except (OSError, sqlite3.Error) as exc:
                 logger.warning("Could not inspect catalog candidate %s: %s", candidate, exc)
 
+        update_status(catalog_stage="Reading metadata batches", catalog_candidates=len(candidates),
+                      catalog_discovered=discovered, current_file="", current_path="",
+                      message=f"Reading metadata for {len(candidates):,} new or changed files")
         batch_metadata = get_exiftool_metadata_batch(
             candidates,
             ["-DateTimeOriginal", "-CreateDate", "-DateTimeDigitized", "-ModifyDate", "-Make", "-Model"],
@@ -1001,25 +1019,29 @@ def update_file_catalog() -> Dict[str, int]:
                 cached = catalog_row(path, fingerprint)
                 if cached and cached[4] and cached[5] and cached[6]:
                     if totals["scanned"] % 100 == 0:
-                        update_status(current_file=path.name, current_path=str(path),
-                                      catalog_scanned=root_scanned,
+                        update_status(catalog_stage="Indexing files",
+                                      current_file=path.name, current_path=str(path),
+                                      catalog_scanned=totals["scanned"],
                                       catalog_total_scanned=totals["scanned"],
                                       catalog_root=str(root),
                                       catalog_roots_total=len(roots),
                                       catalog_root_index=root_index,
                                       catalog_files_found=totals["scanned"],
-                                      message=f"Cataloged {totals['scanned']:,} files; cached entries reused")
+                                      catalog_candidates=len(candidates),
+                                      message=f"Indexing cached entries • {totals['scanned']:,} media files scanned")
                         logger.info("Catalog update progress: %d files scanned.", totals["scanned"])
                     continue
 
-                update_status(current_file=path.name, current_path=str(path),
-                              catalog_scanned=root_scanned,
+                update_status(catalog_stage="Indexing files",
+                              current_file=path.name, current_path=str(path),
+                              catalog_scanned=totals["scanned"],
                               catalog_total_scanned=totals["scanned"],
                               catalog_root=str(root),
                               catalog_roots_total=len(roots),
                               catalog_root_index=root_index,
                               catalog_files_found=totals["scanned"],
-                              message=f"Indexing metadata for {path.name} ({totals['scanned']:,} files scanned)")
+                              catalog_candidates=len(candidates),
+                              message=f"Indexing {path.name} • {totals['scanned']:,} media files scanned")
                 metadata = batch_metadata.get(resolved_path)
                 if metadata:
                     timestamp = None
