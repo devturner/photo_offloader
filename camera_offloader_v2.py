@@ -1006,7 +1006,7 @@ def update_file_catalog() -> Dict[str, int]:
                                       catalog_total_scanned=totals["scanned"],
                                       catalog_root=str(root),
                                       catalog_roots_total=len(roots),
-                                      catalog_root_index=roots.index(root) + 1,
+                                      catalog_root_index=root_index,
                                       catalog_files_found=totals["scanned"],
                                       message=f"Cataloged {totals['scanned']:,} files; cached entries reused")
                         logger.info("Catalog update progress: %d files scanned.", totals["scanned"])
@@ -1017,7 +1017,7 @@ def update_file_catalog() -> Dict[str, int]:
                               catalog_total_scanned=totals["scanned"],
                               catalog_root=str(root),
                               catalog_roots_total=len(roots),
-                              catalog_root_index=roots.index(root) + 1,
+                              catalog_root_index=root_index,
                               catalog_files_found=totals["scanned"],
                               message=f"Indexing metadata for {path.name} ({totals['scanned']:,} files scanned)")
                 metadata = batch_metadata.get(resolved_path)
