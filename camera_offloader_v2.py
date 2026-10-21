@@ -612,12 +612,17 @@ def get_camera_model(path: Path) -> str:
 
 
 def get_month_folder(source: Path) -> str:
+    cached = catalog_row(source)
+    if cached and cached[4]:
+        return str(cached[4])
     timestamp = get_exif_datetime(source)
     if timestamp is None:
         info = source.stat()
         birth = getattr(info, "st_birthtime", None) if USE_FILE_BIRTH_TIME else None
         timestamp = datetime.fromtimestamp(birth if birth is not None else info.st_mtime)
-    return timestamp.strftime("%Y-%m")
+    month = timestamp.strftime("%Y-%m")
+    catalog_record(source, capture_month=month)
+    return month
 
 
 def get_media_type_folder(source: Path) -> str:
