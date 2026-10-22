@@ -84,15 +84,14 @@ def publish_status(state: str, message: str) -> None:
 
 def log_sync_event(message: str) -> None:
     """Append an application-level lifecycle message to the rclone log."""
-    SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().astimezone().strftime("%Y/%m/%d %H:%M:%S")
     try:
+        SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
         with LOG_PATH.open("a", encoding="utf-8") as handle:
             handle.write(f"{stamp} INFO  : Photo Offloader: {message}\n")
     except OSError:
         # Logging must never turn an otherwise successful upload into a failure.
         pass
-
 
 def find_rclone() -> Optional[str]:
     found = shutil.which("rclone")
