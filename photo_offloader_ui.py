@@ -55,6 +55,13 @@ def format_duration(value: float) -> str:
     return f"{seconds}s"
 
 
+def format_clock(value: float) -> str:
+    seconds = max(int(value or 0), 0)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
 def read_status() -> Dict[str, Any]:
     try:
         with STATUS_FILE.open(encoding="utf-8") as handle:
@@ -106,24 +113,46 @@ class Dashboard:
         metrics.pack(fill="x", pady=(0, 14))
         self.speed_var = tk.StringVar(value="—")
         self.eta_var = tk.StringVar(value="ETA —")
+        self.copy_title_var = tk.StringVar(value="Import to HD")
+        self.copy_percent_var = tk.DoubleVar(value=0.0)
+        self.copy_progress_var = tk.StringVar(value="Waiting for a camera card")
+        self.copy_elapsed_var = tk.StringVar(value="Elapsed 00:00")
         self.upload_speed_var = tk.StringVar(value="—")
         self.upload_eta_var = tk.StringVar(value="ETA —")
         self.upload_progress_var = tk.StringVar(value="Waiting for upload")
         self.upload_percent_var = tk.DoubleVar(value=0.0)
+        self.upload_elapsed_var = tk.StringVar(value="Elapsed 00:00")
         self.progress_var = tk.StringVar(value="Waiting for a camera card")
         self.speed_history = deque([0.0] * 60, maxlen=60)
+        self.upload_speed_history = deque([0.0] * 60, maxlen=60)
         self.last_sample_time = time.monotonic()
         self.last_transferred_bytes = 0
+        self._copy_run_key = None
+        self._copy_started_at = None
+        self._copy_elapsed_final = 0.0
+        self._upload_started_at = None
+        self._upload_elapsed_final = 0.0
+        self._upload_run_key = None
+        self._upload_last_bytes = 0
+        self._upload_last_sample_time = time.monotonic()
 
         speed_card = ttk.Frame(metrics, style="Card.TFrame", padding=14)
         speed_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         speed_header = ttk.Frame(speed_card, style="Card.TFrame")
         speed_header.pack(fill="x")
-        ttk.Label(speed_header, text="COPY SPEED", style="CardTitle.TLabel").pack(side="left", anchor="w")
+        ttk.Label(speed_header, textvariable=self.copy_title_var, style="CardTitle.TLabel").pack(side="left", anchor="w")
         ttk.Label(speed_header, textvariable=self.eta_var, style="CardTitle.TLabel").pack(side="right", anchor="e")
-        ttk.Label(speed_card, textvariable=self.speed_var, style="Metric.TLabel").pack(anchor="w", pady=(5, 0))
-        self.graph = tk.Canvas(speed_card, height=82, bg="#1b2638", highlightthickness=0)
-        self.graph.pack(fill="x", pady=(5, 0))
+        copy_body = ttk.Frame(speed_card, style="Card.TFrame")
+        copy_body.pack(fill="x", pady=(8, 0))
+        copy_metrics = ttk.Frame(copy_body, style="Card.TFrame")
+        copy_metrics.pack(side="left", fill="both", expand=True)
+        ttk.Label(copy_metrics, textvariable=self.speed_var, style="Metric.TLabel").pack(anchor="w")
+        ttk.Label(copy_metrics, textvariable=self.copy_elapsed_var, style="CardTitle.TLabel").pack(anchor="w", pady=(2, 0))
+        self.copy_progress = ttk.Progressbar(copy_metrics, mode="determinate", maximum=100, variable=self.copy_percent_var)
+        self.copy_progress.pack(fill="x", pady=(9, 3))
+        ttk.Label(copy_metrics, textvariable=self.copy_progress_var, style="CardTitle.TLabel", wraplength=220).pack(anchor="w")
+        self.graph = tk.Canvas(copy_body, height=94, width=180, bg="#1b2638", highlightthickness=0)
+        self.graph.pack(side="right", fill="both", expand=True, padx=(12, 0))
 
         upload_card = ttk.Frame(metrics, style="Card.TFrame", padding=14)
         upload_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
@@ -131,12 +160,19 @@ class Dashboard:
         upload_header.pack(fill="x")
         ttk.Label(upload_header, text="GOOGLE PHOTOS UPLOAD", style="CardTitle.TLabel").pack(side="left", anchor="w")
         ttk.Label(upload_header, textvariable=self.upload_eta_var, style="CardTitle.TLabel").pack(side="right", anchor="e")
-        ttk.Label(upload_card, textvariable=self.upload_speed_var, style="Metric.TLabel").pack(anchor="w", pady=(5, 0))
+        upload_body = ttk.Frame(upload_card, style="Card.TFrame")
+        upload_body.pack(fill="x", pady=(8, 0))
+        upload_metrics = ttk.Frame(upload_body, style="Card.TFrame")
+        upload_metrics.pack(side="left", fill="both", expand=True)
+        ttk.Label(upload_metrics, textvariable=self.upload_speed_var, style="Metric.TLabel").pack(anchor="w")
+        ttk.Label(upload_metrics, textvariable=self.upload_elapsed_var, style="CardTitle.TLabel").pack(anchor="w", pady=(2, 0))
         self.upload_progress = ttk.Progressbar(
-            upload_card, mode="determinate", maximum=100, variable=self.upload_percent_var
+            upload_metrics, mode="determinate", maximum=100, variable=self.upload_percent_var
         )
-        self.upload_progress.pack(fill="x", pady=(10, 3))
-        ttk.Label(upload_card, textvariable=self.upload_progress_var, style="CardTitle.TLabel").pack(anchor="w")
+        self.upload_progress.pack(fill="x", pady=(9, 3))
+        ttk.Label(upload_metrics, textvariable=self.upload_progress_var, style="CardTitle.TLabel", wraplength=220).pack(anchor="w")
+        self.upload_graph = tk.Canvas(upload_body, height=94, width=180, bg="#1b2638", highlightthickness=0)
+        self.upload_graph.pack(side="right", fill="both", expand=True, padx=(12, 0))
         metrics.columnconfigure(0, weight=1)
         metrics.columnconfigure(1, weight=1)
 
@@ -237,8 +273,7 @@ class Dashboard:
             if self.debug_refresh_job is not None:
                 self.root.after_cancel(self.debug_refresh_job)
                 self.debug_refresh_job = None
-            return
-        window = tk.Toplevel(self.root)
+            return        window = tk.Toplevel(self.root)
         window.title("Photo Offloader — Live Debug Log")
         window.geometry("1000x560")
         window.minsize(700, 350)
@@ -288,18 +323,36 @@ class Dashboard:
         except (OSError, ValueError):
             status = {}
         state = str(status.get("state", "unknown"))
-
-        if state == "complete":
+        run_key = str(status.get("run_id") or status.get("started_at") or status.get("last_started") or "")
+        now = time.monotonic()
+        if state == "running":
+            if self._upload_started_at is None or (run_key and run_key != self._upload_run_key):
+                self._upload_started_at = now
+                self._upload_run_key = run_key
+                self._upload_elapsed_final = 0.0
+                self._upload_last_bytes = 0
+                self._upload_last_sample_time = now
+                self.upload_speed_history.clear()
+            elapsed = now - self._upload_started_at
+            self.upload_elapsed_var.set(f"Elapsed {format_clock(elapsed)}")
+        elif state == "complete":
+            if self._upload_started_at is not None:
+                self._upload_elapsed_final = now - self._upload_started_at
+                self._upload_started_at = None
+            self.upload_elapsed_var.set(f"Elapsed {format_clock(self._upload_elapsed_final)}")
             self.upload_speed_var.set("—")
             self.upload_eta_var.set("ETA Complete")
             self.upload_percent_var.set(100.0)
             self.upload_progress_var.set("Upload complete")
+            self.draw_upload_speed_graph()
             return
-        if state != "running":
+        else:
+            self.upload_elapsed_var.set(f"Elapsed {format_clock(self._upload_elapsed_final)}")
             self.upload_speed_var.set("—")
             self.upload_eta_var.set("ETA —")
             self.upload_percent_var.set(0.0)
             self.upload_progress_var.set("Waiting for upload")
+            self.draw_upload_speed_graph()
             return
 
         try:
@@ -340,6 +393,14 @@ class Dashboard:
         self.upload_progress_var.set(
             f"{percent:.0f}% • {progress['transferred']} of {progress['total']} uploaded"
         )
+        transferred_bytes = int(progress.get("bytes_transferred", 0) or 0)
+        sample_now = time.monotonic()
+        elapsed = max(sample_now - self._upload_last_sample_time, 0.001)
+        sample_speed = max(transferred_bytes - self._upload_last_bytes, 0) / elapsed
+        self.upload_speed_history.append(sample_speed)
+        self._upload_last_bytes = transferred_bytes
+        self._upload_last_sample_time = sample_now
+        self.draw_upload_speed_graph()
 
     def google_photos_summary(self) -> str:
         try:
@@ -456,32 +517,35 @@ class Dashboard:
             self.message_var.set(f"Could not update catalog: {exc}")
 
     def draw_speed_graph(self) -> None:
-        self.graph.delete("all")
-        width = max(self.graph.winfo_width(), 200)
-        height = max(self.graph.winfo_height(), 80)
-        left, right, top, bottom = 8, width - 8, 8, height - 18
+        self._draw_graph(self.graph, self.speed_history, "#60a5fa")
+
+
+    def draw_upload_speed_graph(self) -> None:
+        self._draw_graph(self.upload_graph, self.upload_speed_history, "#34c99a")
+
+    def _draw_graph(self, canvas: tk.Canvas, history: deque, line_color: str) -> None:
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 150)
+        height = max(canvas.winfo_height(), 82)
+        left, right, top, bottom = 5, width - 5, 8, height - 15
         for fraction in (0.25, 0.5, 0.75, 1.0):
             y = bottom - (bottom - top) * fraction
-            self.graph.create_line(left, y, right, y, fill="#34445b", dash=(2, 3))
-        values = list(self.speed_history)
+            canvas.create_line(left, y, right, y, fill="#34445b", dash=(2, 3))
+        values = list(history)
         peak = max(values, default=0.0)
         if peak <= 0:
-            self.graph.create_text(left + 4, top + 5, anchor="nw",
-                                   text="Waiting for transfer data…", fill="#9caec4",
-                                   font=("SF Pro Text", 9))
+            canvas.create_text(left + 3, top + 4, anchor="nw", text="Waiting for data…",
+                               fill="#9caec4", font=("SF Pro Text", 9))
             return
         points = []
-        span_x = right - left
-        span_y = bottom - top
         for index, value in enumerate(values):
-            x = left + span_x * index / max(len(values) - 1, 1)
-            y = bottom - span_y * (value / peak)
+            x = left + (right - left) * index / max(len(values) - 1, 1)
+            y = bottom - (bottom - top) * min(value / peak, 1.0)
             points.extend((x, y))
         if len(points) >= 4:
-            self.graph.create_line(*points, fill="#53c7a6", width=2, smooth=True)
-        self.graph.create_text(right - 2, top + 2, anchor="ne",
-                               text=f"Peak {format_bytes(peak)}/s", fill="#9caec4",
-                               font=("SF Pro Text", 9))
+            canvas.create_line(*points, fill=line_color, width=2, smooth=True)
+        canvas.create_text(right - 2, top + 2, anchor="ne", text=f"Peak {format_bytes(peak)}/s",
+                           fill="#9caec4", font=("SF Pro Text", 8))
 
     def catalog_eta(self, status: Dict[str, Any]) -> str:
         """Estimate remaining catalog time only when a meaningful scan rate exists."""
@@ -497,8 +561,7 @@ class Dashboard:
         now = time.monotonic()
         marker = (status.get("run_id"), status.get("catalog_root"), stage)
         if getattr(self, "_catalog_eta_marker", None) != marker:
-            self._catalog_eta_marker = marker
-            self._catalog_eta_started = now
+            self._catalog_eta_marker = marker            self._catalog_eta_started = now
             self._catalog_eta_progress = 0
         elapsed = max(now - getattr(self, "_catalog_eta_started", now), 0.0)
 
@@ -525,6 +588,34 @@ class Dashboard:
     def refresh(self) -> None:
         status = read_status()
         state = str(status.get("state", "idle"))
+        phase = str(status.get("phase", "") or "")
+        source = str(status.get("source", "") or "")
+        if state == "copying" and phase != "catalog-update":
+            if "USB" in str(status.get("operation", "")).upper() or "backup" in str(status.get("message", "")).lower() or "/Volumes/Photos" in str(status.get("destination", "")):
+                self.copy_title_var.set("Backing up to USB")
+            else:
+                self.copy_title_var.set("Import to HD")
+        elif state == "scanning" and phase == "copy-decision":
+            self.copy_title_var.set("Preparing copy")
+        elif state == "scanning" and phase == "catalog-update":
+            self.copy_title_var.set("Updating file catalog")
+        else:
+            self.copy_title_var.set("Copy")
+        run_key = str(status.get("run_id") or status.get("started_at") or source)
+        now = time.monotonic()
+        active_copy = state in ("copying", "scanning") and phase != "catalog-update"
+        if active_copy:
+            if self._copy_started_at is None or (run_key and run_key != self._copy_run_key):
+                self._copy_started_at = now
+                self._copy_run_key = run_key
+                self._copy_elapsed_final = 0.0
+                self.speed_history.clear()
+            self.copy_elapsed_var.set(f"Elapsed {format_clock(now - self._copy_started_at)}")
+        else:
+            if self._copy_started_at is not None:
+                self._copy_elapsed_final = now - self._copy_started_at
+                self._copy_started_at = None
+            self.copy_elapsed_var.set(f"Elapsed {format_clock(self._copy_elapsed_final)}")
         done = int(status.get("bytes_done", 0) or 0)
         total = int(status.get("bytes_total", 0) or 0)
         average_speed = float(status.get("transfer_speed_bps", 0) or 0)
@@ -601,6 +692,11 @@ class Dashboard:
             self.progress.configure(mode="determinate")
             percent = min(100.0, (done / total * 100.0) if total else 0.0)
             self.progress.configure(value=percent)
+        self.copy_percent_var.set(min(100.0, (done / total * 100.0) if total else (100.0 if state == "complete" else 0.0)))
+        self.copy_progress_var.set(
+            f"{format_bytes(done)} of {format_bytes(total)} • {self.copy_percent_var.get():.0f}%"
+            if total else ("Copy complete" if state == "complete" else "Waiting for transfer")
+        )
         if decision_phase:
             self.progress_var.set(
                 f"Checking existing files  •  {int(status.get('decision_files_checked', 0) or 0)} "
