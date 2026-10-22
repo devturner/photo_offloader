@@ -111,7 +111,7 @@ class Dashboard:
                         font=("SF Pro Text", 10))
         style.configure("Metric.TLabel", background="#ffffff", foreground="#172033",
                         font=("SF Pro Display", 18, "bold"))
-        style.configure("Body.TLabel", background="#f3f6fb", foreground="#334155",
+        style.configure("Body.TLabel", background="#ffffff", foreground="#334155",
                         font=("SF Pro Text", 10))
         style.configure("File.TLabel", background="#ffffff", foreground="#172033",
                         font=("SF Pro Text", 11, "bold"))
