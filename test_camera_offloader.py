@@ -31,7 +31,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.usb.mkdir()
         self.usb_volume.mkdir()
         self.original = {k: getattr(app, k) for k in (
-            "LOCAL_DEST_ROOT", "USB_DEST_ROOT", "USB_DEST_VOLUME", "CATALOG_DB_PATH",
+            "LOCAL_DEST_ROOT", "LOCAL_RAW_DEST_ROOT", "USB_DEST_ROOT", "USB_RAW_DEST_ROOT", "USB_DEST_VOLUME", "CATALOG_DB_PATH",
             "LEGACY_CATALOG_DB_PATH", "_CATALOG_INITIALIZED_PATH",
             "BUILD_INFO_PATH", "VERSION_PATH",
             "LOG_FILE_PATH", "SESSION_LOCK_PATH", "VERIFY_WITH_SHA256",
@@ -40,7 +40,11 @@ class TestCameraOffloader(unittest.TestCase):
             "_PROGRESS_STARTED", "_PROGRESS",
         )}
         app.LOCAL_DEST_ROOT = self.local
+        app.LOCAL_RAW_DEST_ROOT = self.root / "local-raw"
+        app.LOCAL_RAW_DEST_ROOT.mkdir()
         app.USB_DEST_ROOT = self.usb
+        app.USB_RAW_DEST_ROOT = self.root / "usb-raw"
+        app.USB_RAW_DEST_ROOT.mkdir()
         app.USB_DEST_VOLUME = self.usb_volume
         app.LOG_FILE_PATH = self.log
         app.SESSION_LOCK_PATH = self.lock
@@ -81,6 +85,13 @@ class TestCameraOffloader(unittest.TestCase):
         files["RAW"].write_bytes(b"raw")
         files["VIDEO"].write_bytes(b"video")
         return files
+
+    def test_raw_media_uses_separate_top_level_archive(self):
+        self.assertEqual(app.local_root_for_category("RAW"), app.LOCAL_RAW_DEST_ROOT)
+        self.assertEqual(app.local_root_for_category("JPG"), app.LOCAL_DEST_ROOT)
+        self.assertEqual(app.local_root_for_category("VIDEO"), app.LOCAL_DEST_ROOT)
+        self.assertEqual(app.usb_root_for_category("RAW"), app.USB_RAW_DEST_ROOT)
+        self.assertEqual(app.usb_root_for_category("JPG"), app.USB_DEST_ROOT)
 
     def test_stats_aliases_and_success(self):
         stats = ImportStats(destination_copies=2, destination_skips=1, verified_copies=3)
