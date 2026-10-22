@@ -79,13 +79,9 @@ while IFS= read -r -d '' source; do
     ((moved+=1))
   fi
 done < <(find "$SOURCE_ROOT" -type f \\( \
-  -iname '*.nef' -o -iname '*.nrw' -o -iname '*.arw' -o \
-  -iname '*.cr2' -o -iname '*.cr3' -o -iname '*.dng' -o \
-  -iname '*.raf' -o -iname '*.orf' -o -iname '*.rw2' -o \
-  -iname '*.pef' -o -iname '*.srw' -o -iname '*.3fr' -o \
-  -iname '*.fff' -o -iname '*.iiq' -o -iname '*.kdc' -o \
-  -iname '*.mos' -o -iname '*.mef' -o -iname '*.rwl' -o \
-  -iname '*.x3f' \\) -print0)
+  -iname '*.nef' -o -iname '*.arw' -o -iname '*.cr2' -o \
+  -iname '*.cr3' -o -iname '*.dng' -o -iname '*.raf' -o \
+  -iname '*.orf' -o -iname '*.rw2' \\) -print0)
 
 printf '\nSummary: %d RAW file(s) found; %d %s; %d conflict(s); %d error(s).\n' \
   "$seen" "$moved" "$([[ $APPLY -eq 1 ]] && printf 'moved' || printf 'would move')" "$conflicts" "$failed"
