@@ -393,11 +393,18 @@ def update_card_manifest_entry(
 def hash_for_copy_decision(
     source: Path, destination: Path, dcim_folder: Path, manifest: Dict[str, dict],
 ) -> Tuple[str, str]:
-    """Reuse trustworthy cached hashes, hashing file contents only when cache data is missing."""
-    source_row = catalog_row(source)
+    """Reuse trustworthy cached hashes and avoid database writes on cache hits."""
+    # The card manifest is the cheapest source of truth. Only query SQLite when
+    # the card-side fingerprint is absent or stale.
     source_hash = card_manifest_entry(manifest, source, dcim_folder)
-    if source_hash is None and source_row and source_row[3]:
-        source_hash = str(source_row[3])
+    source_row = None
+    if source_hash is None:
+        source_row = catalog_row(source)
+        if source_row and source_row[3]:
+            source_hash = str(source_row[3])
+
+    # Destination hashes are reusable only when its indexed fingerprint still
+    # matches the current file. A missing/stale row requires a content hash.
     destination_row = catalog_row(destination)
     destination_hash = (
         str(destination_row[3])
@@ -408,8 +415,13 @@ def hash_for_copy_decision(
         source_hash = sha256_file(source)
     if destination_hash is None:
         destination_hash = sha256_file(destination)
-    catalog_record(source, sha256=source_hash)
-    catalog_record(destination, sha256=destination_hash)
+
+    # Persist hashes only when we had to establish them; do not open and commit
+    # two more SQLite transactions for every unchanged duplicate on every insert.
+    if source_row is None or not source_row or not source_row[3]:
+        catalog_record(source, sha256=source_hash)
+    if not destination_row or not destination_row[3]:
+        catalog_record(destination, sha256=destination_hash)
     update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
     return source_hash, destination_hash
 
@@ -915,7 +927,6 @@ def copy_one_to_destination(
                   decision_files_total=int(_PROGRESS.get("decision_files_total", 0)))
     final_path = build_destination_path(source, dcim_folder, destination_base)
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    catalog_record(source)
 
     if final_path.exists() and final_path.is_file():
         try:
