@@ -4,6 +4,9 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Changed
+- Redesigned the Copy and Google Photos dashboard cards with independent progress percentages, elapsed timers, and separate rolling throughput graphs positioned beside each speed metric. Copy card title reflects import-to-HD versus USB backup activity.
+
 ### Added
 - Dashboard now shows Google Photos upload percentage, current transfer speed, and estimated time remaining beside the existing copy-speed monitor. ETA labels sit in the upper-right corner of each speed card.
 - Google Photos logs now include an explicit application-level success message after rclone exits successfully and per-file catalog updates finish.
