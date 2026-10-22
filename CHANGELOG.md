@@ -6,6 +6,10 @@ All notable changes to Photo Offloader are documented here.
 
 ### Added
 - Dashboard now shows Google Photos upload percentage, current transfer speed, and estimated time remaining beside the existing copy-speed monitor. ETA labels sit in the upper-right corner of each speed card.
+- Google Photos logs now include an explicit application-level success message after rclone exits successfully and per-file catalog updates finish.
+
+### Changed
+- The Google Photos upload card now shows a distinct finalization state when rclone transfer stats reach 100% but album uploads are still being committed.
 
 ### Added
 - Optional rclone-based Google Photos uploader for JPG/JPEG photos and supported videos, with automatic post-import uploads, a dashboard manual-sync button, separate upload status/logs, and per-file upload records in the SQLite catalog.
