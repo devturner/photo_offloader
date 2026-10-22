@@ -248,7 +248,7 @@ class TestCameraOffloader(unittest.TestCase):
         ):
             result = app.update_file_catalog()
         self.assertEqual(result["scanned"], 1)
-        self.assertEqual(result["roots"], 1)
+        self.assertEqual(result["roots"], 2)  # CameraImports and CameraImportsRaw
         row = app.catalog_row(media)
         self.assertIsNotNone(row)
         self.assertEqual(row[5], "NIKON-Z-8")
