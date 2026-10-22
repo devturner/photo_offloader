@@ -20,6 +20,8 @@ PAUSE_FILE = Path(os.environ.get("PHOTO_OFFLOADER_PAUSE_FILE", str(INSTALL_DIR /
 TERMINAL_OUTPUT_FILE = INSTALL_DIR / ".terminal-output-enabled"
 BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
 IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
+GOOGLE_PHOTOS_SCRIPT = INSTALL_DIR / "google_photos_sync.py"
+GOOGLE_PHOTOS_STATUS = INSTALL_DIR / "google_photos_status.json"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 USB_VOLUME = Path("/Volumes/Photos")
 LOCAL_ARCHIVES = (Path.home() / "Pictures" / "CameraImports", Path.home() / "Pictures" / "CameraImportsRaw")
@@ -147,6 +149,9 @@ class Dashboard:
             status_actions, text=self.terminal_output_label(), command=self.toggle_terminal_output
         )
         self.terminal_output_button.pack(side="left", padx=(8, 0))
+        self.google_photos_var = tk.StringVar(value=self.google_photos_summary())
+        ttk.Label(auto_status, textvariable=self.google_photos_var, style="Body.TLabel", wraplength=760).pack(anchor="w", pady=(8, 0))
+        ttk.Button(status_actions, text="Sync Google Photos", command=self.start_google_photos_sync).pack(side="left", padx=(8, 0))
         self.debug_window = None
         self.debug_text = None
         self.debug_refresh_job = None
@@ -255,6 +260,28 @@ class Dashboard:
         self.debug_text.see("end")
         self.debug_text.configure(state="disabled")
         self.debug_refresh_job = self.root.after(1000, self.refresh_debug_log)
+
+    def google_photos_summary(self) -> str:
+        try:
+            payload = json.loads(GOOGLE_PHOTOS_STATUS.read_text(encoding="utf-8"))
+            state = str(payload.get("state", "unknown")).replace("_", " ").title()
+            message = str(payload.get("message", ""))
+            last_success = payload.get("last_success")
+            suffix = f" • Last success: {last_success}" if last_success else ""
+            return f"Google Photos: {state} • {message}{suffix}"
+        except (OSError, ValueError):
+            return "Google Photos: Not configured yet • Install rclone and configure a remote named gphotos."
+
+    def start_google_photos_sync(self) -> None:
+        if not GOOGLE_PHOTOS_SCRIPT.is_file():
+            self.message_var.set(f"Google Photos helper is missing: {GOOGLE_PHOTOS_SCRIPT}. Reinstall Photo Offloader.")
+            return
+        try:
+            subprocess.Popen([str(PYTHON), str(GOOGLE_PHOTOS_SCRIPT), "--sync"], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            self.message_var.set("Started Google Photos upload. Status will update here.")
+        except OSError as exc:
+            self.message_var.set(f"Could not start Google Photos upload: {exc}")
 
     def start_usb_backup(self) -> None:
         if not USB_VOLUME.is_mount():
@@ -518,6 +545,7 @@ class Dashboard:
 
         self.refresh_catalog_status(status)
         self.auto_status_var.set(self.trigger_status_summary())
+        self.google_photos_var.set(self.google_photos_summary())
 
         current_file = str(status.get("current_file", "") or "")
         self.file_var.set(current_file if current_file else "No active import")
