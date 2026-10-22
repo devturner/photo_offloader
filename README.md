@@ -42,11 +42,11 @@ Some Homebrew Python installations package Tk support separately. If the install
 - Optional one-way upload of JPG/JPEG photos and supported video formats to a dedicated Google Photos album named `Photo Offloader`. Successful uploads are recorded per file in the SQLite catalog with timestamp, remote/album, and the uploaded file fingerprint. Changed files no longer show as uploaded until synced again.
 - Upload starts automatically after a successful camera import and can be retried manually with **Sync Google Photos** in the dashboard. Live upload percentage, transfer speed, and ETA appear in the Google Photos Upload card while rclone is running. When transfers reach 100% but rclone is still committing uploads, the card explicitly shows “Finalizing…”; the sync log records a clear success message after rclone exits successfully and per-file catalog updates finish.
 - RAW files are excluded by extension and remain in `~/Pictures/CameraImportsRaw`; the USB archive remains consolidated at `/Volumes/Photos/CameraImports`.
-- Requires rclone and a Google Photos remote named `gphotos`; see setup steps below. Cloud failures never invalidate a completed local/USB import.
+- Requires rclone and a Google Photos remote named `gphotos`; see setup steps below. The OAuth token stays in rclone's own config. After a successful remote/album connection check, Photo Offloader saves only the remote name and last-check timestamp in `~/Library/Application Support/PhotoOffloaderData/preferences.json`, outside the replaceable install directory, so the dashboard can remember the setup after reinstalling. No credentials or tokens are copied into this preferences file. Cloud failures never invalidate a completed local/USB import.
 
 ### iTerm2 output
 
-The automatic camera trigger opens the importer in **iTerm2** by default. To use another terminal application, set `PHOTO_OFFLOADER_TERMINAL_APP` in the LaunchAgent environment before installing/loading the trigger.
+The automatic camera trigger opens the importer in **iTerm2** by default. Disabling Terminal output runs the same importer in the background and writes output to `~/.camera_transfer.log`; if that background importer exits unsuccessfully, trigger state is cleared so a later volume poll can retry the card. To use another terminal application, set `PHOTO_OFFLOADER_TERMINAL_APP` in the LaunchAgent environment before installing/loading the trigger.
 
 For example, to use the macOS Terminal app instead:
 
