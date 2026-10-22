@@ -38,6 +38,12 @@ The menu-bar controller uses `rumps`; the dashboard uses Python's `tkinter` UI. 
 
 Some Homebrew Python installations package Tk support separately. If the installer reports that `tkinter` is missing, install the matching formula, for example `brew install python-tk@3.14` for Python 3.14, then rerun `./install.sh`.
 
+### ☁️ Google Photos upload via rclone
+- Optional one-way upload of JPG/JPEG photos and supported video formats to a dedicated Google Photos album named `Photo Offloader`.
+- Upload starts automatically after a successful camera import and can be retried manually with **Sync Google Photos** in the dashboard.
+- RAW files are excluded by extension and remain in `~/Pictures/CameraImportsRaw`; the USB archive remains consolidated at `/Volumes/Photos/CameraImports`.
+- Requires rclone and a Google Photos remote named `gphotos`; see setup steps below. Cloud failures never invalidate a completed local/USB import.
+
 ### iTerm2 output
 
 The automatic camera trigger opens the importer in **iTerm2** by default. To use another terminal application, set `PHOTO_OFFLOADER_TERMINAL_APP` in the LaunchAgent environment before installing/loading the trigger.
@@ -311,6 +317,16 @@ Enable SHA-256 verification:
 ```bash
 python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8" --sha256
 ```
+
+## ☁️ Google Photos setup (optional)
+1. Install rclone (for example, `brew install rclone`).
+2. Follow [rclone’s Google Photos setup guide](https://rclone.org/googlephotos/) and create a remote named `gphotos`. In 2026, configure your own Google OAuth client ID/secret; the shared rclone client ID is being retired. Enable the Photos Library API as described by rclone.
+3. Run `rclone config` and complete browser authentication. Photo Offloader does not store Google credentials itself; rclone stores its token in its own config.
+4. Use **Sync Google Photos** in the dashboard to test the upload. The first run creates/uses the `Photo Offloader` album. After each successful camera import, the app launches the same upload in the background.
+
+Uploads are original-quality and count against your Google account storage. This is a one-way upload only: it does not delete items from Google Photos or import your existing library, and RAW extensions are excluded. The Google Photos API has limitations; rclone can only download items it uploaded, and its existence checks are not a full content-hash comparison. See [rclone’s documented limitations](https://rclone.org/googlephotos/).
+
+Set `PHOTO_OFFLOADER_GPHOTOS_REMOTE` to change the remote name or `PHOTO_OFFLOADER_GPHOTOS_ALBUM` to change the album name. Defaults are `gphotos` and `Photo Offloader`.
 
 ## 🔧 Configuration
 
