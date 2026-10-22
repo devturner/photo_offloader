@@ -23,7 +23,13 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
 
         self.python = self.install / "python3"
         self.importer = self.install / "camera_offloader_v2.py"
-        self.python.write_text("#!/bin/bash\nexit 0\n")
+        self.background_args = self.root / "background-import-args.txt"
+        self.python.write_text(
+            "#!/bin/bash\n"
+            + "if [[ \"$1\" == \"$PHOTO_OFFLOADER_IMPORTER\" ]]; then "
+            + f"printf '%s\\n' \"$@\" > {self.background_args}; sleep 0.2; fi\n"
+            + "exit 0\n"
+        )
         self.importer.write_text("#!/bin/bash\nexit 0\n")
         self.dashboard = self.install / "photo_offloader_ui.py"
         self.dashboard.write_text("# dashboard test fixture\n")
@@ -59,6 +65,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         env = os.environ.copy()
         env.update(
             {
+                "HOME": str(self.root),
                 "PHOTO_OFFLOADER_INSTALL_DIR": str(self.install),
                 "PHOTO_OFFLOADER_PYTHON": str(self.python),
                 "PHOTO_OFFLOADER_IMPORTER": str(self.importer),
@@ -103,6 +110,15 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertFalse(self.script_capture.exists())
         self.assertIn("Terminal output disabled", self.log.read_text())
         self.assertEqual(self.state.read_text().strip(), str(self.dcim))
+        # Terminal output changes only where output is sent, not whether import runs.
+        import time
+        deadline = time.monotonic() + 2
+        while not self.background_args.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(self.background_args.exists(), "background importer was not launched")
+        args = self.background_args.read_text()
+        self.assertIn("--source", args)
+        self.assertIn(str(self.dcim), args)
 
     def test_terminal_can_be_enabled_by_dashboard_toggle(self):
         (self.install / ".terminal-output-enabled").touch()

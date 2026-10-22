@@ -25,6 +25,7 @@ IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
 GOOGLE_PHOTOS_SCRIPT = INSTALL_DIR / "google_photos_sync.py"
 GOOGLE_PHOTOS_STATUS = INSTALL_DIR / "google_photos_status.json"
 GOOGLE_PHOTOS_LOG = INSTALL_DIR / "google_photos_sync.log"
+PREFERENCES_FILE = Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "preferences.json"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 USB_VOLUME = Path("/Volumes/Photos")
 LOCAL_ARCHIVES = (Path.home() / "Pictures" / "CameraImports", Path.home() / "Pictures" / "CameraImportsRaw")
@@ -349,6 +350,21 @@ class Dashboard:
             suffix = f" • Last success: {last_success}" if last_success else ""
             return f"Google Photos: {state} • {message}{suffix}"
         except (OSError, ValueError):
+            # The install-local status file is recreated with each installation.
+            # This non-secret preference lives beside the persistent media catalog.
+            try:
+                preferences = json.loads(PREFERENCES_FILE.read_text(encoding="utf-8"))
+                connection = preferences.get("google_photos", {})
+                if connection.get("configured"):
+                    remote = str(connection.get("remote", "gphotos:"))
+                    checked = connection.get("last_connection_check")
+                    suffix = f" • Last connection check: {checked}" if checked else ""
+                    return (
+                        f"Google Photos: Configured ({remote}) • "
+                        f"Connection details retained by rclone{suffix}"
+                    )
+            except (OSError, ValueError, AttributeError):
+                pass
             return "Google Photos: Not configured yet • Install rclone and configure a remote named gphotos."
 
     def start_google_photos_sync(self) -> None:

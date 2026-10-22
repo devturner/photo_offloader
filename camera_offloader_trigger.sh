@@ -28,6 +28,28 @@ log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"
 }
 
+# Run background imports under a small supervisor. If Python exits unsuccessfully,
+# clear this mount's handled-state so the next trigger poll can retry instead of
+# silently treating a failed launch as a completed import.
+start_background_import() {
+    local source_path="$1"
+    (
+        if "$PYTHON" "$IMPORTER" --source "$source_path"; then
+            log "Background importer exited successfully for: $source_path"
+        else
+            local result=$?
+            log "Background importer failed with status $result for: $source_path"
+            if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$source_path" ]]; then
+                rm -f "$STATE_FILE"
+                log "Cleared trigger state so this card can be retried."
+            fi
+        fi
+    ) >> "$HOME/.camera_transfer.log" 2>&1 </dev/null &
+    local pid=$!
+    printf '%s\n' "$source_path" > "$STATE_FILE"
+    log "Started background importer (pid $pid) for: $source_path"
+}
+
 if [[ ! -x "$PYTHON" || ! -f "$IMPORTER" ]]; then
     log "Importer installation not found."
     exit 0
@@ -138,8 +160,7 @@ APPLESCRIPT
             log "Launched iTerm2 importer for: $camera_dcim"
         else
             log "Failed to launch iTerm2 importer; falling back to background import."
-            nohup "$PYTHON" "$IMPORTER" --source "$camera_dcim" >> "$HOME/.camera_transfer.log" 2>&1 </dev/null &
-            printf '%s\n' "$camera_dcim" > "$STATE_FILE"
+            start_background_import "$camera_dcim"
         fi
     else
         if "$OSASCRIPT" - "$command" "$TERMINAL_APP" <<'APPLESCRIPT' >/dev/null 2>&1
@@ -159,7 +180,6 @@ APPLESCRIPT
         fi
     fi
 else
-    nohup "$PYTHON" "$IMPORTER" --source "$camera_dcim" >> "$HOME/.camera_transfer.log" 2>&1 </dev/null &
-    printf '%s\n' "$camera_dcim" > "$STATE_FILE"
-    log "Started background importer (Terminal output disabled) for: $camera_dcim"
+    start_background_import "$camera_dcim"
+    log "Terminal output disabled; importer is running in the background for: $camera_dcim"
 fi
