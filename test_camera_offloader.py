@@ -236,6 +236,33 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         self.assertIn(str(media), run.call_args.args[0])
 
+    def test_card_manifest_round_trip_and_fingerprint_invalidation(self):
+        source = self.dcim / "100NIKON" / "IMG_0001.NEF"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"raw-data")
+        digest = app.sha256_file(source)
+        manifest = {}
+        app.update_card_manifest_entry(manifest, source, self.dcim, digest)
+        self.assertTrue(app.save_card_manifest(self.dcim, manifest))
+        loaded = app.load_card_manifest(self.dcim)
+        self.assertEqual(app.card_manifest_entry(loaded, source, self.dcim), digest)
+
+        source.write_bytes(b"changed raw data")
+        self.assertIsNone(app.card_manifest_entry(loaded, source, self.dcim))
+
+    def test_copy_decision_reuses_card_and_catalog_hashes(self):
+        source = self.media()["RAW"]
+        destination = app.build_destination_path(source, self.dcim, self.local)
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(source.read_bytes())
+        digest = app.sha256_file(source)
+        manifest = {}
+        app.update_card_manifest_entry(manifest, source, self.dcim, digest)
+        app.catalog_record(destination, sha256=digest)
+        with patch.object(app, "sha256_file", side_effect=AssertionError("must reuse cached hashes")):
+            result = app.copy_one_to_destination(source, self.dcim, self.local, manifest)
+        self.assertEqual(result.status, "skipped")
+
     def test_catalog_records_file_locations(self):
         path = self.root / "catalog-photo.jpg"
         path.write_bytes(b"photo")

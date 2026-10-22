@@ -312,6 +312,121 @@ def catalog_hash_matches(source: Path, destination: Path) -> Optional[bool]:
         return source_row[3] == destination_row[3]
     return None
 
+CARD_MANIFEST_DIR = ".photo-offloader"
+CARD_MANIFEST_NAME = "manifest-v1.json"
+
+
+def card_manifest_path(dcim_folder: Path) -> Path:
+    """Return the optional sidecar manifest location at the card volume root."""
+    return dcim_folder.resolve().parent / CARD_MANIFEST_DIR / CARD_MANIFEST_NAME
+
+
+def load_card_manifest(dcim_folder: Path) -> Dict[str, dict]:
+    """Read a card-side hash cache; corrupt or unavailable manifests are ignored."""
+    path = card_manifest_path(dcim_folder)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("schema") == 1 and isinstance(payload.get("files"), dict):
+            return payload["files"]
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {}
+
+
+def save_card_manifest(dcim_folder: Path, files: Dict[str, dict]) -> bool:
+    """Atomically persist optional card metadata without making import depend on writes."""
+    path = card_manifest_path(dcim_folder)
+    temp_path: Optional[Path] = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=".manifest-", suffix=".tmp", dir=path.parent)
+        temp_path = Path(temp_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"schema": 1, "files": files}, handle, separators=(",", ":"), sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        return True
+    except (OSError, TypeError, ValueError) as exc:
+        logger.info("Card-side cache is unavailable; continuing with Mac catalog: %s", exc)
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return False
+
+
+def card_manifest_entry(
+    manifest: Dict[str, dict], source: Path, dcim_folder: Path,
+) -> Optional[str]:
+    """Return a card-cached hash only when relative path, size, and mtime still match."""
+    try:
+        relative = source.resolve().relative_to(dcim_folder.resolve()).as_posix()
+        entry = manifest.get(relative)
+        fingerprint = file_fingerprint(source)
+        if (isinstance(entry, dict) and entry.get("size") == fingerprint.size
+                and entry.get("mtime_ns") == fingerprint.mtime_ns
+                and isinstance(entry.get("sha256"), str)):
+            return entry["sha256"]
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def update_card_manifest_entry(
+    manifest: Dict[str, dict], source: Path, dcim_folder: Path, digest: str,
+) -> None:
+    """Cache a verified source hash keyed by card-relative path and stable fingerprint."""
+    try:
+        relative = source.resolve().relative_to(dcim_folder.resolve()).as_posix()
+        fingerprint = file_fingerprint(source)
+        manifest[relative] = {
+            "size": fingerprint.size,
+            "mtime_ns": fingerprint.mtime_ns,
+            "sha256": digest,
+        }
+    except (OSError, ValueError):
+        pass
+
+
+def hash_for_copy_decision(
+    source: Path, destination: Path, dcim_folder: Path, manifest: Dict[str, dict],
+) -> Tuple[str, str]:
+    """Reuse trustworthy cached hashes and avoid database writes on cache hits."""
+    # The card manifest is the cheapest source of truth. Only query SQLite when
+    # the card-side fingerprint is absent or stale.
+    source_hash = card_manifest_entry(manifest, source, dcim_folder)
+    source_hash_was_cached = source_hash is not None
+    source_row = None
+    if source_hash is None:
+        source_row = catalog_row(source)
+        if source_row and source_row[3]:
+            source_hash = str(source_row[3])
+            source_hash_was_cached = True
+
+    # Destination hashes are reusable only when its indexed fingerprint still
+    # matches the current file. A missing/stale row requires a content hash.
+    destination_row = catalog_row(destination)
+    destination_hash = (
+        str(destination_row[3])
+        if destination_row and destination_row[3]
+        else None
+    )
+    if source_hash is None:
+        source_hash = sha256_file(source)
+    if destination_hash is None:
+        destination_hash = sha256_file(destination)
+
+    # Persist hashes only when we had to establish them; do not open and commit
+    # two more SQLite transactions for every unchanged duplicate on every insert.
+    if not source_hash_was_cached:
+        catalog_record(source, sha256=source_hash)
+    if not destination_row or not destination_row[3]:
+        catalog_record(destination, sha256=destination_hash)
+    update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
+    return source_hash, destination_hash
+
 
 def load_build_info() -> Dict[str, str]:
     """Identify the exact source/build installed when this process was launched."""
@@ -567,24 +682,48 @@ def get_exiftool_metadata_batch(paths: List[Path], tags: List[str], batch_size: 
     if not exiftool or not paths:
         return {}
     results = {}
+    total_batches = (len(paths) + batch_size - 1) // batch_size
+    started = time.monotonic()
+    logger.info(
+        "ExifTool metadata phase started: %d uncached files in %d batches (batch size %d).",
+        len(paths), total_batches, batch_size,
+    )
     for offset in range(0, len(paths), batch_size):
         batch = paths[offset:offset + batch_size]
+        batch_number = offset // batch_size + 1
+        batch_started = time.monotonic()
+        logger.info(
+            "ExifTool heartbeat: starting batch %d/%d (%d files; %d/%d submitted).",
+            batch_number, total_batches, len(batch), offset, len(paths),
+        )
         try:
             result = subprocess.run(
                 [exiftool, "-j", "-charset", "filename=UTF8", *tags, *map(str, batch)],
                 check=False, capture_output=True, text=True, timeout=max(15, len(batch) // 2),
             )
             if result.returncode != 0 or not result.stdout.strip():
-                logger.warning("ExifTool batch returned no metadata (batch starting at %d): %s",
-                               offset, result.stderr.strip())
+                logger.warning("ExifTool batch %d/%d returned no metadata after %.1fs: %s",
+                               batch_number, total_batches, time.monotonic() - batch_started,
+                               result.stderr.strip())
                 continue
             records = json.loads(result.stdout)
+            batch_results = 0
             for record in records if isinstance(records, list) else []:
                 if not isinstance(record, dict) or not record.get("SourceFile"):
                     continue
                 results[str(Path(record["SourceFile"]).resolve())] = record
+                batch_results += 1
+            logger.info(
+                "ExifTool heartbeat: finished batch %d/%d; metadata records %d/%d; "
+                "%.1fs this batch, %.1fs total.",
+                batch_number, total_batches, min(offset + len(batch), len(paths)), len(paths),
+                time.monotonic() - batch_started, time.monotonic() - started,
+            )
         except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
-            logger.warning("ExifTool batch metadata read failed at offset %d: %s", offset, exc)
+            logger.warning("ExifTool batch %d/%d failed after %.1fs: %s",
+                           batch_number, total_batches, time.monotonic() - batch_started, exc)
+    logger.info("ExifTool metadata phase complete: %d/%d records in %.1fs.",
+                len(results), len(paths), time.monotonic() - started)
     return results
 
 
@@ -778,17 +917,32 @@ def copy_file_with_progress(source: Path, destination: Path) -> None:
     shutil.copystat(source, destination, follow_symlinks=True)
 
 
-def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: Path) -> DestinationResult:
+def copy_one_to_destination(
+    source: Path, dcim_folder: Path, destination_base: Path,
+    card_manifest: Optional[Dict[str, dict]] = None,
+) -> DestinationResult:
     before = file_fingerprint(source)
-    update_status(current_file=source.name, current_path=str(source), message=f"Copying to {destination_base}")
+    manifest = card_manifest if card_manifest is not None else load_card_manifest(dcim_folder)
+    update_status(state="scanning", phase="copy-decision", current_file=source.name,
+                  current_path=str(source), message=f"Checking existing file: {source.name}",
+                  decision_files_checked=int(_PROGRESS.get("decision_files_checked", 0)),
+                  decision_files_total=int(_PROGRESS.get("decision_files_total", 0)))
     final_path = build_destination_path(source, dcim_folder, destination_base)
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    catalog_record(source)
 
-    if final_path.exists():
-        if final_path.is_file() and files_match(source, final_path, force_sha256=True):
-            add_progress_bytes(before.size)
-            return DestinationResult(destination_base, "skipped", final_path, "already exists and matches source")
+    if final_path.exists() and final_path.is_file():
+        try:
+            source_hash, destination_hash = hash_for_copy_decision(
+                source, final_path, dcim_folder, manifest
+            )
+            if source_hash == destination_hash:
+                add_progress_bytes(before.size)
+                update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
+                update_status(state="copying", phase="copy", message="Existing file verified; continuing")
+                return DestinationResult(destination_base, "skipped", final_path,
+                                         "already exists and matches cached/verified hash")
+        except OSError as exc:
+            logger.warning("Could not verify existing file %s: %s", final_path, exc)
         stem, suffix = final_path.stem, final_path.suffix
         counter = 1
         while True:
@@ -799,6 +953,8 @@ def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: P
             counter += 1
         logger.warning("Filename conflict for %s; using %s", source, final_path.name)
 
+    update_status(state="copying", phase="copy", current_file=source.name,
+                  current_path=str(source), message=f"Copying {source.name}")
     temp_path: Optional[Path] = None
     try:
         fd, temp_name = tempfile.mkstemp(prefix=".photo-copy-", suffix=".tmp", dir=final_path.parent)
@@ -827,6 +983,21 @@ def copy_one_to_destination(source: Path, dcim_folder: Path, destination_base: P
         # imported photos/videos. Imported media should be regular user files,
         # not executables, while remaining private to the importing user.
         os.chmod(final_path, stat.S_IRUSR | stat.S_IWUSR)
+        # Persist content hashes after a successful copy so later card insertions
+        # can compare cached source/destination hashes without rereading large RAWs.
+        source_hash = sha256_file(source)
+        destination_hash = sha256_file(final_path)
+        if source_hash == destination_hash:
+            catalog_record(source, sha256=source_hash)
+            catalog_record(final_path, sha256=destination_hash)
+            update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
+        else:
+            try:
+                final_path.unlink(missing_ok=True)
+            except OSError:
+                logger.exception("Could not remove hash-mismatched destination %s", final_path)
+            raise IOError(f"SHA-256 verification failed after copy: {source}")
+        update_status(state="copying", phase="copy", message="Copy verified")
         return DestinationResult(destination_base, "copied", final_path, "copied and verified")
     finally:
         if temp_path is not None:
@@ -912,14 +1083,21 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
     if not files:
         return
     logger.info("%s: processing %d file(s)", label, len(files))
-    update_status(category=label, message=f"Processing {len(files)} {label} file(s)")
+    update_status(state="scanning", phase="copy-decision", category=label,
+                  decision_files_checked=0, decision_files_total=len(files),
+                  message=f"Checking {len(files)} {label} file(s)")
+    card_manifest = load_card_manifest(dcim_folder)
     with alive_bar(len(files), title=label, bar="filling", monitor=True, force_tty=False) as bar:
-        for source in files:
-            update_status(current_file=source.name, current_path=str(source), category=label)
+        for file_index, source in enumerate(files, start=1):
+            update_status(state="scanning", phase="copy-decision", current_file=source.name,
+                          current_path=str(source), category=label,
+                          decision_files_checked=file_index - 1,
+                          decision_files_total=len(files),
+                          message=f"Checking existing files ({file_index}/{len(files)}): {source.name}")
             results: List[DestinationResult] = []
             for destination in destinations:
                 try:
-                    result = copy_one_to_destination(source, dcim_folder, destination)
+                    result = copy_one_to_destination(source, dcim_folder, destination, card_manifest)
                     results.append(result)
                     if result.status == "copied":
                         stats.destination_copies += 1
@@ -937,7 +1115,12 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
                     logger.exception(message)
             if len(results) != len(destinations):
                 logger.error("One or more destinations failed for %s", source)
+            update_status(state="scanning", phase="copy-decision",
+                          decision_files_checked=file_index,
+                          decision_files_total=len(files),
+                          message=f"Checked {file_index} of {len(files)} {label} files")
             bar()
+    save_card_manifest(dcim_folder, card_manifest)
 
 
 def update_file_catalog() -> Dict[str, int]:
@@ -962,9 +1145,24 @@ def update_file_catalog() -> Dict[str, int]:
         raise RuntimeError("No archive locations are available to update the catalog.")
 
     totals = {"scanned": 0, "metadata_refreshed": 0, "roots": len(roots)}
+    # Use the last successful refresh counts as an initial total estimate. These
+    # counts are advisory only: roots can gain or lose files between refreshes.
+    previous_counts: Dict[str, int] = {}
+    try:
+        with catalog_db() as db:
+            previous_counts = {
+                str(row[0]): int(row[1])
+                for row in db.execute(
+                    "SELECT root, files_scanned FROM catalog_refreshes WHERE status = 'complete'"
+                )
+            }
+    except sqlite3.Error as exc:
+        logger.debug("Could not read previous catalog counts for ETA estimate: %s", exc)
+    estimated_total = sum(previous_counts.get(str(root.resolve()), 0) for root in roots)
     update_status(state="scanning", phase="catalog-update", catalog_stage="Preparing metadata",
-                  catalog_scanned=0, catalog_total_scanned=0, catalog_candidates=0,
-                  catalog_root="", catalog_root_index=0, catalog_roots_total=len(roots),
+                  catalog_scanned=0, catalog_total_scanned=0, catalog_estimated_total=estimated_total,
+                  catalog_candidates=0, catalog_root="", catalog_root_index=0,
+                  catalog_roots_total=len(roots),
                   source="; ".join(map(str, roots)), message="Preparing catalog metadata batches",
                   current_file="", current_path="")
     logger.info("Starting catalog update for %d root(s).", len(roots))
@@ -997,13 +1195,25 @@ def update_file_catalog() -> Dict[str, int]:
                                       catalog_total_scanned=totals["scanned"],
                                       catalog_discovered=discovered,
                                       catalog_candidates=len(candidates),
+                                      catalog_estimated_total=max(
+                                          estimated_total,
+                                          totals["scanned"] + discovered
+                                          + sum(previous_counts.get(str(item.resolve()), 0)
+                                                for item in roots[root_index:])
+                                      ),
                                       current_file=candidate.name, current_path=str(candidate),
                                       message=f"Preparing metadata batch • {discovered:,} media files checked")
             except (OSError, sqlite3.Error) as exc:
                 logger.warning("Could not inspect catalog candidate %s: %s", candidate, exc)
 
+        estimated_total = max(
+            estimated_total,
+            totals["scanned"] + discovered
+            + sum(previous_counts.get(str(item.resolve()), 0) for item in roots[root_index:])
+        )
         update_status(catalog_stage="Reading metadata batches", catalog_candidates=len(candidates),
-                      catalog_discovered=discovered, current_file="", current_path="",
+                      catalog_discovered=discovered, catalog_estimated_total=estimated_total,
+                      current_file="", current_path="",
                       message=f"Reading metadata for {len(candidates):,} new or changed files")
         batch_metadata = get_exiftool_metadata_batch(
             candidates,
@@ -1034,6 +1244,8 @@ def update_file_catalog() -> Dict[str, int]:
                                       current_file=path.name, current_path=str(path),
                                       catalog_scanned=totals["scanned"],
                                       catalog_total_scanned=totals["scanned"],
+                                      catalog_root_scanned=root_scanned,
+                                      catalog_root_estimated_total=discovered,
                                       catalog_root=str(root),
                                       catalog_roots_total=len(roots),
                                       catalog_root_index=root_index,
@@ -1047,6 +1259,8 @@ def update_file_catalog() -> Dict[str, int]:
                               current_file=path.name, current_path=str(path),
                               catalog_scanned=totals["scanned"],
                               catalog_total_scanned=totals["scanned"],
+                              catalog_root_scanned=root_scanned,
+                              catalog_root_estimated_total=discovered,
                               catalog_root=str(root),
                               catalog_roots_total=len(roots),
                               catalog_root_index=root_index,
