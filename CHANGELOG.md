@@ -10,6 +10,7 @@ All notable changes to Photo Offloader are documented here.
 - Close SQLite catalog connections after each lookup, record, and refresh transaction to prevent file-descriptor exhaustion during large catalog scans.
 
 ### Changed
+- Catalog refresh now logs ExifTool batch start/completion heartbeats with batch counts and elapsed time, so long metadata phases no longer appear silent for minutes.
 - Repeat card imports now reuse fingerprint-validated hashes from an optional card-side manifest and the Mac SQLite catalog, avoiding full RAW-file reads when both source and destination hashes are already known.
 - Copy-decision progress is reported separately from transfer progress, including files checked, checks per second, and an estimated time remaining.
 
