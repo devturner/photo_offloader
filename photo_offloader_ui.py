@@ -286,7 +286,8 @@ class Dashboard:
             if self.debug_refresh_job is not None:
                 self.root.after_cancel(self.debug_refresh_job)
                 self.debug_refresh_job = None
-            return        window = tk.Toplevel(self.root)
+            return
+        window = tk.Toplevel(self.root)
         window.title("Photo Offloader — Live Debug Log")
         window.geometry("1000x560")
         window.minsize(700, 350)
