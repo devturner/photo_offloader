@@ -93,6 +93,28 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(app.usb_root_for_category("RAW"), app.USB_RAW_DEST_ROOT)
         self.assertEqual(app.usb_root_for_category("JPG"), app.USB_DEST_ROOT)
 
+    def test_usb_backup_mirrors_raw_archive_to_matching_root(self):
+        jpg = self.local / "2026-10" / "100NIKON" / "Photos" / "photo.jpg"
+        raw = app.LOCAL_RAW_DEST_ROOT / "2026-10" / "100NIKON" / "Raws" / "photo.nef"
+        jpg.parent.mkdir(parents=True)
+        raw.parent.mkdir(parents=True)
+        jpg.write_bytes(b"jpeg-content")
+        raw.write_bytes(b"raw-content")
+        identity = VolumeIdentity(self.usb_volume, "disk-test", "volume-test")
+
+        with patch.object(app, "usb_is_mounted", return_value=True), \
+                patch.object(app, "get_volume_identity", return_value=identity), \
+                patch.object(app, "volume_identity_matches", return_value=True):
+            stats = app.copy_local_archive_to_usb(identity)
+
+        self.assertEqual(stats.failed, 0)
+        self.assertEqual(stats.destination_copies, 2)
+        self.assertEqual((self.usb / jpg.relative_to(self.local)).read_bytes(), b"jpeg-content")
+        self.assertEqual(
+            (app.USB_RAW_DEST_ROOT / raw.relative_to(app.LOCAL_RAW_DEST_ROOT)).read_bytes(),
+            b"raw-content",
+        )
+
     def test_stats_aliases_and_success(self):
         stats = ImportStats(destination_copies=2, destination_skips=1, verified_copies=3)
         self.assertTrue(stats.successful)
