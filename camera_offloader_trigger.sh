@@ -79,7 +79,7 @@ done
 
 if [[ -z "$camera_dcim" ]]; then
     rm -f "$STATE_FILE"
-    log "Volume event ignored: no recognized camera DCIM found."
+    log "No recognized camera DCIM currently mounted."
     exit 0
 fi
 
