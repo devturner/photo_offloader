@@ -397,11 +397,13 @@ def hash_for_copy_decision(
     # The card manifest is the cheapest source of truth. Only query SQLite when
     # the card-side fingerprint is absent or stale.
     source_hash = card_manifest_entry(manifest, source, dcim_folder)
+    source_hash_was_cached = source_hash is not None
     source_row = None
     if source_hash is None:
         source_row = catalog_row(source)
         if source_row and source_row[3]:
             source_hash = str(source_row[3])
+            source_hash_was_cached = True
 
     # Destination hashes are reusable only when its indexed fingerprint still
     # matches the current file. A missing/stale row requires a content hash.
@@ -418,7 +420,7 @@ def hash_for_copy_decision(
 
     # Persist hashes only when we had to establish them; do not open and commit
     # two more SQLite transactions for every unchanged duplicate on every insert.
-    if source_row is None or not source_row or not source_row[3]:
+    if not source_hash_was_cached:
         catalog_record(source, sha256=source_hash)
     if not destination_row or not destination_row[3]:
         catalog_record(destination, sha256=destination_hash)
