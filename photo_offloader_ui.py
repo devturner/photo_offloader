@@ -124,13 +124,17 @@ class Dashboard:
         )
         theme_picker = ttk.Frame(header)
         theme_picker.pack(side="right", anchor="center", padx=(0, 12))
-        ttk.Label(theme_picker, text="THEME", style="Subtitle.TLabel").pack(anchor="w")
-        self.theme_picker = ttk.Combobox(
-            theme_picker, textvariable=self.theme_var, values=("light", "dark"),
-            state="readonly", width=8
+        ttk.Label(theme_picker, text="APPEARANCE", style="Subtitle.TLabel").pack(anchor="w")
+        self.theme_toggle = tk.Canvas(
+            theme_picker, width=88, height=36, bg=self.colors["background"],
+            highlightthickness=1, highlightbackground=self.colors["border"],
+            highlightcolor=self.colors["accent"], takefocus=True, cursor="hand2"
         )
-        self.theme_picker.pack(anchor="e")
-        self.theme_picker.bind("<<ComboboxSelected>>", self.on_theme_selected)
+        self.theme_toggle.pack(anchor="e", pady=(3, 0))
+        self.theme_toggle.bind("<Button-1>", self.toggle_theme)
+        self.theme_toggle.bind("<space>", self.toggle_theme)
+        self.theme_toggle.bind("<Return>", self.toggle_theme)
+        self.draw_theme_toggle()
 
         # Shared state and metrics for the independent transfer cards.
         self.speed_var = tk.StringVar(value="—")
@@ -247,7 +251,7 @@ class Dashboard:
             wraplength=280
         ).pack(anchor="w")
         self.upload_graph = tk.Canvas(
-            upload_body, height=100, width=210, bg="#ffffff", highlightthickness=0
+            upload_body, height=100, width=210, bg=self.colors["card"], highlightthickness=0
         )
         self.upload_graph.pack(side="right", fill="both", expand=True, padx=(16, 0))
         metrics.columnconfigure(0, weight=1, uniform="transfer")
@@ -423,14 +427,40 @@ class Dashboard:
         if activity_text is not None:
             activity_text.configure(bg=c["input"], fg=c["body"],
                                     insertbackground=c["text"], highlightbackground=c["border"])
-        if hasattr(self, "theme_picker"):
-            self.theme_picker.configure(style="TCombobox")
+        if hasattr(self, "theme_toggle"):
+            self.draw_theme_toggle()
 
         # Redraw both timelines immediately with the new grid and accent colors.
         if hasattr(self, "speed_history"):
             self.draw_speed_graph()
         if hasattr(self, "upload_speed_history"):
             self.draw_upload_speed_graph()
+
+    def draw_theme_toggle(self) -> None:
+        """Draw a compact sun/moon switch with a sliding active-state thumb."""
+        toggle = getattr(self, "theme_toggle", None)
+        if toggle is None:
+            return
+        toggle.delete("all")
+        dark = self.theme_var.get() == "dark"
+        c = self.colors
+        track = c["border"] if not dark else "#303b4e"
+        toggle.create_oval(2, 4, 86, 32, fill=track, outline=track)
+        toggle.create_rectangle(16, 4, 72, 32, fill=track, outline=track)
+        center_x = 68 if dark else 20
+        toggle.create_oval(center_x - 13, 5, center_x + 13, 31,
+                           fill=c["accent"], outline=c["accent"])
+        toggle.create_text(20, 18, text="☀", font=("SF Pro Text", 15),
+                           fill="#ffffff" if not dark else c["muted"])
+        toggle.create_text(68, 18, text="☾", font=("SF Pro Text", 16),
+                           fill="#ffffff" if dark else c["muted"])
+        toggle.configure(bg=c["background"], highlightbackground=c["border"],
+                         highlightcolor=c["accent"])
+
+    def toggle_theme(self, _event: object = None) -> str:
+        self.theme_var.set("light" if self.theme_var.get() == "dark" else "dark")
+        self.on_theme_selected()
+        return "break"
 
     def on_theme_selected(self, _event: object = None) -> None:
         if self.theme_var.get() not in ("light", "dark"):
