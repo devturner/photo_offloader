@@ -22,7 +22,7 @@ IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 USB_VOLUME = Path("/Volumes/Photos")
 LOCAL_ARCHIVES = (Path.home() / "Pictures" / "CameraImports", Path.home() / "Pictures" / "CameraImportsRaw")
-USB_ARCHIVES = (USB_VOLUME / "CameraImports", USB_VOLUME / "CameraImportsRaw")
+USB_ARCHIVES = (USB_VOLUME / "CameraImports",)
 CATALOG_DB = Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "catalog.sqlite3"
 TRIGGER_LOG = Path.home() / ".camera_transfer_trigger.log"
 IMPORT_LOG = Path.home() / ".camera_transfer.log"
@@ -262,7 +262,7 @@ class Dashboard:
                         "SELECT COUNT(*) FROM file_locations WHERE root IN (?, ?)", local_roots
                     ).fetchone()[0]
                     usb_count = db.execute(
-                        "SELECT COUNT(*) FROM file_locations WHERE root IN (?, ?)", usb_roots
+                        "SELECT COUNT(*) FROM file_locations WHERE root = ?", (usb_roots[0],)
                     ).fetchone()[0]
                     try:
                         refreshes = {row[0]: (row[1], row[2], row[3]) for row in db.execute(
