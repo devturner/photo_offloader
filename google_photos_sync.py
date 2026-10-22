@@ -61,7 +61,7 @@ def _sync() -> int:
         publish_status("failed",f"Could not create/check Google Photos album: {exc}"); return 1
     if album.returncode != 0:
         publish_status("failed",f"Could not create/check Google Photos album: {album.stderr.strip()}"); return album.returncode or 1
-    command=[rclone,"copy",str(LOCAL_PHOTOS),destination,"--log-level","INFO","--log-file",str(LOG_PATH),"--stats","5s","--stats-one-line"]
+    command=[rclone,"copy",str(LOCAL_PHOTOS),destination,"--ignore-case","--log-level","INFO","--log-file",str(LOG_PATH),"--stats","5s","--stats-one-line"]
     for ext in INCLUDE_EXTENSIONS: command.extend(["--include",ext])
     command.extend(["--exclude","*"])
     publish_status("running",f"Uploading JPGs and supported videos to Google Photos album '{ALBUM_NAME}'.")
