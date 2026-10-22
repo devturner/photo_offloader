@@ -20,6 +20,12 @@ SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 STATUS_PATH = SUPPORT_DIR / "google_photos_status.json"
 LOG_PATH = SUPPORT_DIR / "google_photos_sync.log"
 LOCK_PATH = SUPPORT_DIR / ".google-photos-sync.lock"
+# Preferences live outside the install directory so they survive app upgrades
+# and uninstall/reinstall cycles. Authentication tokens remain in rclone's own
+# config; this file stores only the remote name and successful-connection marker.
+PREFERENCES_PATH = (
+    Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "preferences.json"
+)
 REMOTE_NAME = os.environ.get("PHOTO_OFFLOADER_GPHOTOS_REMOTE", "gphotos").rstrip(":")
 ALBUM_NAME = os.environ.get("PHOTO_OFFLOADER_GPHOTOS_ALBUM", "Photo Offloader")
 INCLUDE_EXTENSIONS = (
@@ -80,6 +86,25 @@ def publish_status(state: str, message: str) -> None:
     temporary = STATUS_PATH.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, STATUS_PATH)
+
+
+def remember_google_photos_connection(remote_name: str) -> None:
+    """Persist non-secret connection metadata outside the replaceable install directory."""
+    PREFERENCES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        preferences = json.loads(PREFERENCES_PATH.read_text(encoding="utf-8"))
+        if not isinstance(preferences, dict):
+            preferences = {}
+    except (OSError, ValueError):
+        preferences = {}
+    preferences["google_photos"] = {
+        "configured": True,
+        "remote": f"{remote_name}:",
+        "last_connection_check": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    temporary = PREFERENCES_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(preferences, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, PREFERENCES_PATH)
 
 
 def log_sync_event(message: str) -> None:
@@ -174,6 +199,12 @@ def _sync() -> int:
             f"Could not create/check Google Photos album: {album.stderr.strip()}",
         )
         return album.returncode or 1
+
+    try:
+        remember_google_photos_connection(REMOTE_NAME)
+    except (OSError, ValueError) as exc:
+        # A preferences-file failure must not block a working upload.
+        log_sync_event(f"Could not persist Google Photos connection preference: {exc}")
 
     command = [
         rclone,
