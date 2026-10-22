@@ -330,7 +330,7 @@ class Dashboard:
             self.upload_speed_var.set("—")
             self.upload_eta_var.set("Finalizing…")
             self.upload_progress_var.set(
-                "100% transferred • Finalizing Google Photos album 'Photo Offloader'"
+                "100% transferred • Finalizing Google Photos upload…"
             )
             return
 
