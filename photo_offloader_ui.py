@@ -24,6 +24,8 @@ USB_VOLUME = Path("/Volumes/Photos")
 LOCAL_ARCHIVE = Path.home() / "Pictures" / "CameraImports"
 USB_ARCHIVE = USB_VOLUME / "CameraImports"
 CATALOG_DB = Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "catalog.sqlite3"
+TRIGGER_LOG = Path.home() / ".camera_transfer_trigger.log"
+IMPORT_LOG = Path.home() / ".camera_transfer.log"
 
 
 def format_bytes(value: float) -> str:
@@ -123,6 +125,19 @@ class Dashboard:
         ttk.Label(outer, textvariable=self.message_var, style="Subtitle.TLabel",
                   wraplength=550).pack(anchor="w", pady=(9, 0))
 
+        ttk.Label(outer, text="AUTOMATIC IMPORT STATUS", style="Subtitle.TLabel").pack(anchor="w", pady=(12, 4))
+        auto_status = ttk.Frame(outer, style="Card.TFrame", padding=10)
+        auto_status.pack(fill="x")
+        self.auto_status_var = tk.StringVar(value="Waiting for trigger activity…")
+        ttk.Label(auto_status, textvariable=self.auto_status_var, style="Body.TLabel",
+                  wraplength=760).pack(anchor="w")
+        status_actions = ttk.Frame(auto_status, style="Card.TFrame")
+        status_actions.pack(fill="x", pady=(6, 0))
+        ttk.Button(status_actions, text="Toggle Live Debug Log", command=self.toggle_debug_log).pack(side="left")
+        self.debug_window = None
+        self.debug_text = None
+        self.debug_refresh_job = None
+
         ttk.Label(outer, text="DATABASE STATUS", style="Subtitle.TLabel").pack(anchor="w", pady=(12, 4))
         catalog_status = ttk.Frame(outer, style="Card.TFrame", padding=10)
         catalog_status.pack(fill="x")
@@ -148,6 +163,73 @@ class Dashboard:
 
         self.root.after(500, self.refresh)
         self.root.mainloop()
+
+    def trigger_status_summary(self) -> str:
+        try:
+            line = next((line for line in reversed(TRIGGER_LOG.read_text(
+                encoding="utf-8", errors="replace").splitlines()) if line.strip()), "")
+            if not line:
+                return "Trigger: no log entries yet. If this remains blank, the launchd trigger may not be running."
+            try:
+                stamp = datetime.strptime(line[1:20], "%Y-%m-%d %H:%M:%S")
+                age = max(int(time.time() - stamp.timestamp()), 0)
+                age_text = f"{format_duration(age)} ago"
+            except (ValueError, OSError):
+                age_text = "time unknown"
+            return f"Trigger log • {age_text} • {line}"
+        except OSError:
+            return "Trigger: log file has not been created yet. Check the Photo Offloader LaunchAgent."
+
+    def toggle_debug_log(self) -> None:
+        if self.debug_window is not None and self.debug_window.winfo_exists():
+            self.debug_window.destroy()
+            self.debug_window = None
+            self.debug_text = None
+            if self.debug_refresh_job is not None:
+                self.root.after_cancel(self.debug_refresh_job)
+                self.debug_refresh_job = None
+            return
+        window = tk.Toplevel(self.root)
+        window.title("Photo Offloader — Live Debug Log")
+        window.geometry("1000x560")
+        window.minsize(700, 350)
+        frame = ttk.Frame(window, padding=8)
+        frame.pack(fill="both", expand=True)
+        text = tk.Text(frame, wrap="none", state="disabled", font=("Menlo", 10))
+        yscroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        xscroll = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
+        text.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        self.debug_window = window
+        self.debug_text = text
+        window.protocol("WM_DELETE_WINDOW", self.toggle_debug_log)
+        self.refresh_debug_log()
+
+    def refresh_debug_log(self) -> None:
+        if self.debug_window is None or not self.debug_window.winfo_exists() or self.debug_text is None:
+            return
+        sections = []
+        for label, path in (
+            ("TRIGGER LOG", TRIGGER_LOG),
+            ("IMPORTER LOG", IMPORT_LOG),
+            ("DASHBOARD LOG", INSTALL_DIR / "dashboard.log"),
+            ("MENUBAR ERROR LOG", INSTALL_DIR / "menubar-error.log"),
+        ):
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-150:]
+                sections.append(f"===== {label}: {path} =====\n" + "\n".join(lines))
+            except OSError as exc:
+                sections.append(f"===== {label}: {path} =====\n(unavailable: {exc})")
+        self.debug_text.configure(state="normal")
+        self.debug_text.delete("1.0", "end")
+        self.debug_text.insert("end", "\n\n".join(sections))
+        self.debug_text.see("end")
+        self.debug_text.configure(state="disabled")
+        self.debug_refresh_job = self.root.after(1000, self.refresh_debug_log)
 
     def start_usb_backup(self) -> None:
         if not USB_VOLUME.is_mount():
@@ -409,6 +491,7 @@ class Dashboard:
             self.progress_var.set("Waiting for a camera card")
 
         self.refresh_catalog_status(status)
+        self.auto_status_var.set(self.trigger_status_summary())
 
         current_file = str(status.get("current_file", "") or "")
         self.file_var.set(current_file if current_file else "No active import")
