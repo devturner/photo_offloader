@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """One-way, filtered uploads from Photo Offloader to Google Photos via rclone."""
 from __future__ import annotations
-import json, os, shutil, subprocess, sys
+import json
+import os
+import shutil
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
@@ -50,7 +54,14 @@ def _sync() -> int:
         publish_status("failed",f"Could not inspect rclone remotes: {exc}"); return 1
     if f"{REMOTE_NAME}:" not in remotes:
         publish_status("not_configured",f"rclone remote '{REMOTE_NAME}:' is not configured. Run: rclone config"); return 2
-    command=[rclone,"copy",str(LOCAL_PHOTOS),f"{REMOTE_NAME}:album/{ALBUM_NAME}","--log-level","INFO","--log-file",str(LOG_PATH),"--stats","5s","--stats-one-line"]
+    destination=f"{REMOTE_NAME}:album/{ALBUM_NAME}"
+    try:
+        album=subprocess.run([rclone,"mkdir",destination],check=False,capture_output=True,text=True,timeout=60)
+    except (OSError,subprocess.SubprocessError) as exc:
+        publish_status("failed",f"Could not create/check Google Photos album: {exc}"); return 1
+    if album.returncode != 0:
+        publish_status("failed",f"Could not create/check Google Photos album: {album.stderr.strip()}"); return album.returncode or 1
+    command=[rclone,"copy",str(LOCAL_PHOTOS),destination,"--log-level","INFO","--log-file",str(LOG_PATH),"--stats","5s","--stats-one-line"]
     for ext in INCLUDE_EXTENSIONS: command.extend(["--include",ext])
     command.extend(["--exclude","*"])
     publish_status("running",f"Uploading JPGs and supported videos to Google Photos album '{ALBUM_NAME}'.")
