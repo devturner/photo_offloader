@@ -31,7 +31,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.usb.mkdir()
         self.usb_volume.mkdir()
         self.original = {k: getattr(app, k) for k in (
-            "LOCAL_DEST_ROOT", "LOCAL_RAW_DEST_ROOT", "USB_DEST_ROOT", "USB_RAW_DEST_ROOT", "USB_DEST_VOLUME", "CATALOG_DB_PATH",
+            "LOCAL_DEST_ROOT", "LOCAL_RAW_DEST_ROOT", "USB_DEST_ROOT", "USB_DEST_VOLUME", "CATALOG_DB_PATH",
             "LEGACY_CATALOG_DB_PATH", "_CATALOG_INITIALIZED_PATH",
             "BUILD_INFO_PATH", "VERSION_PATH",
             "LOG_FILE_PATH", "SESSION_LOCK_PATH", "VERIFY_WITH_SHA256",
@@ -43,8 +43,6 @@ class TestCameraOffloader(unittest.TestCase):
         app.LOCAL_RAW_DEST_ROOT = self.root / "local-raw"
         app.LOCAL_RAW_DEST_ROOT.mkdir()
         app.USB_DEST_ROOT = self.usb
-        app.USB_RAW_DEST_ROOT = self.root / "usb-raw"
-        app.USB_RAW_DEST_ROOT.mkdir()
         app.USB_DEST_VOLUME = self.usb_volume
         app.LOG_FILE_PATH = self.log
         app.SESSION_LOCK_PATH = self.lock
@@ -90,7 +88,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(app.local_root_for_category("RAW"), app.LOCAL_RAW_DEST_ROOT)
         self.assertEqual(app.local_root_for_category("JPG"), app.LOCAL_DEST_ROOT)
         self.assertEqual(app.local_root_for_category("VIDEO"), app.LOCAL_DEST_ROOT)
-        self.assertEqual(app.usb_root_for_category("RAW"), app.USB_RAW_DEST_ROOT)
+        self.assertEqual(app.usb_root_for_category("RAW"), app.USB_DEST_ROOT)
         self.assertEqual(app.usb_root_for_category("JPG"), app.USB_DEST_ROOT)
 
     def test_usb_backup_mirrors_raw_archive_to_matching_root(self):
@@ -111,7 +109,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(stats.destination_copies, 2)
         self.assertEqual((self.usb / jpg.relative_to(self.local)).read_bytes(), b"jpeg-content")
         self.assertEqual(
-            (app.USB_RAW_DEST_ROOT / raw.relative_to(app.LOCAL_RAW_DEST_ROOT)).read_bytes(),
+            (self.usb / raw.relative_to(app.LOCAL_RAW_DEST_ROOT)).read_bytes(),
             b"raw-content",
         )
 
