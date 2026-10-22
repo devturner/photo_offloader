@@ -47,6 +47,9 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.log = self.root / "trigger.log"
         self.state = self.root / "state"
         self.lock = self.root / "trigger.lock"
+        # Preserve terminal-mode expectations for legacy trigger tests; tests
+        # for the new default explicitly remove this opt-in marker.
+        (self.install / ".terminal-output-enabled").touch()
         self.script = Path(__file__).with_name("camera_offloader_trigger.sh")
 
     def tearDown(self):
@@ -94,6 +97,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertIn("Opened progress dashboard", self.log.read_text())
 
     def test_default_import_runs_without_opening_terminal(self):
+        (self.install / ".terminal-output-enabled").unlink()
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.script_capture.exists())
