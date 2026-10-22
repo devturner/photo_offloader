@@ -4,6 +4,12 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- Fixed a syntax error in catalog ETA tracking that prevented the dashboard from launching.
+
+### Added
+- Copy and Google Photos cards now show rolling 60-second average and peak throughput alongside current speed, elapsed time, ETA, and the live speed graph.
+
 ### Changed
 - Redesigned the Copy and Google Photos dashboard cards with independent progress percentages, elapsed timers, and separate rolling throughput graphs positioned beside each speed metric. Copy card title reflects import-to-HD versus USB backup activity.
 
