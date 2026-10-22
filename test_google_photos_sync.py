@@ -14,6 +14,21 @@ class TestGooglePhotosSync(unittest.TestCase):
         for ext in ("*.nef", "*.arw", "*.cr2", "*.dng"):
             self.assertNotIn(ext, sync.INCLUDE_EXTENSIONS)
 
+    def test_parse_rclone_stats_line(self):
+        parsed = sync.parse_rclone_stats_line(
+            "2026/10/21 22:24:49 INFO  : 4.998 GiB / 17.703 GiB, "
+            "28%, 8.387 MiB/s, ETA 25m51s (xfr#649/1520)"
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["transferred"], "4.998 GiB")
+        self.assertEqual(parsed["total"], "17.703 GiB")
+        self.assertEqual(parsed["percent"], 28.0)
+        self.assertEqual(parsed["speed"], "8.387 MiB/s")
+        self.assertEqual(parsed["eta"], "25m51s")
+
+    def test_parse_rclone_stats_line_without_eta(self):
+        self.assertIsNone(sync.parse_rclone_stats_line("rclone starting upload"))
+
     def test_status_preserves_last_success_on_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
