@@ -67,6 +67,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         env = os.environ.copy()
         env.update(
             {
+                "HOME": str(self.root),
                 "PHOTO_OFFLOADER_INSTALL_DIR": str(self.install),
                 "PHOTO_OFFLOADER_PYTHON": str(self.python),
                 "PHOTO_OFFLOADER_IMPORTER": str(self.importer),
