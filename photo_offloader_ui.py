@@ -323,9 +323,19 @@ class Dashboard:
             return
 
         percent = float(progress["percent"])
+        self.upload_percent_var.set(min(100.0, max(0.0, percent)))
+        if percent >= 100.0:
+            # rclone can spend time committing uploads after the byte-transfer
+            # stats reach 100%; keep that phase visible instead of implying a hang.
+            self.upload_speed_var.set("—")
+            self.upload_eta_var.set("Finalizing…")
+            self.upload_progress_var.set(
+                "100% transferred • Finalizing Google Photos album 'Photo Offloader'"
+            )
+            return
+
         self.upload_speed_var.set(f"{progress['speed']}")
         self.upload_eta_var.set(f"ETA {progress['eta']}")
-        self.upload_percent_var.set(min(100.0, max(0.0, percent)))
         self.upload_progress_var.set(
             f"{percent:.0f}% • {progress['transferred']} of {progress['total']} uploaded"
         )
