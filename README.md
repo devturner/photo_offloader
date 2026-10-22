@@ -30,7 +30,7 @@ The importer also accepts a volume or `DCIM` path through `--source`.
 
 ### 🖥️ Menu-bar dashboard and pause control
 
-The installer launches a native macOS menu-bar item and opens the dashboard window at the end of installation. When a camera import starts, the dashboard is opened automatically (or reused if already running). Select **Open Dashboard** from the menu-bar item at any time to view the current source, file being processed, progress, live transfer speed, a rolling speed graph, and estimated time remaining. Use **Copy to USB Drive** in the menu bar or dashboard to run a USB-only sync without a camera card. Both controls use a shared launch lock, so repeated clicks cannot start overlapping USB backup requests. A 15-second debounce also suppresses duplicate requests if a very fast backup finishes before a second click. The importer acquires its session lock before changing dashboard status; duplicate launches are ignored cleanly and do not overwrite the active session's progress.
+The installer launches a native macOS menu-bar item and opens the dashboard window at the end of installation. When a camera import starts, the dashboard is opened automatically (or reused if already running). Select **Open Dashboard** from the menu-bar item at any time to view the current source, file being processed, copy progress and speed, a rolling copy-speed graph, and estimated time remaining. The dashboard also shows Google Photos upload percentage and current upload speed, with a small ETA in the upper-right corner of both speed cards. Use **Copy to USB Drive** in the menu bar or dashboard to run a USB-only sync without a camera card. Both controls use a shared launch lock, so repeated clicks cannot start overlapping USB backup requests. A 15-second debounce also suppresses duplicate requests if a very fast backup finishes before a second click. The importer acquires its session lock before changing dashboard status; duplicate launches are ignored cleanly and do not overwrite the active session's progress.
 
 Use **Pause Automatic Imports** before inserting a card when you do not want automatic copying to start. Pausing prevents new automatic import sessions; it does not interrupt a copy already in progress. Choose **Resume Automatic Imports** to re-enable the service and immediately re-check any camera card that is already mounted.
 
@@ -40,7 +40,7 @@ Some Homebrew Python installations package Tk support separately. If the install
 
 ### ☁️ Google Photos upload via rclone
 - Optional one-way upload of JPG/JPEG photos and supported video formats to a dedicated Google Photos album named `Photo Offloader`. Successful uploads are recorded per file in the SQLite catalog with timestamp, remote/album, and the uploaded file fingerprint. Changed files no longer show as uploaded until synced again.
-- Upload starts automatically after a successful camera import and can be retried manually with **Sync Google Photos** in the dashboard.
+- Upload starts automatically after a successful camera import and can be retried manually with **Sync Google Photos** in the dashboard. Live upload percentage, transfer speed, and ETA appear in the Google Photos Upload card while rclone is running.
 - RAW files are excluded by extension and remain in `~/Pictures/CameraImportsRaw`; the USB archive remains consolidated at `/Volumes/Photos/CameraImports`.
 - Requires rclone and a Google Photos remote named `gphotos`; see setup steps below. Cloud failures never invalidate a completed local/USB import.
 
