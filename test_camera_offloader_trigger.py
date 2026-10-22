@@ -112,7 +112,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0)
         self.assertFalse(self.state.exists())
-        self.assertIn("no recognized camera DCIM", self.log.read_text())
+        self.assertIn("No recognized camera DCIM currently mounted", self.log.read_text())
 
     def test_camera_volume_with_spaces_is_launched_without_path_corruption(self):
         result = self.run_trigger()
