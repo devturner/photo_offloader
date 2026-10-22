@@ -29,6 +29,20 @@ class TestGooglePhotosSync(unittest.TestCase):
     def test_parse_rclone_stats_line_without_eta(self):
         self.assertIsNone(sync.parse_rclone_stats_line("rclone starting upload"))
 
+    def test_log_sync_event_appends_explicit_completion_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_path = root / "sync.log"
+            with (
+                patch.object(sync, "SUPPORT_DIR", root),
+                patch.object(sync, "LOG_PATH", log_path),
+            ):
+                sync.log_sync_event("Google Photos sync completed successfully.")
+
+            contents = log_path.read_text(encoding="utf-8")
+            self.assertIn("INFO  : Photo Offloader: Google Photos sync completed successfully.", contents)
+            self.assertTrue(contents.endswith("\n"))
+
     def test_status_preserves_last_success_on_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
