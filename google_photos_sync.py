@@ -5,10 +5,13 @@ import json
 import os
 import shutil
 import subprocess
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
+
+import camera_offloader_v2 as catalog
 LOCAL_PHOTOS=Path.home()/"Pictures"/"CameraImports"
 SUPPORT_DIR=Path.home()/"Library"/"Application Support"/"PhotoOffloader"
 STATUS_PATH=SUPPORT_DIR/"google_photos_status.json"
@@ -69,7 +72,16 @@ def _sync() -> int:
     except OSError as exc:
         publish_status("failed",f"Could not start rclone: {exc}"); return 1
     if result.returncode==0:
-        publish_status("complete",f"Google Photos upload finished for JPGs and supported videos in '{ALBUM_NAME}'."); return 0
+        try:
+            eligible_extensions = {ext[1:] for ext in INCLUDE_EXTENSIONS}
+            for path in LOCAL_PHOTOS.rglob("*"):
+                if path.is_file() and path.suffix.lower() in eligible_extensions:
+                    catalog.mark_google_photos_uploaded(path, REMOTE_NAME, ALBUM_NAME)
+        except (OSError, sqlite3.Error) as exc:
+            publish_status("failed", f"Upload completed, but per-file catalog status could not be saved: {exc}")
+            return 1
+        publish_status("complete", f"Google Photos upload finished for JPGs and supported videos in '{ALBUM_NAME}'; per-file status saved in the catalog.")
+        return 0
     publish_status("failed",f"rclone exited with status {result.returncode}. See {LOG_PATH}")
     return result.returncode or 1
 def main(argv: Optional[Sequence[str]]=None) -> int:
