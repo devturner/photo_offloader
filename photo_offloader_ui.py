@@ -374,7 +374,7 @@ class Dashboard:
         }
         c = self.colors
         self.root.configure(bg=c["background"])
-        style = getattr(self, "style", ttk.Style(self.root))
+        style = self.style
         style.configure("TFrame", background=c["background"])
         style.configure("Card.TFrame", background=c["card"])
         style.configure("Title.TLabel", background=c["background"], foreground=c["text"],
@@ -789,7 +789,7 @@ class Dashboard:
         if len(points) >= 4:
             canvas.create_line(*points, fill=line_color, width=2, smooth=True)
         canvas.create_text(right - 2, top + 2, anchor="ne", text=f"Peak {format_bytes(peak)}/s",
-                           fill="#64748b", font=("SF Pro Text", 8))
+                           fill=self.colors["muted"], font=("SF Pro Text", 8))
 
     def catalog_eta(self, status: Dict[str, Any]) -> str:
         """Estimate remaining catalog time only when a meaningful scan rate exists."""
