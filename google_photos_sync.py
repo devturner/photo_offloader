@@ -44,7 +44,7 @@ INCLUDE_EXTENSIONS = (
 def parse_rclone_stats_line(line: str) -> Optional[dict[str, object]]:
     """Parse one rclone one-line stats record from the upload log."""
     match = re.search(
-        r"Transferred:\s*([\d.]+\s+\w+)\s*/\s*([\d.]+\s+\w+),\s*"
+        r"(?:Transferred:\s*)?([\d.]+\s+\w+)\s*/\s*([\d.]+\s+\w+),\s*"
         r"([\d.]+)%,\s*([\d.]+\s+\w+/s),\s*ETA\s+(.+?)"
         r"(?:\s+\(xfr#|$)",
         line,
