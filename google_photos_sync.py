@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -38,6 +39,26 @@ INCLUDE_EXTENSIONS = (
     "*.mpg",
     "*.wmv",
 )
+
+
+def parse_rclone_stats_line(line: str) -> Optional[dict[str, object]]:
+    """Parse one rclone one-line stats record from the upload log."""
+    match = re.search(
+        r"Transferred:\s*([\d.]+\s+\w+)\s*/\s*([\d.]+\s+\w+),\s*"
+        r"([\d.]+)%,\s*([\d.]+\s+\w+/s),\s*ETA\s+(.+?)"
+        r"(?:\s+\(xfr#|$)",
+        line,
+    )
+    if not match:
+        return None
+    transferred, total, percent, speed, eta = match.groups()
+    return {
+        "transferred": transferred,
+        "total": total,
+        "percent": float(percent),
+        "speed": speed,
+        "eta": eta.strip(),
+    }
 
 
 def publish_status(state: str, message: str) -> None:
