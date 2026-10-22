@@ -88,7 +88,7 @@ def log_sync_event(message: str) -> None:
     stamp = datetime.now().astimezone().strftime("%Y/%m/%d %H:%M:%S")
     try:
         with LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(f"{stamp} INFO  : Photo Offloader: {message}\\n")
+            handle.write(f"{stamp} INFO  : Photo Offloader: {message}\n")
     except OSError:
         # Logging must never turn an otherwise successful upload into a failure.
         pass
