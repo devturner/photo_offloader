@@ -92,31 +92,56 @@ class Dashboard:
         # The previous 610x600 default clipped the bottom controls on macOS.
         self.root.geometry("1120x960")
         self.root.minsize(900, 800)
-        self.root.configure(bg="#101827")
+        self.root.configure(bg="#f3f6fb")
 
         style = ttk.Style(self.root)
         try:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("TFrame", background="#101827")
-        style.configure("Card.TFrame", background="#1b2638")
-        style.configure("Title.TLabel", background="#101827", foreground="#f3f6fb",
+        style.configure("TFrame", background="#f3f6fb")
+        style.configure("Card.TFrame", background="#ffffff")
+        style.configure("Title.TLabel", background="#f3f6fb", foreground="#172033",
                         font=("SF Pro Display", 25, "bold"))
-        style.configure("Status.TLabel", background="#20384a", foreground="#7ee0c0",
+        style.configure("Status.TLabel", background="#dbeafe", foreground="#1d4ed8",
                         font=("SF Pro Text", 10, "bold"), padding=(12, 7))
-        style.configure("Subtitle.TLabel", background="#101827", foreground="#9caec4",
+        style.configure("Subtitle.TLabel", background="#f3f6fb", foreground="#64748b",
                         font=("SF Pro Text", 10))
-        style.configure("CardTitle.TLabel", background="#1b2638", foreground="#9caec4",
+        style.configure("CardTitle.TLabel", background="#ffffff", foreground="#64748b",
                         font=("SF Pro Text", 10))
-        style.configure("Metric.TLabel", background="#1b2638", foreground="#f3f6fb",
+        style.configure("Metric.TLabel", background="#ffffff", foreground="#172033",
                         font=("SF Pro Display", 18, "bold"))
-        style.configure("Body.TLabel", background="#101827", foreground="#d7e0ed",
+        style.configure("Body.TLabel", background="#f3f6fb", foreground="#334155",
                         font=("SF Pro Text", 10))
-        style.configure("File.TLabel", background="#1b2638", foreground="#f3f6fb",
+        style.configure("File.TLabel", background="#ffffff", foreground="#172033",
                         font=("SF Pro Text", 11, "bold"))
-        style.configure("Horizontal.TProgressbar", troughcolor="#303d50",
-                        background="#53c7a6", thickness=9)
+        style.configure("Horizontal.TProgressbar", troughcolor="#dbe3ef",
+                        background="#16a34a", thickness=9)
+        style.configure(
+            "TButton", background="#ffffff", foreground="#1e293b",
+            padding=(12, 8), relief="flat", borderwidth=1,
+            font=("SF Pro Text", 10, "bold")
+        )
+        style.map(
+            "TButton",
+            background=[("active", "#eaf0f8"), ("pressed", "#dbeafe"), ("disabled", "#f1f5f9")],
+            foreground=[("disabled", "#94a3b8")]
+        )
+        style.configure(
+            "Primary.TButton", background="#2563eb", foreground="#ffffff",
+            padding=(13, 8), relief="flat", borderwidth=0,
+            font=("SF Pro Text", 10, "bold")
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", "#1d4ed8"), ("pressed", "#1e40af")]
+        )
+        style.configure(
+            "Disclosure.TButton", background="#f3f6fb", foreground="#334155",
+            padding=(10, 8), relief="flat", borderwidth=0,
+            font=("SF Pro Text", 10, "bold"), anchor="w"
+        )
+        style.map("Disclosure.TButton", background=[("active", "#eaf0f8")])
 
         outer = ttk.Frame(self.root, padding=22)
         outer.pack(fill="both", expand=True)
@@ -168,13 +193,13 @@ class Dashboard:
         ttk.Label(quick_actions, text="QUICK ACTIONS", style="CardTitle.TLabel").pack(
             side="left", padx=(2, 10)
         )
-        ttk.Button(quick_actions, text="Copy to USB Drive", command=self.start_usb_backup).pack(
+        ttk.Button(quick_actions, text="Copy to USB Drive", command=self.start_usb_backup, style="Primary.TButton").pack(
             side="left", padx=(0, 7)
         )
         ttk.Button(quick_actions, text="Update File Catalog", command=self.start_catalog_update).pack(
             side="left", padx=(0, 7)
         )
-        ttk.Button(quick_actions, text="Sync Google Photos", command=self.start_google_photos_sync).pack(
+        ttk.Button(quick_actions, text="Sync Google Photos", command=self.start_google_photos_sync, style="Primary.TButton").pack(
             side="left", padx=(0, 7)
         )
         ttk.Button(quick_actions, text="Live Debug Log", command=self.toggle_debug_log).pack(
@@ -215,7 +240,7 @@ class Dashboard:
         ttk.Label(
             copy_metrics, textvariable=self.copy_progress_var, style="CardTitle.TLabel", wraplength=280
         ).pack(anchor="w")
-        self.graph = tk.Canvas(copy_body, height=100, width=210, bg="#1b2638", highlightthickness=0)
+        self.graph = tk.Canvas(copy_body, height=100, width=210, bg="#ffffff", highlightthickness=0)
         self.graph.pack(side="right", fill="both", expand=True, padx=(16, 0))
 
         upload_card = ttk.Frame(metrics, style="Card.TFrame", padding=15)
@@ -250,7 +275,7 @@ class Dashboard:
             wraplength=280
         ).pack(anchor="w")
         self.upload_graph = tk.Canvas(
-            upload_body, height=100, width=210, bg="#1b2638", highlightthickness=0
+            upload_body, height=100, width=210, bg="#ffffff", highlightthickness=0
         )
         self.upload_graph.pack(side="right", fill="both", expand=True, padx=(16, 0))
         metrics.columnconfigure(0, weight=1, uniform="transfer")
@@ -280,57 +305,42 @@ class Dashboard:
             detail, textvariable=self.message_var, style="Subtitle.TLabel", wraplength=1000
         ).pack(anchor="w", pady=(5, 0))
 
-        # Archive health and automation/cloud state are distinct from transfer activity.
-        lower_panels = ttk.Frame(outer)
-        lower_panels.pack(fill="x", pady=(0, 14))
-        catalog_status = ttk.Frame(lower_panels, style="Card.TFrame", padding=13)
-        catalog_status.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
-        ttk.Label(catalog_status, text="ARCHIVE & DATABASE HEALTH", style="CardTitle.TLabel").pack(
-            anchor="w", pady=(0, 7)
-        )
+        # Keep infrequently used diagnostic data out of the default dashboard.
+        archive_content = self._create_collapsible_section(outer, "Archive & database health")
+        ttk.Label(
+            archive_content, text="ARCHIVE & DATABASE HEALTH", style="CardTitle.TLabel"
+        ).pack(anchor="w", pady=(0, 7))
         self.local_catalog_var = tk.StringVar(value="Checking local archive catalog…")
         self.usb_catalog_var = tk.StringVar(value="Checking USB archive catalog…")
         ttk.Label(
-            catalog_status, textvariable=self.local_catalog_var, style="Body.TLabel", wraplength=480
+            archive_content, textvariable=self.local_catalog_var, style="Body.TLabel", wraplength=1000
         ).pack(anchor="w")
         ttk.Label(
-            catalog_status, textvariable=self.usb_catalog_var, style="Body.TLabel", wraplength=480
+            archive_content, textvariable=self.usb_catalog_var, style="Body.TLabel", wraplength=1000
         ).pack(anchor="w", pady=(5, 0))
 
-        auto_status = ttk.Frame(lower_panels, style="Card.TFrame", padding=13)
-        auto_status.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
-        ttk.Label(auto_status, text="AUTOMATION & CLOUD STATUS", style="CardTitle.TLabel").pack(
-            anchor="w", pady=(0, 7)
-        )
+        automation_content = self._create_collapsible_section(outer, "Automation & cloud status")
         self.auto_status_var = tk.StringVar(value="Waiting for trigger activity…")
         ttk.Label(
-            auto_status, textvariable=self.auto_status_var, style="Body.TLabel", wraplength=480
+            automation_content, textvariable=self.auto_status_var, style="Body.TLabel", wraplength=1000
         ).pack(anchor="w")
         self.google_photos_var = tk.StringVar(value=self.google_photos_summary())
         ttk.Label(
-            auto_status, textvariable=self.google_photos_var, style="Body.TLabel", wraplength=480
+            automation_content, textvariable=self.google_photos_var, style="Body.TLabel", wraplength=1000
         ).pack(anchor="w", pady=(6, 0))
-        lower_panels.columnconfigure(0, weight=1, uniform="health")
-        lower_panels.columnconfigure(1, weight=1, uniform="health")
 
-        # A real log tail gives history context without mixing it into transfer metrics.
-        activity = ttk.Frame(outer, style="Card.TFrame", padding=13)
-        activity.pack(fill="both", expand=True)
-        activity_header = ttk.Frame(activity, style="Card.TFrame")
-        activity_header.pack(fill="x", pady=(0, 6))
-        ttk.Label(activity_header, text="RECENT ACTIVITY & HISTORY", style="CardTitle.TLabel").pack(
-            side="left", anchor="w"
-        )
+        activity = self._create_collapsible_section(outer, "Recent activity & history")
         ttk.Label(
-            activity_header, text="Latest importer and automatic-import log entries",
+            activity, text="Latest importer and automatic-import log entries",
             style="CardTitle.TLabel"
-        ).pack(side="right", anchor="e")
+        ).pack(anchor="w", pady=(0, 6))
         self.activity_text = tk.Text(
-            activity, height=5, wrap="word", state="disabled", bg="#111b2a",
-            fg="#d7e0ed", insertbackground="#f3f6fb", relief="flat", borderwidth=0,
+            activity, height=5, wrap="word", state="disabled", bg="#f8fafc",
+            fg="#334155", insertbackground="#172033", relief="flat", borderwidth=1,
+            highlightthickness=1, highlightbackground="#dbe3ef",
             font=("Menlo", 9), padx=9, pady=7
         )
-        self.activity_text.pack(fill="both", expand=True)
+        self.activity_text.pack(fill="x", expand=False)
         self._activity_last_text = ""
 
         ttk.Label(
@@ -345,6 +355,28 @@ class Dashboard:
 
         self.root.after(500, self.refresh)
         self.root.mainloop()
+
+    def _create_collapsible_section(self, parent: ttk.Frame, title: str) -> ttk.Frame:
+        """Create a compact disclosure row whose details are hidden by default."""
+        section = ttk.Frame(parent, style="TFrame")
+        section.pack(fill="x", pady=(0, 5))
+        content = ttk.Frame(section, style="Card.TFrame", padding=12)
+        expanded = False
+        toggle = ttk.Button(section, text=f"▸  {title}", style="Disclosure.TButton")
+        toggle.pack(fill="x")
+
+        def toggle_section() -> None:
+            nonlocal expanded
+            if expanded:
+                content.pack_forget()
+                toggle.configure(text=f"▸  {title}")
+            else:
+                content.pack(fill="x", pady=(2, 0))
+                toggle.configure(text=f"▾  {title}")
+            expanded = not expanded
+
+        toggle.configure(command=toggle_section)
+        return content
 
     @staticmethod
     def terminal_output_label() -> str:
@@ -458,11 +490,15 @@ class Dashboard:
             self.upload_elapsed_var.set(f"Elapsed {format_clock(self._upload_elapsed_final)}")
             self.upload_speed_var.set("—")
             self.upload_eta_var.set("ETA Complete")
+            self.upload_speed_history.clear()
+            self.upload_throughput_detail_var.set("Average — • Peak —")
             self.upload_percent_var.set(100.0)
             self.upload_progress_var.set("Upload complete")
             self.draw_upload_speed_graph()
             return
         else:
+            self.upload_speed_history.clear()
+            self.upload_throughput_detail_var.set("Average — • Peak —")
             self.upload_elapsed_var.set(f"Elapsed {format_clock(self._upload_elapsed_final)}")
             self.upload_speed_var.set("—")
             self.upload_eta_var.set("ETA —")
@@ -640,11 +676,11 @@ class Dashboard:
             self.message_var.set(f"Could not update catalog: {exc}")
 
     def draw_speed_graph(self) -> None:
-        self._draw_graph(self.graph, self.speed_history, "#60a5fa")
+        self._draw_graph(self.graph, self.speed_history, "#2563eb")
 
 
     def draw_upload_speed_graph(self) -> None:
-        self._draw_graph(self.upload_graph, self.upload_speed_history, "#34c99a")
+        self._draw_graph(self.upload_graph, self.upload_speed_history, "#16a34a")
 
     def _draw_graph(self, canvas: tk.Canvas, history: deque, line_color: str) -> None:
         canvas.delete("all")
@@ -653,12 +689,12 @@ class Dashboard:
         left, right, top, bottom = 5, width - 5, 8, height - 15
         for fraction in (0.25, 0.5, 0.75, 1.0):
             y = bottom - (bottom - top) * fraction
-            canvas.create_line(left, y, right, y, fill="#34445b", dash=(2, 3))
+            canvas.create_line(left, y, right, y, fill="#dbe3ef", dash=(2, 3))
         values = list(history)
         peak = max(values, default=0.0)
         if peak <= 0:
             canvas.create_text(left + 3, top + 4, anchor="nw", text="Waiting for data…",
-                               fill="#9caec4", font=("SF Pro Text", 9))
+                               fill="#64748b", font=("SF Pro Text", 9))
             return
         points = []
         for index, value in enumerate(values):
@@ -668,7 +704,7 @@ class Dashboard:
         if len(points) >= 4:
             canvas.create_line(*points, fill=line_color, width=2, smooth=True)
         canvas.create_text(right - 2, top + 2, anchor="ne", text=f"Peak {format_bytes(peak)}/s",
-                           fill="#9caec4", font=("SF Pro Text", 8))
+                           fill="#64748b", font=("SF Pro Text", 8))
 
     def catalog_eta(self, status: Dict[str, Any]) -> str:
         """Estimate remaining catalog time only when a meaningful scan rate exists."""
@@ -795,7 +831,11 @@ class Dashboard:
         self.last_sample_time = now
         self.last_transferred_bytes = transferred
         eta = float(status.get("eta_seconds", 0) or 0)
-        self.speed_history.append(max(speed, 0.0))
+        if active_copy:
+            self.speed_history.append(max(speed, 0.0))
+        else:
+            # A finished/idle transfer starts with a clean timeline next time.
+            self.speed_history.clear()
         active_samples = [sample for sample in self.speed_history if sample > 0]
         average_recent = sum(active_samples) / len(active_samples) if active_samples else 0.0
         peak_recent = max(self.speed_history, default=0.0)
