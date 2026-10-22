@@ -294,6 +294,17 @@ class TestCameraOffloader(unittest.TestCase):
             result = app.copy_one_to_destination(source, self.dcim, self.local, manifest)
         self.assertEqual(result.status, "skipped")
 
+    def test_google_photos_upload_record_tracks_current_fingerprint(self):
+        path = self.local / "uploaded.jpg"
+        path.write_bytes(b"photo")
+        app.mark_google_photos_uploaded(path, "gphotos", "Photo Offloader")
+        record = app.google_photos_upload_record(path)
+        self.assertIsNotNone(record)
+        self.assertEqual(record["remote"], "gphotos")
+        self.assertEqual(record["album"], "Photo Offloader")
+        path.write_bytes(b"changed photo")
+        self.assertIsNone(app.google_photos_upload_record(path))
+
     def test_catalog_records_file_locations(self):
         path = self.root / "catalog-photo.jpg"
         path.write_bytes(b"photo")
