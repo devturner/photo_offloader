@@ -27,10 +27,8 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.python.write_text(
             "#!/bin/bash\n"
             + "if [[ \"$1\" == \"$PHOTO_OFFLOADER_IMPORTER\" ]]; then "
-            + "printf '%s\\n' \"$@\" > " + str(self.background_args) + "; sleep 0.2; fi
-"
-            + "exit 0
-"
+            + f"printf '%s\\\\n' \"$@\" > {self.background_args}; sleep 0.2; fi\\n"
+            + "exit 0\\n"
         )
         self.importer.write_text("#!/bin/bash\nexit 0\n")
         self.dashboard = self.install / "photo_offloader_ui.py"
