@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -44,6 +45,18 @@ def format_bytes(value: float) -> str:
     return f"{amount:.1f} TB"
 
 
+def parse_display_bytes(value: str) -> float:
+    """Convert rclone's human-readable byte totals into bytes for graph sampling."""
+    match = re.fullmatch(r"\s*([\d.]+)\s*(B|KB|KiB|MB|MiB|GB|GiB|TB|TiB)\s*", value, re.IGNORECASE)
+    if not match:
+        return 0.0
+    amount = float(match.group(1))
+    unit = match.group(2).upper()
+    exponent = {"B": 0, "KB": 1, "KIB": 1, "MB": 2, "MIB": 2,
+                "GB": 3, "GIB": 3, "TB": 4, "TIB": 4}[unit]
+    return amount * (1024 ** exponent)
+
+
 def format_duration(value: float) -> str:
     seconds = max(int(value or 0), 0)
     hours, remainder = divmod(seconds, 3600)
@@ -53,6 +66,13 @@ def format_duration(value: float) -> str:
     if minutes:
         return f"{minutes}m {seconds:02d}s"
     return f"{seconds}s"
+
+
+def format_clock(value: float) -> str:
+    seconds = max(int(value or 0), 0)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def read_status() -> Dict[str, Any]:
@@ -70,130 +90,408 @@ class Dashboard:
         self.root.title("Photo Offloader")
         # Leave enough vertical space for the live graph and both action buttons.
         # The previous 610x600 default clipped the bottom controls on macOS.
-        self.root.geometry("900x900")
-        self.root.minsize(760, 780)
-        self.root.configure(bg="#101827")
-
-        style = ttk.Style(self.root)
+        self.root.geometry("1120x960")
+        self.root.minsize(900, 800)
+        self.preferences = self.load_preferences()
+        self.theme_var = tk.StringVar(
+            value=str(self.preferences.get("ui", {}).get("theme", "light")).lower()
+            if isinstance(self.preferences.get("ui", {}), dict) else "light"
+        )
+        if self.theme_var.get() not in ("light", "dark"):
+            self.theme_var.set("light")
+        self.style = ttk.Style(self.root)
         try:
-            style.theme_use("clam")
+            self.style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("TFrame", background="#101827")
-        style.configure("Card.TFrame", background="#1b2638")
-        style.configure("Title.TLabel", background="#101827", foreground="#f3f6fb",
-                        font=("SF Pro Display", 22, "bold"))
-        style.configure("Subtitle.TLabel", background="#101827", foreground="#9caec4",
-                        font=("SF Pro Text", 10))
-        style.configure("CardTitle.TLabel", background="#1b2638", foreground="#9caec4",
-                        font=("SF Pro Text", 10))
-        style.configure("Metric.TLabel", background="#1b2638", foreground="#f3f6fb",
-                        font=("SF Pro Display", 18, "bold"))
-        style.configure("Body.TLabel", background="#101827", foreground="#d7e0ed",
-                        font=("SF Pro Text", 10))
-        style.configure("File.TLabel", background="#1b2638", foreground="#f3f6fb",
-                        font=("SF Pro Text", 11, "bold"))
-        style.configure("Horizontal.TProgressbar", troughcolor="#303d50",
-                        background="#53c7a6", thickness=9)
+        self.apply_theme()
 
-        outer = ttk.Frame(self.root, padding=24)
+        outer = ttk.Frame(self.root, padding=22)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="Photo Offloader", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(outer, text="Camera ingest • live transfer monitor",
-                  style="Subtitle.TLabel").pack(anchor="w", pady=(2, 18))
 
-        metrics = ttk.Frame(outer)
-        metrics.pack(fill="x", pady=(0, 14))
+        header = ttk.Frame(outer)
+        header.pack(fill="x", pady=(0, 14))
+        header_copy = ttk.Frame(header)
+        header_copy.pack(side="left", fill="x", expand=True)
+        ttk.Label(header_copy, text="Photo Offloader", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header_copy, text="PHOTO WORKFLOW  /  LOCAL ARCHIVE  /  BACKUP  /  CLOUD",
+            style="Subtitle.TLabel"
+        ).pack(anchor="w", pady=(3, 0))
+        self.dashboard_state_var = tk.StringVar(value="READY  •  WAITING FOR CAMERA")
+        ttk.Label(header, textvariable=self.dashboard_state_var, style="Status.TLabel").pack(
+            side="right", anchor="center", padx=(12, 0)
+        )
+        theme_picker = ttk.Frame(header)
+        theme_picker.pack(side="right", anchor="center", padx=(0, 12))
+        ttk.Label(theme_picker, text="APPEARANCE", style="Subtitle.TLabel").pack(anchor="w")
+        self.theme_toggle = tk.Canvas(
+            theme_picker, width=88, height=36, bg=self.colors["background"],
+            highlightthickness=1, highlightbackground=self.colors["border"],
+            highlightcolor=self.colors["accent"], takefocus=True, cursor="hand2"
+        )
+        self.theme_toggle.pack(anchor="e", pady=(3, 0))
+        self.theme_toggle.bind("<Button-1>", self.toggle_theme)
+        self.theme_toggle.bind("<space>", self.toggle_theme)
+        self.theme_toggle.bind("<Return>", self.toggle_theme)
+        self.draw_theme_toggle()
+
+        # Shared state and metrics for the independent transfer cards.
         self.speed_var = tk.StringVar(value="—")
         self.eta_var = tk.StringVar(value="ETA —")
+        self.copy_title_var = tk.StringVar(value="Import to HD")
+        self.copy_percent_var = tk.DoubleVar(value=0.0)
+        self.copy_progress_var = tk.StringVar(value="Waiting for a camera card")
+        self.copy_elapsed_var = tk.StringVar(value="Elapsed 00:00:00")
+        self.copy_throughput_detail_var = tk.StringVar(value="Average — • Peak —")
         self.upload_speed_var = tk.StringVar(value="—")
         self.upload_eta_var = tk.StringVar(value="ETA —")
         self.upload_progress_var = tk.StringVar(value="Waiting for upload")
         self.upload_percent_var = tk.DoubleVar(value=0.0)
+        self.upload_elapsed_var = tk.StringVar(value="Elapsed 00:00:00")
+        self.upload_throughput_detail_var = tk.StringVar(value="Average — • Peak —")
         self.progress_var = tk.StringVar(value="Waiting for a camera card")
         self.speed_history = deque([0.0] * 60, maxlen=60)
+        self.upload_speed_history = deque([0.0] * 60, maxlen=60)
         self.last_sample_time = time.monotonic()
         self.last_transferred_bytes = 0
+        self._copy_run_key = None
+        self._copy_started_at = None
+        self._copy_elapsed_final = 0.0
+        self._upload_started_at = None
+        self._upload_elapsed_final = 0.0
+        self._upload_run_key = None
+        self._upload_last_bytes = 0
+        self._upload_last_sample_time = time.monotonic()
 
-        speed_card = ttk.Frame(metrics, style="Card.TFrame", padding=14)
-        speed_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        quick_actions = ttk.Frame(outer, style="Card.TFrame", padding=10)
+        quick_actions.pack(fill="x", pady=(0, 14))
+        ttk.Label(quick_actions, text="QUICK ACTIONS", style="CardTitle.TLabel").pack(
+            side="left", padx=(2, 10)
+        )
+        ttk.Button(quick_actions, text="Copy to USB Drive", command=self.start_usb_backup, style="Primary.TButton").pack(
+            side="left", padx=(0, 7)
+        )
+        ttk.Button(quick_actions, text="Update File Catalog", command=self.start_catalog_update).pack(
+            side="left", padx=(0, 7)
+        )
+        ttk.Button(quick_actions, text="Sync Google Photos", command=self.start_google_photos_sync, style="Primary.TButton").pack(
+            side="left", padx=(0, 7)
+        )
+        ttk.Button(quick_actions, text="Live Debug Log", command=self.toggle_debug_log).pack(
+            side="left", padx=(0, 7)
+        )
+        self.terminal_output_button = ttk.Button(
+            quick_actions, text=self.terminal_output_label(), command=self.toggle_terminal_output
+        )
+        self.terminal_output_button.pack(side="left")
+
+        metrics = ttk.Frame(outer)
+        metrics.pack(fill="x", pady=(0, 14))
+        speed_card = ttk.Frame(metrics, style="Card.TFrame", padding=15)
+        speed_card.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
         speed_header = ttk.Frame(speed_card, style="Card.TFrame")
         speed_header.pack(fill="x")
-        ttk.Label(speed_header, text="COPY SPEED", style="CardTitle.TLabel").pack(side="left", anchor="w")
-        ttk.Label(speed_header, textvariable=self.eta_var, style="CardTitle.TLabel").pack(side="right", anchor="e")
-        ttk.Label(speed_card, textvariable=self.speed_var, style="Metric.TLabel").pack(anchor="w", pady=(5, 0))
-        self.graph = tk.Canvas(speed_card, height=82, bg="#1b2638", highlightthickness=0)
-        self.graph.pack(fill="x", pady=(5, 0))
+        ttk.Label(speed_header, textvariable=self.copy_title_var, style="CardTitle.TLabel").pack(
+            side="left", anchor="w"
+        )
+        ttk.Label(speed_header, textvariable=self.eta_var, style="CardTitle.TLabel").pack(
+            side="right", anchor="e"
+        )
+        copy_body = ttk.Frame(speed_card, style="Card.TFrame")
+        copy_body.pack(fill="x", pady=(9, 0))
+        copy_metrics = ttk.Frame(copy_body, style="Card.TFrame")
+        copy_metrics.pack(side="left", fill="both", expand=True)
+        ttk.Label(copy_metrics, textvariable=self.speed_var, style="Metric.TLabel").pack(anchor="w")
+        ttk.Label(copy_metrics, textvariable=self.copy_elapsed_var, style="CardTitle.TLabel").pack(
+            anchor="w", pady=(3, 0)
+        )
+        ttk.Label(
+            copy_metrics, textvariable=self.copy_throughput_detail_var, style="CardTitle.TLabel"
+        ).pack(anchor="w", pady=(3, 0))
+        self.copy_progress = ttk.Progressbar(
+            copy_metrics, mode="determinate", maximum=100, variable=self.copy_percent_var
+        )
+        self.copy_progress.pack(fill="x", pady=(10, 4))
+        ttk.Label(
+            copy_metrics, textvariable=self.copy_progress_var, style="CardTitle.TLabel", wraplength=280
+        ).pack(anchor="w")
+        self.graph = tk.Canvas(copy_body, height=100, width=210, bg=self.colors["card"], highlightthickness=0)
+        self.graph.pack(side="right", fill="both", expand=True, padx=(16, 0))
 
-        upload_card = ttk.Frame(metrics, style="Card.TFrame", padding=14)
-        upload_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        upload_card = ttk.Frame(metrics, style="Card.TFrame", padding=15)
+        upload_card.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
         upload_header = ttk.Frame(upload_card, style="Card.TFrame")
         upload_header.pack(fill="x")
-        ttk.Label(upload_header, text="GOOGLE PHOTOS UPLOAD", style="CardTitle.TLabel").pack(side="left", anchor="w")
-        ttk.Label(upload_header, textvariable=self.upload_eta_var, style="CardTitle.TLabel").pack(side="right", anchor="e")
-        ttk.Label(upload_card, textvariable=self.upload_speed_var, style="Metric.TLabel").pack(anchor="w", pady=(5, 0))
+        ttk.Label(upload_header, text="GOOGLE PHOTOS", style="CardTitle.TLabel").pack(
+            side="left", anchor="w"
+        )
+        ttk.Label(upload_header, textvariable=self.upload_eta_var, style="CardTitle.TLabel").pack(
+            side="right", anchor="e"
+        )
+        upload_body = ttk.Frame(upload_card, style="Card.TFrame")
+        upload_body.pack(fill="x", pady=(9, 0))
+        upload_metrics = ttk.Frame(upload_body, style="Card.TFrame")
+        upload_metrics.pack(side="left", fill="both", expand=True)
+        ttk.Label(upload_metrics, textvariable=self.upload_speed_var, style="Metric.TLabel").pack(
+            anchor="w"
+        )
+        ttk.Label(upload_metrics, textvariable=self.upload_elapsed_var, style="CardTitle.TLabel").pack(
+            anchor="w", pady=(3, 0)
+        )
+        ttk.Label(
+            upload_metrics, textvariable=self.upload_throughput_detail_var, style="CardTitle.TLabel"
+        ).pack(anchor="w", pady=(3, 0))
         self.upload_progress = ttk.Progressbar(
-            upload_card, mode="determinate", maximum=100, variable=self.upload_percent_var
+            upload_metrics, mode="determinate", maximum=100, variable=self.upload_percent_var
         )
-        self.upload_progress.pack(fill="x", pady=(10, 3))
-        ttk.Label(upload_card, textvariable=self.upload_progress_var, style="CardTitle.TLabel").pack(anchor="w")
-        metrics.columnconfigure(0, weight=1)
-        metrics.columnconfigure(1, weight=1)
+        self.upload_progress.pack(fill="x", pady=(10, 4))
+        ttk.Label(
+            upload_metrics, textvariable=self.upload_progress_var, style="CardTitle.TLabel",
+            wraplength=280
+        ).pack(anchor="w")
+        self.upload_graph = tk.Canvas(
+            upload_body, height=100, width=210, bg=self.colors["card"], highlightthickness=0
+        )
+        self.upload_graph.pack(side="right", fill="both", expand=True, padx=(16, 0))
+        metrics.columnconfigure(0, weight=1, uniform="transfer")
+        metrics.columnconfigure(1, weight=1, uniform="transfer")
 
-        detail = ttk.Frame(outer, style="Card.TFrame", padding=16)
-        detail.pack(fill="x", pady=(0, 12))
-        ttk.Label(detail, text="CURRENT FILE", style="CardTitle.TLabel").pack(anchor="w")
-        self.file_var = tk.StringVar(value="No active import")
-        ttk.Label(detail, textvariable=self.file_var, style="File.TLabel").pack(anchor="w", pady=(5, 8))
+        # Current work and overall progress share one clear, full-width surface.
+        detail = ttk.Frame(outer, style="Card.TFrame", padding=15)
+        detail.pack(fill="x", pady=(0, 14))
+        detail_header = ttk.Frame(detail, style="Card.TFrame")
+        detail_header.pack(fill="x")
+        ttk.Label(detail_header, text="CURRENT ACTIVITY", style="CardTitle.TLabel").pack(
+            side="left", anchor="w"
+        )
         self.source_var = tk.StringVar(value="Source: —")
-        ttk.Label(detail, textvariable=self.source_var, style="CardTitle.TLabel").pack(anchor="w")
-
-        self.progress = ttk.Progressbar(outer, mode="determinate", maximum=100, value=0)
-        self.progress.pack(fill="x", pady=(4, 7))
-        ttk.Label(outer, textvariable=self.progress_var, style="Body.TLabel").pack(anchor="w")
-        self.message_var = tk.StringVar(value="")
-        ttk.Label(outer, textvariable=self.message_var, style="Subtitle.TLabel",
-                  wraplength=550).pack(anchor="w", pady=(9, 0))
-
-        ttk.Label(outer, text="AUTOMATIC IMPORT STATUS", style="Subtitle.TLabel").pack(anchor="w", pady=(12, 4))
-        auto_status = ttk.Frame(outer, style="Card.TFrame", padding=10)
-        auto_status.pack(fill="x")
-        self.auto_status_var = tk.StringVar(value="Waiting for trigger activity…")
-        ttk.Label(auto_status, textvariable=self.auto_status_var, style="Body.TLabel",
-                  wraplength=760).pack(anchor="w")
-        status_actions = ttk.Frame(auto_status, style="Card.TFrame")
-        status_actions.pack(fill="x", pady=(6, 0))
-        ttk.Button(status_actions, text="Toggle Live Debug Log", command=self.toggle_debug_log).pack(side="left")
-        self.terminal_output_button = ttk.Button(
-            status_actions, text=self.terminal_output_label(), command=self.toggle_terminal_output
+        ttk.Label(detail_header, textvariable=self.source_var, style="CardTitle.TLabel").pack(
+            side="right", anchor="e"
         )
-        self.terminal_output_button.pack(side="left", padx=(8, 0))
+        self.file_var = tk.StringVar(value="No active import")
+        ttk.Label(detail, textvariable=self.file_var, style="File.TLabel").pack(
+            anchor="w", pady=(6, 8)
+        )
+        self.progress = ttk.Progressbar(detail, mode="determinate", maximum=100, value=0)
+        self.progress.pack(fill="x", pady=(0, 6))
+        ttk.Label(detail, textvariable=self.progress_var, style="Body.TLabel").pack(anchor="w")
+        self.message_var = tk.StringVar(value="")
+        ttk.Label(
+            detail, textvariable=self.message_var, style="Subtitle.TLabel", wraplength=1000
+        ).pack(anchor="w", pady=(5, 0))
+
+        # Keep infrequently used diagnostic data out of the default dashboard.
+        archive_content = self._create_collapsible_section(outer, "Archive & database health")
+        ttk.Label(
+            archive_content, text="ARCHIVE & DATABASE HEALTH", style="CardTitle.TLabel"
+        ).pack(anchor="w", pady=(0, 7))
+        self.local_catalog_var = tk.StringVar(value="Checking local archive catalog…")
+        self.usb_catalog_var = tk.StringVar(value="Checking USB archive catalog…")
+        ttk.Label(
+            archive_content, textvariable=self.local_catalog_var, style="Body.TLabel", wraplength=1000
+        ).pack(anchor="w")
+        ttk.Label(
+            archive_content, textvariable=self.usb_catalog_var, style="Body.TLabel", wraplength=1000
+        ).pack(anchor="w", pady=(5, 0))
+
+        automation_content = self._create_collapsible_section(outer, "Automation & cloud status")
+        self.auto_status_var = tk.StringVar(value="Waiting for trigger activity…")
+        ttk.Label(
+            automation_content, textvariable=self.auto_status_var, style="Body.TLabel", wraplength=1000
+        ).pack(anchor="w")
         self.google_photos_var = tk.StringVar(value=self.google_photos_summary())
-        ttk.Label(auto_status, textvariable=self.google_photos_var, style="Body.TLabel", wraplength=760).pack(anchor="w", pady=(8, 0))
-        ttk.Button(status_actions, text="Sync Google Photos", command=self.start_google_photos_sync).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            automation_content, textvariable=self.google_photos_var, style="Body.TLabel", wraplength=1000
+        ).pack(anchor="w", pady=(6, 0))
+
+        activity = self._create_collapsible_section(outer, "Recent activity & history")
+        ttk.Label(
+            activity, text="Latest importer and automatic-import log entries",
+            style="CardTitle.TLabel"
+        ).pack(anchor="w", pady=(0, 6))
+        self.activity_text = tk.Text(
+            activity, height=5, wrap="word", state="disabled", bg=self.colors["input"],
+            fg=self.colors["text"], insertbackground=self.colors["text"], relief="flat", borderwidth=1,
+            highlightthickness=1, highlightbackground=self.colors["border"],
+            font=("Menlo", 9), padx=9, pady=7
+        )
+        self.activity_text.pack(fill="x", expand=False)
+        self._activity_last_text = ""
+
+        ttk.Label(
+            outer,
+            text="Catalog refresh reuses cached metadata; it does not hash every file. Source media is never deleted.",
+            style="Subtitle.TLabel", wraplength=1000
+        ).pack(anchor="w", pady=(8, 0))
+
         self.debug_window = None
         self.debug_text = None
         self.debug_refresh_job = None
 
-        ttk.Label(outer, text="DATABASE STATUS", style="Subtitle.TLabel").pack(anchor="w", pady=(12, 4))
-        catalog_status = ttk.Frame(outer, style="Card.TFrame", padding=10)
-        catalog_status.pack(fill="x")
-        self.local_catalog_var = tk.StringVar(value="Checking catalog…")
-        self.usb_catalog_var = tk.StringVar(value="Checking catalog…")
-        ttk.Label(catalog_status, textvariable=self.local_catalog_var, style="Body.TLabel").pack(anchor="w")
-        ttk.Label(catalog_status, textvariable=self.usb_catalog_var, style="Body.TLabel").pack(anchor="w", pady=(4, 0))
-
-        actions = ttk.Frame(outer)
-        actions.pack(fill="x", pady=(12, 0))
-        ttk.Button(actions, text="Copy to USB Drive", command=self.start_usb_backup).pack(side="left")
-        ttk.Button(actions, text="Update File Catalog", command=self.start_catalog_update).pack(
-            side="left", padx=(8, 0)
-        )
-        ttk.Label(outer, text="Catalog update scans the Mac archive and mounted USB drive; it reuses valid metadata and does not hash every file.",
-                  style="Subtitle.TLabel", wraplength=550).pack(anchor="w", pady=(6, 0))
-
         self.root.after(500, self.refresh)
         self.root.mainloop()
+
+    @staticmethod
+    def load_preferences() -> Dict[str, Any]:
+        try:
+            payload = json.loads(PREFERENCES_FILE.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save_preferences(self) -> None:
+        """Merge UI preferences into the shared persistent settings without losing other keys."""
+        PREFERENCES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        current = self.load_preferences()
+        ui = current.get("ui")
+        if not isinstance(ui, dict):
+            ui = {}
+        ui["theme"] = self.theme_var.get()
+        current["ui"] = ui
+        temporary = PREFERENCES_FILE.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(current, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+        temporary.replace(PREFERENCES_FILE)
+        self.preferences = current
+
+    def apply_theme(self) -> None:
+        """Apply the selected light/dark palette to native widgets and charts."""
+        dark = getattr(self, "theme_var", tk.StringVar(value="light")).get() == "dark"
+        self.colors = {
+            "background": "#151922" if dark else "#f3f6fb",
+            "card": "#202633" if dark else "#ffffff",
+            "text": "#e7edf7" if dark else "#172033",
+            "muted": "#a2aec2" if dark else "#64748b",
+            "body": "#d4dceb" if dark else "#334155",
+            "border": "#3a4558" if dark else "#dbe3ef",
+            "input": "#171d28" if dark else "#f8fafc",
+            "accent": "#60a5fa" if dark else "#2563eb",
+            "accent_active": "#3b82f6" if dark else "#1d4ed8",
+            "status_bg": "#263b59" if dark else "#dbeafe",
+            "status_fg": "#bfdbfe" if dark else "#1d4ed8",
+            "button_bg": "#2b3444" if dark else "#ffffff",
+            "button_fg": "#e7edf7" if dark else "#1e293b",
+            "button_active": "#3a465b" if dark else "#eaf0f8",
+            "disabled": "#7f8ba0" if dark else "#94a3b8",
+            "grid": "#3a4558" if dark else "#dbe3ef",
+            "success": "#4ade80" if dark else "#16a34a",
+        }
+        c = self.colors
+        self.root.configure(bg=c["background"])
+        style = self.style
+        style.configure("TFrame", background=c["background"])
+        style.configure("Card.TFrame", background=c["card"])
+        style.configure("Title.TLabel", background=c["background"], foreground=c["text"],
+                        font=("SF Pro Display", 25, "bold"))
+        style.configure("Status.TLabel", background=c["status_bg"], foreground=c["status_fg"],
+                        font=("SF Pro Text", 10, "bold"), padding=(12, 7))
+        style.configure("Subtitle.TLabel", background=c["background"], foreground=c["muted"],
+                        font=("SF Pro Text", 10))
+        style.configure("CardTitle.TLabel", background=c["card"], foreground=c["muted"],
+                        font=("SF Pro Text", 10))
+        style.configure("Metric.TLabel", background=c["card"], foreground=c["text"],
+                        font=("SF Pro Display", 18, "bold"))
+        style.configure("Body.TLabel", background=c["card"], foreground=c["body"],
+                        font=("SF Pro Text", 10))
+        style.configure("File.TLabel", background=c["card"], foreground=c["text"],
+                        font=("SF Pro Text", 11, "bold"))
+        style.configure("Horizontal.TProgressbar", troughcolor=c["border"],
+                        background=c["success"], thickness=9)
+        style.configure("TButton", background=c["button_bg"], foreground=c["button_fg"],
+                        padding=(12, 8), relief="flat", borderwidth=1,
+                        font=("SF Pro Text", 10, "bold"))
+        style.map("TButton", background=[("active", c["button_active"]),
+                                         ("pressed", c["status_bg"]),
+                                         ("disabled", c["card"])],
+                  foreground=[("disabled", c["disabled"])])
+        style.configure("Primary.TButton", background=c["accent"], foreground="#ffffff",
+                        padding=(13, 8), relief="flat", borderwidth=0,
+                        font=("SF Pro Text", 10, "bold"))
+        style.map("Primary.TButton", background=[("active", c["accent_active"]),
+                                                 ("pressed", c["accent_active"])])
+        style.configure("Disclosure.TButton", background=c["background"], foreground=c["body"],
+                        padding=(10, 8), relief="flat", borderwidth=0,
+                        font=("SF Pro Text", 10, "bold"), anchor="w")
+        style.map("Disclosure.TButton", background=[("active", c["button_active"])])
+        style.configure("TCombobox", fieldbackground=c["button_bg"], background=c["button_bg"],
+                        foreground=c["button_fg"], arrowcolor=c["button_fg"])
+        style.map("TCombobox", fieldbackground=[("readonly", c["button_bg"])],
+                  foreground=[("readonly", c["button_fg"])])
+
+        # Canvas and Text widgets do not inherit ttk styles.
+        for name in ("graph", "upload_graph"):
+            canvas = getattr(self, name, None)
+            if canvas is not None:
+                canvas.configure(bg=c["card"])
+        activity_text = getattr(self, "activity_text", None)
+        if activity_text is not None:
+            activity_text.configure(bg=c["input"], fg=c["body"],
+                                    insertbackground=c["text"], highlightbackground=c["border"])
+        if hasattr(self, "theme_toggle"):
+            self.draw_theme_toggle()
+
+        # Redraw both timelines immediately with the new grid and accent colors.
+        if hasattr(self, "speed_history"):
+            self.draw_speed_graph()
+        if hasattr(self, "upload_speed_history"):
+            self.draw_upload_speed_graph()
+
+    def draw_theme_toggle(self) -> None:
+        """Draw a compact sun/moon switch with a sliding active-state thumb."""
+        toggle = getattr(self, "theme_toggle", None)
+        if toggle is None:
+            return
+        toggle.delete("all")
+        dark = self.theme_var.get() == "dark"
+        c = self.colors
+        track = c["border"] if not dark else "#303b4e"
+        toggle.create_oval(2, 4, 86, 32, fill=track, outline=track)
+        toggle.create_rectangle(16, 4, 72, 32, fill=track, outline=track)
+        center_x = 68 if dark else 20
+        toggle.create_oval(center_x - 13, 5, center_x + 13, 31,
+                           fill=c["accent"], outline=c["accent"])
+        toggle.create_text(20, 18, text="☀", font=("SF Pro Text", 15),
+                           fill="#ffffff" if not dark else c["muted"])
+        toggle.create_text(68, 18, text="☾", font=("SF Pro Text", 16),
+                           fill="#ffffff" if dark else c["muted"])
+        toggle.configure(bg=c["background"], highlightbackground=c["border"],
+                         highlightcolor=c["accent"])
+
+    def toggle_theme(self, _event: object = None) -> str:
+        self.theme_var.set("light" if self.theme_var.get() == "dark" else "dark")
+        self.on_theme_selected()
+        return "break"
+
+    def on_theme_selected(self, _event: object = None) -> None:
+        if self.theme_var.get() not in ("light", "dark"):
+            return
+        self.apply_theme()
+        try:
+            self.save_preferences()
+        except OSError as exc:
+            self.message_var.set(f"Theme changed for this session, but settings could not be saved: {exc}")
+
+    def _create_collapsible_section(self, parent: ttk.Frame, title: str) -> ttk.Frame:
+        """Create a compact disclosure row whose details are hidden by default."""
+        section = ttk.Frame(parent, style="TFrame")
+        section.pack(fill="x", pady=(0, 5))
+        content = ttk.Frame(section, style="Card.TFrame", padding=12)
+        expanded = False
+        toggle = ttk.Button(section, text=f"▸  {title}", style="Disclosure.TButton")
+        toggle.pack(fill="x")
+
+        def toggle_section() -> None:
+            nonlocal expanded
+            if expanded:
+                content.pack_forget()
+                toggle.configure(text=f"▸  {title}")
+            else:
+                content.pack(fill="x", pady=(2, 0))
+                toggle.configure(text=f"▾  {title}")
+            expanded = not expanded
+
+        toggle.configure(command=toggle_section)
+        return content
 
     @staticmethod
     def terminal_output_label() -> str:
@@ -288,18 +586,40 @@ class Dashboard:
         except (OSError, ValueError):
             status = {}
         state = str(status.get("state", "unknown"))
-
-        if state == "complete":
+        run_key = str(status.get("run_id") or status.get("started_at") or status.get("last_started") or "")
+        now = time.monotonic()
+        if state == "running":
+            if self._upload_started_at is None or (run_key and run_key != self._upload_run_key):
+                self._upload_started_at = now
+                self._upload_run_key = run_key
+                self._upload_elapsed_final = 0.0
+                self._upload_last_bytes = 0
+                self._upload_last_sample_time = now
+                self.upload_speed_history.clear()
+            elapsed = now - self._upload_started_at
+            self.upload_elapsed_var.set(f"Elapsed {format_clock(elapsed)}")
+        elif state == "complete":
+            if self._upload_started_at is not None:
+                self._upload_elapsed_final = now - self._upload_started_at
+                self._upload_started_at = None
+            self.upload_elapsed_var.set(f"Elapsed {format_clock(self._upload_elapsed_final)}")
             self.upload_speed_var.set("—")
             self.upload_eta_var.set("ETA Complete")
+            self.upload_speed_history.clear()
+            self.upload_throughput_detail_var.set("Average — • Peak —")
             self.upload_percent_var.set(100.0)
             self.upload_progress_var.set("Upload complete")
+            self.draw_upload_speed_graph()
             return
-        if state != "running":
+        else:
+            self.upload_speed_history.clear()
+            self.upload_throughput_detail_var.set("Average — • Peak —")
+            self.upload_elapsed_var.set(f"Elapsed {format_clock(self._upload_elapsed_final)}")
             self.upload_speed_var.set("—")
             self.upload_eta_var.set("ETA —")
             self.upload_percent_var.set(0.0)
             self.upload_progress_var.set("Waiting for upload")
+            self.draw_upload_speed_graph()
             return
 
         try:
@@ -340,6 +660,21 @@ class Dashboard:
         self.upload_progress_var.set(
             f"{percent:.0f}% • {progress['transferred']} of {progress['total']} uploaded"
         )
+        transferred_bytes = parse_display_bytes(str(progress.get("transferred", "0 B")))
+        sample_now = time.monotonic()
+        elapsed = max(sample_now - self._upload_last_sample_time, 0.001)
+        sample_speed = max(transferred_bytes - self._upload_last_bytes, 0) / elapsed
+        self.upload_speed_history.append(sample_speed)
+        active_samples = [sample for sample in self.upload_speed_history if sample > 0]
+        average_recent = sum(active_samples) / len(active_samples) if active_samples else 0.0
+        peak_recent = max(self.upload_speed_history, default=0.0)
+        self.upload_throughput_detail_var.set(
+            f"Average {format_bytes(average_recent)}/s • Peak {format_bytes(peak_recent)}/s (last 60s)"
+            if active_samples else "Average — • Peak —"
+        )
+        self._upload_last_bytes = transferred_bytes
+        self._upload_last_sample_time = sample_now
+        self.draw_upload_speed_graph()
 
     def google_photos_summary(self) -> str:
         try:
@@ -456,32 +791,35 @@ class Dashboard:
             self.message_var.set(f"Could not update catalog: {exc}")
 
     def draw_speed_graph(self) -> None:
-        self.graph.delete("all")
-        width = max(self.graph.winfo_width(), 200)
-        height = max(self.graph.winfo_height(), 80)
-        left, right, top, bottom = 8, width - 8, 8, height - 18
+        self._draw_graph(self.graph, self.speed_history, "#2563eb")
+
+
+    def draw_upload_speed_graph(self) -> None:
+        self._draw_graph(self.upload_graph, self.upload_speed_history, "#16a34a")
+
+    def _draw_graph(self, canvas: tk.Canvas, history: deque, line_color: str) -> None:
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 150)
+        height = max(canvas.winfo_height(), 82)
+        left, right, top, bottom = 5, width - 5, 8, height - 15
         for fraction in (0.25, 0.5, 0.75, 1.0):
             y = bottom - (bottom - top) * fraction
-            self.graph.create_line(left, y, right, y, fill="#34445b", dash=(2, 3))
-        values = list(self.speed_history)
+            canvas.create_line(left, y, right, y, fill=self.colors["grid"], dash=(2, 3))
+        values = list(history)
         peak = max(values, default=0.0)
         if peak <= 0:
-            self.graph.create_text(left + 4, top + 5, anchor="nw",
-                                   text="Waiting for transfer data…", fill="#9caec4",
-                                   font=("SF Pro Text", 9))
+            canvas.create_text(left + 3, top + 4, anchor="nw", text="Waiting for data…",
+                               fill="#64748b", font=("SF Pro Text", 9))
             return
         points = []
-        span_x = right - left
-        span_y = bottom - top
         for index, value in enumerate(values):
-            x = left + span_x * index / max(len(values) - 1, 1)
-            y = bottom - span_y * (value / peak)
+            x = left + (right - left) * index / max(len(values) - 1, 1)
+            y = bottom - (bottom - top) * min(value / peak, 1.0)
             points.extend((x, y))
         if len(points) >= 4:
-            self.graph.create_line(*points, fill="#53c7a6", width=2, smooth=True)
-        self.graph.create_text(right - 2, top + 2, anchor="ne",
-                               text=f"Peak {format_bytes(peak)}/s", fill="#9caec4",
-                               font=("SF Pro Text", 9))
+            canvas.create_line(*points, fill=line_color, width=2, smooth=True)
+        canvas.create_text(right - 2, top + 2, anchor="ne", text=f"Peak {format_bytes(peak)}/s",
+                           fill=self.colors["muted"], font=("SF Pro Text", 8))
 
     def catalog_eta(self, status: Dict[str, Any]) -> str:
         """Estimate remaining catalog time only when a meaningful scan rate exists."""
@@ -522,9 +860,78 @@ class Dashboard:
         remaining = max(estimate_total - progress, 0) / rate
         return format_duration(remaining)
 
+    def refresh_activity_history(self) -> None:
+        """Display a small, separate tail of the importer and trigger logs."""
+        entries = []
+        for label, path in (("IMPORT", IMPORT_LOG), ("AUTO", TRIGGER_LOG)):
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    size = handle.tell()
+                    handle.seek(max(0, size - 12288))
+                    if size > 12288:
+                        handle.readline()
+                    lines = handle.read().decode("utf-8", errors="replace").splitlines()
+                entries.extend(f"[{label}] {line.strip()}" for line in lines[-4:] if line.strip())
+            except OSError:
+                continue
+        display = "\n".join(entries[-8:]) if entries else (
+            "No recent log entries available yet. Activity will appear here when the importer or trigger runs."
+        )
+        if display == self._activity_last_text:
+            return
+        self._activity_last_text = display
+        self.activity_text.configure(state="normal")
+        self.activity_text.delete("1.0", "end")
+        self.activity_text.insert("1.0", display)
+        self.activity_text.configure(state="disabled")
+        self.activity_text.see("end")
+
     def refresh(self) -> None:
         status = read_status()
         state = str(status.get("state", "idle"))
+        if state == "copying":
+            self.dashboard_state_var.set("TRANSFER IN PROGRESS")
+        elif state == "scanning":
+            self.dashboard_state_var.set("SCANNING / INDEXING")
+        elif state == "failed":
+            self.dashboard_state_var.set("ATTENTION NEEDED")
+        elif state == "canceled":
+            self.dashboard_state_var.set("CANCELED")
+        elif state == "complete":
+            self.dashboard_state_var.set("LAST TRANSFER COMPLETE")
+        elif PAUSE_FILE.exists():
+            self.dashboard_state_var.set("AUTOMATIC IMPORT PAUSED")
+        else:
+            self.dashboard_state_var.set("READY  •  WAITING FOR CAMERA")
+        phase = str(status.get("phase", "") or "")
+        source = str(status.get("source", "") or "")
+        if state == "copying" and phase != "catalog-update":
+            if "USB" in str(status.get("operation", "")).upper() or "backup" in str(status.get("message", "")).lower() or "/Volumes/Photos" in str(status.get("destination", "")):
+                self.copy_title_var.set("Backing up to USB")
+            else:
+                self.copy_title_var.set("Import to HD")
+        elif state == "scanning" and phase == "copy-decision":
+            self.copy_title_var.set("Preparing copy")
+        elif state == "scanning" and phase == "catalog-update":
+            self.copy_title_var.set("Updating file catalog")
+        else:
+            self.copy_title_var.set("Copy")
+        run_key = str(status.get("run_id") or status.get("started_at") or source)
+        now = time.monotonic()
+        active_copy = state in ("copying", "scanning") and phase != "catalog-update"
+        if active_copy:
+            if self._copy_started_at is None or (run_key and run_key != self._copy_run_key):
+                self._copy_started_at = now
+                self._copy_run_key = run_key
+                self._copy_elapsed_final = 0.0
+                self.speed_history.clear()
+            self.copy_elapsed_var.set(f"Elapsed {format_clock(now - self._copy_started_at)}")
+        else:
+            if self._copy_started_at is not None:
+                self._copy_elapsed_final = now - self._copy_started_at
+                self._copy_started_at = None
+            self.copy_elapsed_var.set(f"Elapsed {format_clock(self._copy_elapsed_final)}")
         done = int(status.get("bytes_done", 0) or 0)
         total = int(status.get("bytes_total", 0) or 0)
         average_speed = float(status.get("transfer_speed_bps", 0) or 0)
@@ -539,7 +946,18 @@ class Dashboard:
         self.last_sample_time = now
         self.last_transferred_bytes = transferred
         eta = float(status.get("eta_seconds", 0) or 0)
-        self.speed_history.append(max(speed, 0.0))
+        if active_copy:
+            self.speed_history.append(max(speed, 0.0))
+        else:
+            # A finished/idle transfer starts with a clean timeline next time.
+            self.speed_history.clear()
+        active_samples = [sample for sample in self.speed_history if sample > 0]
+        average_recent = sum(active_samples) / len(active_samples) if active_samples else 0.0
+        peak_recent = max(self.speed_history, default=0.0)
+        self.copy_throughput_detail_var.set(
+            f"Average {format_bytes(average_recent)}/s • Peak {format_bytes(peak_recent)}/s (last 60s)"
+            if active_samples else "Average — • Peak —"
+        )
         self.draw_speed_graph()
 
         display_speed = speed if speed > 0 else average_speed if state == "copying" else 0
@@ -601,6 +1019,11 @@ class Dashboard:
             self.progress.configure(mode="determinate")
             percent = min(100.0, (done / total * 100.0) if total else 0.0)
             self.progress.configure(value=percent)
+        self.copy_percent_var.set(min(100.0, (done / total * 100.0) if total else (100.0 if state == "complete" else 0.0)))
+        self.copy_progress_var.set(
+            f"{format_bytes(done)} of {format_bytes(total)} • {self.copy_percent_var.get():.0f}%"
+            if total else ("Copy complete" if state == "complete" else "Waiting for transfer")
+        )
         if decision_phase:
             self.progress_var.set(
                 f"Checking existing files  •  {int(status.get('decision_files_checked', 0) or 0)} "
@@ -642,6 +1065,7 @@ class Dashboard:
         self.auto_status_var.set(self.trigger_status_summary())
         self.google_photos_var.set(self.google_photos_summary())
         self.refresh_google_photos_progress()
+        self.refresh_activity_history()
 
         current_file = str(status.get("current_file", "") or "")
         self.file_var.set(current_file if current_file else "No active import")

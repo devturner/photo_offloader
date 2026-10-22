@@ -5,6 +5,30 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Added
+- Replaced the Light/Dark dropdown with a compact sun/moon appearance toggle with a sliding active-state thumb and mouse/keyboard support. The selected theme is saved under `ui.theme` in `PhotoOffloaderData/preferences.json` and restored on next launch without overwriting other preferences.
+
+
+### Changed
+- Refreshed the dashboard with a light neutral palette, cleaner label backgrounds, styled primary/secondary buttons, and individually collapsible archive/database, automation/cloud, and activity/history sections. Diagnostic detail is hidden until requested.
+- Reset copy and Google Photos speed timelines and rolling throughput values when a transfer is no longer active, so the next run starts with a clean chart.
+
+### Fixed
+- Made terminal-free automatic imports run under a detached supervisor, set a predictable launchd-safe PATH for Homebrew media tools, set the importer's working directory, and ensure failed imports clear their handled-card state so they can be retried.
+- Added trigger regression coverage for detached background imports and the launchd-safe PATH.
+
+### Changed
+- Restored the full dashboard redesign: compact workflow header and state indicator, prominent quick actions, separate transfer panels, a dedicated current-activity/progress surface, side-by-side archive/database and automation/cloud health cards, and a separate recent-log history panel.
+
+### Fixed
+- Fixed a syntax error in catalog ETA tracking that prevented the dashboard from launching.
+
+### Added
+- Copy and Google Photos cards now show rolling 60-second average and peak throughput alongside current speed, elapsed time, ETA, and the live speed graph.
+
+### Changed
+- Redesigned the Copy and Google Photos dashboard cards with independent progress percentages, elapsed timers, and separate rolling throughput graphs positioned beside each speed metric. Copy card title reflects import-to-HD versus USB backup activity.
+
+### Added
 - Dashboard now shows Google Photos upload percentage, current transfer speed, and estimated time remaining beside the existing copy-speed monitor. ETA labels sit in the upper-right corner of each speed card.
 - Google Photos logs now include an explicit application-level success message after rclone exits successfully and per-file catalog updates finish.
 - A non-secret Google Photos connection preference is stored outside the install directory, allowing the dashboard to remember a configured rclone remote across upgrades and reinstallations.
@@ -103,7 +127,6 @@ All notable changes to Photo Offloader are documented here.
 - LaunchAgent now throttles repeated `/Volumes` events for two seconds in addition to trigger/import locks.
 - Installer verifies that the LaunchAgent successfully loaded.
 - Uninstaller removes trigger state and lock artifacts.
-- Importer is now v2.3 and treats a USB destination present at session start as required for the entire session.
 
 ### Fixed
 - Repeated `/Volumes` events no longer open multiple importer Terminal windows for the same mounted camera.
@@ -131,17 +154,3 @@ All notable changes to Photo Offloader are documented here.
 - Runtime/development dependency separation.
 - Expanded CI-ready test coverage.
 - Changelog tracking.
-
-### Changed
-- Destination selection is snapshotted once per import session.
-- Existing destination files are only treated as duplicates after content verification.
-- Automatic backup failure now includes USB disconnect/replacement detection.
-- LaunchAgent installation validates the plist and uses modern `launchctl bootstrap`/`bootout`.
-- Bundle generation now targets the v2 application files.
-- Manual runner no longer blocks non-interactive invocations.
-
-### Fixed
-- Removed stale v1 references from the distribution bundle script.
-- Prevented unrelated `/Volumes` activity from directly launching the Python importer.
-- Prevented concurrent importer sessions from running simultaneously.
-- Preserved the existing safety rule that failed imports do not automatically eject the card.
