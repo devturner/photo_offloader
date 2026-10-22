@@ -8,7 +8,7 @@ The importer follows:
 
 > **Discover → Lock → Snapshot → Scan → Capacity Check → Copy → Verify → Report → Eject**
 
-Files are never deleted from the camera card and existing destination files are never overwritten. A local SQLite catalog tracks known file locations, filesystem fingerprints, cached camera/date metadata, and verified hashes. It avoids repeatedly decoding unchanged RAW/video metadata and re-hashing unchanged local/USB file pairs. The filesystem is still checked for newly added or changed files; the catalog is an optimization, not the source of truth.
+Files are never deleted from the camera card and existing destination files are never overwritten. A local SQLite catalog tracks known file locations, filesystem fingerprints, cached camera/date metadata, verified hashes, and per-file Google Photos upload records tied to the exact file fingerprint. It avoids repeatedly decoding unchanged RAW/video metadata and re-hashing unchanged local/USB file pairs. The filesystem is still checked for newly added or changed files; the catalog is an optimization, not the source of truth.
 
 ## Build provenance in logs
 
@@ -32,13 +32,19 @@ The importer also accepts a volume or `DCIM` path through `--source`.
 
 ### 🖥️ Menu-bar dashboard and pause control
 
-The installer launches a native macOS menu-bar item and opens the dashboard window at the end of installation. When a camera import starts, the dashboard is opened automatically (or reused if already running). Select **Open Dashboard** from the menu-bar item at any time to view the current source, file being processed, progress, live transfer speed, a rolling speed graph, and estimated time remaining. Use **Copy to USB Drive** in the menu bar or dashboard to run a USB-only sync without a camera card. Both controls use a shared launch lock, so repeated clicks cannot start overlapping USB backup requests. A 15-second debounce also suppresses duplicate requests if a very fast backup finishes before a second click. The importer acquires its session lock before changing dashboard status; duplicate launches are ignored cleanly and do not overwrite the active session's progress.
+The installer launches a native macOS menu-bar item and opens the dashboard window at the end of installation. When a camera import starts, the dashboard is opened automatically (or reused if already running). Select **Open Dashboard** from the menu-bar item at any time to view the current source, file being processed, copy progress and speed, a rolling copy-speed graph, and estimated time remaining. The dashboard also shows Google Photos upload percentage and current upload speed, with a small ETA in the upper-right corner of both speed cards. Use **Copy to USB Drive** in the menu bar or dashboard to run a USB-only sync without a camera card. Both controls use a shared launch lock, so repeated clicks cannot start overlapping USB backup requests. A 15-second debounce also suppresses duplicate requests if a very fast backup finishes before a second click. The importer acquires its session lock before changing dashboard status; duplicate launches are ignored cleanly and do not overwrite the active session's progress.
 
 Use **Pause Automatic Imports** before inserting a card when you do not want automatic copying to start. Pausing prevents new automatic import sessions; it does not interrupt a copy already in progress. Choose **Resume Automatic Imports** to re-enable the service and immediately re-check any camera card that is already mounted.
 
 The menu-bar controller uses `rumps`; the dashboard uses Python's `tkinter` UI. The menu-bar dependency is declared in `requirements-ui.txt` and installed by `install.sh`.
 
 Some Homebrew Python installations package Tk support separately. If the installer reports that `tkinter` is missing, install the matching formula, for example `brew install python-tk@3.14` for Python 3.14, then rerun `./install.sh`.
+
+### ☁️ Google Photos upload via rclone
+- Optional one-way upload of JPG/JPEG photos and supported video formats to a dedicated Google Photos album named `Photo Offloader`. Successful uploads are recorded per file in the SQLite catalog with timestamp, remote/album, and the uploaded file fingerprint. Changed files no longer show as uploaded until synced again.
+- Upload starts automatically after a successful camera import and can be retried manually with **Sync Google Photos** in the dashboard. Live upload percentage, transfer speed, and ETA appear in the Google Photos Upload card while rclone is running. When transfers reach 100% but rclone is still committing uploads, the card explicitly shows “Finalizing…”; the sync log records a clear success message after rclone exits successfully and per-file catalog updates finish.
+- RAW files are excluded by extension and remain in `~/Pictures/CameraImportsRaw`; the USB archive remains consolidated at `/Volumes/Photos/CameraImports`.
+- Requires rclone and a Google Photos remote named `gphotos`; see setup steps below. Cloud failures never invalidate a completed local/USB import.
 
 ### iTerm2 output
 
@@ -313,6 +319,16 @@ Enable SHA-256 verification:
 ```bash
 python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8" --sha256
 ```
+
+## ☁️ Google Photos setup (optional)
+1. Install rclone (for example, `brew install rclone`).
+2. Follow [rclone’s Google Photos setup guide](https://rclone.org/googlephotos/) and create a remote named `gphotos`. In 2026, configure your own Google OAuth client ID/secret; the shared rclone client ID is being retired. Enable the Photos Library API as described by rclone.
+3. Run `rclone config` and complete browser authentication. Photo Offloader does not store Google credentials itself; rclone stores its token in its own config.
+4. Use **Sync Google Photos** in the dashboard to test the upload. The first run creates/uses the `Photo Offloader` album. After each successful camera import, the app launches the same upload in the background.
+
+Uploads are original-quality and count against your Google account storage. This is a one-way upload only: it does not delete items from Google Photos or import your existing library, and RAW extensions are excluded. The Google Photos API has limitations; rclone can only download items it uploaded, and its existence checks are not a full content-hash comparison. See [rclone’s documented limitations](https://rclone.org/googlephotos/).
+
+Set `PHOTO_OFFLOADER_GPHOTOS_REMOTE` to change the remote name or `PHOTO_OFFLOADER_GPHOTOS_ALBUM` to change the album name. Defaults are `gphotos` and `Photo Offloader`.
 
 ## 🔧 Configuration
 

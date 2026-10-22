@@ -5,10 +5,19 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Added
+- Dashboard now shows Google Photos upload percentage, current transfer speed, and estimated time remaining beside the existing copy-speed monitor. ETA labels sit in the upper-right corner of each speed card.
+- Google Photos logs now include an explicit application-level success message after rclone exits successfully and per-file catalog updates finish.
+
+### Changed
+- The Google Photos upload card now shows a distinct finalization state when rclone transfer stats reach 100% but album uploads are still being committed.
+
+### Added
+- Optional rclone-based Google Photos uploader for JPG/JPEG photos and supported videos, with automatic post-import uploads, a dashboard manual-sync button, separate upload status/logs, and per-file upload records in the SQLite catalog.
 - RAW media is stored under a dedicated `CameraImportsRaw` top-level archive on the Mac; JPGs and other non-RAW media remain under `CameraImports`.
 - Added a preview-first Bash migration script to move existing RAW files into the separate archive without overwriting conflicts.
 
 ### Changed
+- Installer deploys the Google Photos sync helper; cloud upload failures remain independent of the verified local/USB import result.
 - USB backup reads both local archive roots and keeps the USB archive consolidated under `CameraImports`; catalog refresh covers both local roots and the single USB root.
 - Automatic imports run in the background by default; a dashboard toggle enables Terminal output for future imports.
 - Moved the rolling transfer-speed graph into the Copy Speed card to consolidate the graph and numeric speed display.

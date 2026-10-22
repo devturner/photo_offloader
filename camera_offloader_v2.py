@@ -76,6 +76,7 @@ CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloa
 LEGACY_CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "catalog.sqlite3"
 BUILD_INFO_PATH = Path(__file__).resolve().with_name("build_info.json")
 VERSION_PATH = Path(__file__).resolve().with_name("VERSION")
+GOOGLE_PHOTOS_SYNC_PATH = Path(__file__).resolve().with_name("google_photos_sync.py")
 _PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
 _PROGRESS_STARTED: Optional[float] = None
 
@@ -212,6 +213,17 @@ def catalog_connection() -> sqlite3.Connection:
             )
         """)
         connection.execute("""
+            CREATE TABLE IF NOT EXISTS google_photos_uploads (
+                path TEXT PRIMARY KEY,
+                size INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                inode INTEGER NOT NULL,
+                uploaded_at REAL NOT NULL,
+                remote TEXT NOT NULL,
+                album TEXT NOT NULL
+            )
+        """)
+        connection.execute("""
             CREATE TABLE IF NOT EXISTS catalog_refreshes (
                 root TEXT PRIMARY KEY,
                 last_updated REAL NOT NULL,
@@ -235,6 +247,39 @@ def catalog_db() -> Iterator[sqlite3.Connection]:
             yield connection
     finally:
         connection.close()
+
+
+def mark_google_photos_uploaded(path: Path, remote: str, album: str) -> None:
+    """Record successful cloud upload for this exact local-file fingerprint."""
+    fingerprint = file_fingerprint(path)
+    resolved = str(path.resolve())
+    with catalog_db() as db:
+        db.execute(
+            """INSERT INTO google_photos_uploads
+               (path, size, mtime_ns, inode, uploaded_at, remote, album)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(path) DO UPDATE SET
+                 size=excluded.size, mtime_ns=excluded.mtime_ns, inode=excluded.inode,
+                 uploaded_at=excluded.uploaded_at, remote=excluded.remote, album=excluded.album""",
+            (resolved, fingerprint.size, fingerprint.mtime_ns, fingerprint.inode,
+             time.time(), remote, album),
+        )
+
+
+def google_photos_upload_record(path: Path) -> Optional[dict]:
+    """Return upload details only when the file still matches its uploaded fingerprint."""
+    try:
+        fingerprint = file_fingerprint(path)
+        with catalog_db() as db:
+            row = db.execute(
+                "SELECT size, mtime_ns, inode, uploaded_at, remote, album "
+                "FROM google_photos_uploads WHERE path = ?", (str(path.resolve()),)
+            ).fetchone()
+        if row and row[:3] == (fingerprint.size, fingerprint.mtime_ns, fingerprint.inode):
+            return {"uploaded_at": row[3], "remote": row[4], "album": row[5]}
+    except (OSError, sqlite3.Error) as exc:
+        logger.debug("Could not read Google Photos upload record for %s: %s", path, exc)
+    return None
 
 
 def catalog_row(path: Path, fingerprint: Optional[FileFingerprint] = None) -> Optional[tuple]:
@@ -467,6 +512,21 @@ def load_build_info() -> Dict[str, str]:
     info.setdefault("build_time_utc", "unknown")
     info.setdefault("source_path", str(Path(__file__).resolve()))
     return info
+
+
+def launch_google_photos_sync() -> None:
+    """Start optional Google Photos uploads without making import success depend on cloud access."""
+    if not GOOGLE_PHOTOS_SYNC_PATH.is_file():
+        logger.info("Google Photos helper is not installed; skipping optional cloud upload.")
+        return
+    try:
+        log_path = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "google_photos_sync_launcher.log"
+        with log_path.open("a", encoding="utf-8") as output:
+            subprocess.Popen([sys.executable, str(GOOGLE_PHOTOS_SYNC_PATH), "--sync"], stdin=subprocess.DEVNULL,
+                             stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+        logger.info("Started optional Google Photos upload in the background.")
+    except OSError as exc:
+        logger.warning("Could not start optional Google Photos upload: %s", exc)
 
 
 def configure_logging(verbose: bool = False) -> None:
@@ -1679,6 +1739,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             logger.info("Photo Offloader finished. Local copies: %d; USB copies: %d; USB skips: %d.",
                         local_stats.destination_copies, backup_stats.destination_copies,
                         backup_stats.destination_skips)
+            launch_google_photos_sync()
             notify("Photo Import Complete", f"{total_found} media files copied to the Mac; USB backup " +
                    ("completed." if usb_expected else "was not run."))
             return 0

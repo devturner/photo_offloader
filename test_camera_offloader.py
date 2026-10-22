@@ -248,7 +248,7 @@ class TestCameraOffloader(unittest.TestCase):
         ):
             result = app.update_file_catalog()
         self.assertEqual(result["scanned"], 1)
-        self.assertEqual(result["roots"], 1)
+        self.assertEqual(result["roots"], 2)  # CameraImports and CameraImportsRaw
         row = app.catalog_row(media)
         self.assertIsNotNone(row)
         self.assertEqual(row[5], "NIKON-Z-8")
@@ -293,6 +293,17 @@ class TestCameraOffloader(unittest.TestCase):
         with patch.object(app, "sha256_file", side_effect=AssertionError("must reuse cached hashes")):
             result = app.copy_one_to_destination(source, self.dcim, self.local, manifest)
         self.assertEqual(result.status, "skipped")
+
+    def test_google_photos_upload_record_tracks_current_fingerprint(self):
+        path = self.local / "uploaded.jpg"
+        path.write_bytes(b"photo")
+        app.mark_google_photos_uploaded(path, "gphotos", "Photo Offloader")
+        record = app.google_photos_upload_record(path)
+        self.assertIsNotNone(record)
+        self.assertEqual(record["remote"], "gphotos")
+        self.assertEqual(record["album"], "Photo Offloader")
+        path.write_bytes(b"changed photo")
+        self.assertIsNone(app.google_photos_upload_record(path))
 
     def test_catalog_records_file_locations(self):
         path = self.root / "catalog-photo.jpg"
