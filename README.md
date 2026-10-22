@@ -134,7 +134,7 @@ The default safety buffer is 100 MiB and can be changed with `MIN_FREE_SPACE_BUF
 
 ### Migrating existing RAW files
 
-To move RAW files already stored under `CameraImports` into the sibling `CameraImportsRaw` tree, use `./move_raw_to_separate_folder.sh` for a dry run. The script preserves relative paths and never overwrites an existing destination. Review the preview first, then run `./move_raw_to_separate_folder.sh --apply` to perform the move. It does not delete or modify JPGs or other non-RAW files.
+To move RAW files already stored under `CameraImports` into the sibling `CameraImportsRaw` tree, use `bash move_raw_to_separate_folder.sh` for a dry run. The script preserves relative paths and never overwrites an existing destination. Review the preview first, then run `bash move_raw_to_separate_folder.sh --apply` to perform the move. It does not delete or modify JPGs or other non-RAW files.
 
 ### 📁 Archive layout
 
