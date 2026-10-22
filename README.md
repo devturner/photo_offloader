@@ -40,7 +40,7 @@ Some Homebrew Python installations package Tk support separately. If the install
 
 ### ☁️ Google Photos upload via rclone
 - Optional one-way upload of JPG/JPEG photos and supported video formats to a dedicated Google Photos album named `Photo Offloader`. Successful uploads are recorded per file in the SQLite catalog with timestamp, remote/album, and the uploaded file fingerprint. Changed files no longer show as uploaded until synced again.
-- Upload starts automatically after a successful camera import and can be retried manually with **Sync Google Photos** in the dashboard. Live upload percentage, transfer speed, and ETA appear in the Google Photos Upload card while rclone is running.
+- Upload starts automatically after a successful camera import and can be retried manually with **Sync Google Photos** in the dashboard. Live upload percentage, transfer speed, and ETA appear in the Google Photos Upload card while rclone is running. When transfers reach 100% but rclone is still committing uploads, the card explicitly shows “Finalizing…”; the sync log records a clear success message after rclone exits successfully and per-file catalog updates finish.
 - RAW files are excluded by extension and remain in `~/Pictures/CameraImportsRaw`; the USB archive remains consolidated at `/Volumes/Photos/CameraImports`.
 - Requires rclone and a Google Photos remote named `gphotos`; see setup steps below. Cloud failures never invalidate a completed local/USB import.
 
