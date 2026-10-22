@@ -31,7 +31,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.usb.mkdir()
         self.usb_volume.mkdir()
         self.original = {k: getattr(app, k) for k in (
-            "LOCAL_DEST_ROOT", "USB_DEST_ROOT", "USB_DEST_VOLUME", "CATALOG_DB_PATH",
+            "LOCAL_DEST_ROOT", "LOCAL_RAW_DEST_ROOT", "USB_DEST_ROOT", "USB_DEST_VOLUME", "CATALOG_DB_PATH",
             "LEGACY_CATALOG_DB_PATH", "_CATALOG_INITIALIZED_PATH",
             "BUILD_INFO_PATH", "VERSION_PATH",
             "LOG_FILE_PATH", "SESSION_LOCK_PATH", "VERIFY_WITH_SHA256",
@@ -40,6 +40,8 @@ class TestCameraOffloader(unittest.TestCase):
             "_PROGRESS_STARTED", "_PROGRESS",
         )}
         app.LOCAL_DEST_ROOT = self.local
+        app.LOCAL_RAW_DEST_ROOT = self.root / "local-raw"
+        app.LOCAL_RAW_DEST_ROOT.mkdir()
         app.USB_DEST_ROOT = self.usb
         app.USB_DEST_VOLUME = self.usb_volume
         app.LOG_FILE_PATH = self.log
@@ -81,6 +83,35 @@ class TestCameraOffloader(unittest.TestCase):
         files["RAW"].write_bytes(b"raw")
         files["VIDEO"].write_bytes(b"video")
         return files
+
+    def test_raw_media_uses_separate_top_level_archive(self):
+        self.assertEqual(app.local_root_for_category("RAW"), app.LOCAL_RAW_DEST_ROOT)
+        self.assertEqual(app.local_root_for_category("JPG"), app.LOCAL_DEST_ROOT)
+        self.assertEqual(app.local_root_for_category("VIDEO"), app.LOCAL_DEST_ROOT)
+        self.assertEqual(app.usb_root_for_category("RAW"), app.USB_DEST_ROOT)
+        self.assertEqual(app.usb_root_for_category("JPG"), app.USB_DEST_ROOT)
+
+    def test_usb_backup_mirrors_raw_archive_to_matching_root(self):
+        jpg = self.local / "2026-10" / "100NIKON" / "Photos" / "photo.jpg"
+        raw = app.LOCAL_RAW_DEST_ROOT / "2026-10" / "100NIKON" / "Raws" / "photo.nef"
+        jpg.parent.mkdir(parents=True)
+        raw.parent.mkdir(parents=True)
+        jpg.write_bytes(b"jpeg-content")
+        raw.write_bytes(b"raw-content")
+        identity = VolumeIdentity(self.usb_volume, "disk-test", "volume-test")
+
+        with patch.object(app, "usb_is_mounted", return_value=True), \
+                patch.object(app, "get_volume_identity", return_value=identity), \
+                patch.object(app, "volume_identity_matches", return_value=True):
+            stats = app.copy_local_archive_to_usb(identity)
+
+        self.assertEqual(stats.failed, 0)
+        self.assertEqual(stats.destination_copies, 2)
+        self.assertEqual((self.usb / jpg.relative_to(self.local)).read_bytes(), b"jpeg-content")
+        self.assertEqual(
+            (self.usb / raw.relative_to(app.LOCAL_RAW_DEST_ROOT)).read_bytes(),
+            b"raw-content",
+        )
 
     def test_stats_aliases_and_success(self):
         stats = ImportStats(destination_copies=2, destination_skips=1, verified_copies=3)
