@@ -6,10 +6,10 @@ import json
 import os
 import sqlite3
 import subprocess
-from datetime import datetime
 import time
 import tkinter as tk
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from tkinter import ttk
 from typing import Any, Dict
