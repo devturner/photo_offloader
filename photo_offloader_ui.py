@@ -14,6 +14,8 @@ from pathlib import Path
 from tkinter import ttk
 from typing import Any, Dict
 
+from google_photos_sync import parse_rclone_stats_line
+
 INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 STATUS_FILE = Path(os.environ.get("PHOTO_OFFLOADER_STATUS_FILE", str(INSTALL_DIR / "status.json")))
 PAUSE_FILE = Path(os.environ.get("PHOTO_OFFLOADER_PAUSE_FILE", str(INSTALL_DIR / ".paused")))
@@ -101,7 +103,11 @@ class Dashboard:
         metrics = ttk.Frame(outer)
         metrics.pack(fill="x", pady=(0, 14))
         self.speed_var = tk.StringVar(value="—")
-        self.eta_var = tk.StringVar(value="—")
+        self.eta_var = tk.StringVar(value="ETA —")
+        self.upload_speed_var = tk.StringVar(value="—")
+        self.upload_eta_var = tk.StringVar(value="ETA —")
+        self.upload_progress_var = tk.StringVar(value="Waiting for upload")
+        self.upload_percent_var = tk.DoubleVar(value=0.0)
         self.progress_var = tk.StringVar(value="Waiting for a camera card")
         self.speed_history = deque([0.0] * 60, maxlen=60)
         self.last_sample_time = time.monotonic()
@@ -109,15 +115,26 @@ class Dashboard:
 
         speed_card = ttk.Frame(metrics, style="Card.TFrame", padding=14)
         speed_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        ttk.Label(speed_card, text="COPY SPEED", style="CardTitle.TLabel").pack(anchor="w")
+        speed_header = ttk.Frame(speed_card, style="Card.TFrame")
+        speed_header.pack(fill="x")
+        ttk.Label(speed_header, text="COPY SPEED", style="CardTitle.TLabel").pack(side="left", anchor="w")
+        ttk.Label(speed_header, textvariable=self.eta_var, style="CardTitle.TLabel").pack(side="right", anchor="e")
         ttk.Label(speed_card, textvariable=self.speed_var, style="Metric.TLabel").pack(anchor="w", pady=(5, 0))
         self.graph = tk.Canvas(speed_card, height=82, bg="#1b2638", highlightthickness=0)
         self.graph.pack(fill="x", pady=(5, 0))
 
-        eta_card = ttk.Frame(metrics, style="Card.TFrame", padding=14)
-        eta_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        ttk.Label(eta_card, text="TIME REMAINING", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Label(eta_card, textvariable=self.eta_var, style="Metric.TLabel").pack(anchor="w", pady=(5, 0))
+        upload_card = ttk.Frame(metrics, style="Card.TFrame", padding=14)
+        upload_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        upload_header = ttk.Frame(upload_card, style="Card.TFrame")
+        upload_header.pack(fill="x")
+        ttk.Label(upload_header, text="GOOGLE PHOTOS UPLOAD", style="CardTitle.TLabel").pack(side="left", anchor="w")
+        ttk.Label(upload_header, textvariable=self.upload_eta_var, style="CardTitle.TLabel").pack(side="right", anchor="e")
+        ttk.Label(upload_card, textvariable=self.upload_speed_var, style="Metric.TLabel").pack(anchor="w", pady=(5, 0))
+        self.upload_progress = ttk.Progressbar(
+            upload_card, mode="determinate", maximum=100, variable=self.upload_percent_var
+        )
+        self.upload_progress.pack(fill="x", pady=(10, 3))
+        ttk.Label(upload_card, textvariable=self.upload_progress_var, style="CardTitle.TLabel").pack(anchor="w")
         metrics.columnconfigure(0, weight=1)
         metrics.columnconfigure(1, weight=1)
 
@@ -260,6 +277,57 @@ class Dashboard:
         self.debug_text.see("end")
         self.debug_text.configure(state="disabled")
         self.debug_refresh_job = self.root.after(1000, self.refresh_debug_log)
+
+    def refresh_google_photos_progress(self) -> None:
+        """Read the latest rclone stats line without interfering with the active upload."""
+        try:
+            with GOOGLE_PHOTOS_STATUS.open(encoding="utf-8") as handle:
+                status = json.load(handle)
+        except (OSError, ValueError):
+            status = {}
+        state = str(status.get("state", "unknown"))
+
+        if state == "complete":
+            self.upload_speed_var.set("—")
+            self.upload_eta_var.set("ETA Complete")
+            self.upload_percent_var.set(100.0)
+            self.upload_progress_var.set("Upload complete")
+            return
+        if state != "running":
+            self.upload_speed_var.set("—")
+            self.upload_eta_var.set("ETA —")
+            self.upload_percent_var.set(0.0)
+            self.upload_progress_var.set("Waiting for upload")
+            return
+
+        try:
+            with LOG_PATH.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(size - 65536, 0))
+                if size > 65536:
+                    handle.readline()
+                lines = handle.read().decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+
+        progress = next(
+            (parsed for line in reversed(lines) if (parsed := parse_rclone_stats_line(line))),
+            None,
+        )
+        if not progress:
+            self.upload_speed_var.set("—")
+            self.upload_eta_var.set("ETA Estimating…")
+            self.upload_progress_var.set("Preparing upload…")
+            return
+
+        percent = float(progress["percent"])
+        self.upload_speed_var.set(f"{progress['speed']}")
+        self.upload_eta_var.set(f"ETA {progress['eta']}")
+        self.upload_percent_var.set(min(100.0, max(0.0, percent)))
+        self.upload_progress_var.set(
+            f"{percent:.0f}% • {progress['transferred']} of {progress['total']} uploaded"
+        )
 
     def google_photos_summary(self) -> str:
         try:
@@ -546,6 +614,7 @@ class Dashboard:
         self.refresh_catalog_status(status)
         self.auto_status_var.set(self.trigger_status_summary())
         self.google_photos_var.set(self.google_photos_summary())
+        self.refresh_google_photos_progress()
 
         current_file = str(status.get("current_file", "") or "")
         self.file_var.set(current_file if current_file else "No active import")
