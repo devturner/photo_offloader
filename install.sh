@@ -96,6 +96,11 @@ cat > "$PLIST_PATH" <<EOF
     <array>
         <string>$TRIGGER_PATH</string>
     </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Poll as a fallback because removable-volume WatchPaths events can be missed. -->
+    <key>StartInterval</key>
+    <integer>30</integer>
     <key>WatchPaths</key>
     <array>
         <string>/Volumes</string>

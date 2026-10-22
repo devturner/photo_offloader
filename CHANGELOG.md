@@ -5,6 +5,7 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Automatic card detection now runs at launch and polls every 30 seconds as a fallback when macOS misses a removable-volume WatchPaths event.
 - Catalog updates now show phase-aware remaining-time estimates when scan progress supports one, and a clear metadata-reading label during ExifTool batches.
 - Uninstall now stops the separately launched Tkinter dashboard before removing application files, so its window does not remain open after uninstall.
 - Close SQLite catalog connections after each lookup, record, and refresh transaction to prevent file-descriptor exhaustion during large catalog scans.
@@ -15,6 +16,8 @@ All notable changes to Photo Offloader are documented here.
 - Copy-decision progress is reported separately from transfer progress, including files checked, checks per second, and an estimated time remaining.
 
 ### Added
+- Dashboard automatic-import status area shows the latest trigger activity and how recently it ran.
+- Toggleable live debug window tails the trigger, importer, dashboard, and menu-bar error logs.
 - Optional atomic card-side manifest at `.photo-offloader/manifest-v1.json`; it stores only relative media paths, size/mtime fingerprints, and verified SHA-256 hashes. If the card is read-only or the manifest is unavailable, imports continue using the Mac catalog and safe fallback verification.
 - Verified SHA-256 hashes are recorded for successfully copied files and existing matching destination files, making subsequent repeat imports faster.
 
