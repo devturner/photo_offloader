@@ -901,7 +901,7 @@ def local_root_for_category(category: str) -> Path:
 
 def usb_root_for_category(category: str) -> Path:
     """Choose the matching top-level USB archive by media category."""
-    return USB_RAW_DEST_ROOT if category == "RAW" else USB_DEST_ROOT
+    return USB_DEST_ROOT
 
 
 def build_destination_path(source: Path, dcim_folder: Path, destination_base: Path) -> Path:
