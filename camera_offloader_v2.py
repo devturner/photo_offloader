@@ -668,24 +668,48 @@ def get_exiftool_metadata_batch(paths: List[Path], tags: List[str], batch_size: 
     if not exiftool or not paths:
         return {}
     results = {}
+    total_batches = (len(paths) + batch_size - 1) // batch_size
+    started = time.monotonic()
+    logger.info(
+        "ExifTool metadata phase started: %d uncached files in %d batches (batch size %d).",
+        len(paths), total_batches, batch_size,
+    )
     for offset in range(0, len(paths), batch_size):
         batch = paths[offset:offset + batch_size]
+        batch_number = offset // batch_size + 1
+        batch_started = time.monotonic()
+        logger.info(
+            "ExifTool heartbeat: starting batch %d/%d (%d files; %d/%d submitted).",
+            batch_number, total_batches, len(batch), offset, len(paths),
+        )
         try:
             result = subprocess.run(
                 [exiftool, "-j", "-charset", "filename=UTF8", *tags, *map(str, batch)],
                 check=False, capture_output=True, text=True, timeout=max(15, len(batch) // 2),
             )
             if result.returncode != 0 or not result.stdout.strip():
-                logger.warning("ExifTool batch returned no metadata (batch starting at %d): %s",
-                               offset, result.stderr.strip())
+                logger.warning("ExifTool batch %d/%d returned no metadata after %.1fs: %s",
+                               batch_number, total_batches, time.monotonic() - batch_started,
+                               result.stderr.strip())
                 continue
             records = json.loads(result.stdout)
+            batch_results = 0
             for record in records if isinstance(records, list) else []:
                 if not isinstance(record, dict) or not record.get("SourceFile"):
                     continue
                 results[str(Path(record["SourceFile"]).resolve())] = record
+                batch_results += 1
+            logger.info(
+                "ExifTool heartbeat: finished batch %d/%d; metadata records %d/%d; "
+                "%.1fs this batch, %.1fs total.",
+                batch_number, total_batches, min(offset + len(batch), len(paths)), len(paths),
+                time.monotonic() - batch_started, time.monotonic() - started,
+            )
         except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
-            logger.warning("ExifTool batch metadata read failed at offset %d: %s", offset, exc)
+            logger.warning("ExifTool batch %d/%d failed after %.1fs: %s",
+                           batch_number, total_batches, time.monotonic() - batch_started, exc)
+    logger.info("ExifTool metadata phase complete: %d/%d records in %.1fs.",
+                len(results), len(paths), time.monotonic() - started)
     return results
 
 
