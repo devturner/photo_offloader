@@ -90,8 +90,8 @@ class Dashboard:
         self.root.title("Photo Offloader")
         # Leave enough vertical space for the live graph and both action buttons.
         # The previous 610x600 default clipped the bottom controls on macOS.
-        self.root.geometry("900x900")
-        self.root.minsize(760, 780)
+        self.root.geometry("1120x960")
+        self.root.minsize(900, 800)
         self.root.configure(bg="#101827")
 
         style = ttk.Style(self.root)
@@ -102,7 +102,9 @@ class Dashboard:
         style.configure("TFrame", background="#101827")
         style.configure("Card.TFrame", background="#1b2638")
         style.configure("Title.TLabel", background="#101827", foreground="#f3f6fb",
-                        font=("SF Pro Display", 22, "bold"))
+                        font=("SF Pro Display", 25, "bold"))
+        style.configure("Status.TLabel", background="#20384a", foreground="#7ee0c0",
+                        font=("SF Pro Text", 10, "bold"), padding=(12, 7))
         style.configure("Subtitle.TLabel", background="#101827", foreground="#9caec4",
                         font=("SF Pro Text", 10))
         style.configure("CardTitle.TLabel", background="#1b2638", foreground="#9caec4",
@@ -116,14 +118,24 @@ class Dashboard:
         style.configure("Horizontal.TProgressbar", troughcolor="#303d50",
                         background="#53c7a6", thickness=9)
 
-        outer = ttk.Frame(self.root, padding=24)
+        outer = ttk.Frame(self.root, padding=22)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="Photo Offloader", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(outer, text="Camera ingest • live transfer monitor",
-                  style="Subtitle.TLabel").pack(anchor="w", pady=(2, 18))
 
-        metrics = ttk.Frame(outer)
-        metrics.pack(fill="x", pady=(0, 14))
+        header = ttk.Frame(outer)
+        header.pack(fill="x", pady=(0, 14))
+        header_copy = ttk.Frame(header)
+        header_copy.pack(side="left", fill="x", expand=True)
+        ttk.Label(header_copy, text="Photo Offloader", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header_copy, text="PHOTO WORKFLOW  /  LOCAL ARCHIVE  /  BACKUP  /  CLOUD",
+            style="Subtitle.TLabel"
+        ).pack(anchor="w", pady=(3, 0))
+        self.dashboard_state_var = tk.StringVar(value="READY  •  WAITING FOR CAMERA")
+        ttk.Label(header, textvariable=self.dashboard_state_var, style="Status.TLabel").pack(
+            side="right", anchor="center", padx=(12, 0)
+        )
+
+        # Shared state and metrics for the independent transfer cards.
         self.speed_var = tk.StringVar(value="—")
         self.eta_var = tk.StringVar(value="ETA —")
         self.copy_title_var = tk.StringVar(value="Import to HD")
@@ -151,99 +163,185 @@ class Dashboard:
         self._upload_last_bytes = 0
         self._upload_last_sample_time = time.monotonic()
 
-        speed_card = ttk.Frame(metrics, style="Card.TFrame", padding=14)
-        speed_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        quick_actions = ttk.Frame(outer, style="Card.TFrame", padding=10)
+        quick_actions.pack(fill="x", pady=(0, 14))
+        ttk.Label(quick_actions, text="QUICK ACTIONS", style="CardTitle.TLabel").pack(
+            side="left", padx=(2, 10)
+        )
+        ttk.Button(quick_actions, text="Copy to USB Drive", command=self.start_usb_backup).pack(
+            side="left", padx=(0, 7)
+        )
+        ttk.Button(quick_actions, text="Update File Catalog", command=self.start_catalog_update).pack(
+            side="left", padx=(0, 7)
+        )
+        ttk.Button(quick_actions, text="Sync Google Photos", command=self.start_google_photos_sync).pack(
+            side="left", padx=(0, 7)
+        )
+        ttk.Button(quick_actions, text="Live Debug Log", command=self.toggle_debug_log).pack(
+            side="left", padx=(0, 7)
+        )
+        self.terminal_output_button = ttk.Button(
+            quick_actions, text=self.terminal_output_label(), command=self.toggle_terminal_output
+        )
+        self.terminal_output_button.pack(side="left")
+
+        metrics = ttk.Frame(outer)
+        metrics.pack(fill="x", pady=(0, 14))
+        speed_card = ttk.Frame(metrics, style="Card.TFrame", padding=15)
+        speed_card.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
         speed_header = ttk.Frame(speed_card, style="Card.TFrame")
         speed_header.pack(fill="x")
-        ttk.Label(speed_header, textvariable=self.copy_title_var, style="CardTitle.TLabel").pack(side="left", anchor="w")
-        ttk.Label(speed_header, textvariable=self.eta_var, style="CardTitle.TLabel").pack(side="right", anchor="e")
+        ttk.Label(speed_header, textvariable=self.copy_title_var, style="CardTitle.TLabel").pack(
+            side="left", anchor="w"
+        )
+        ttk.Label(speed_header, textvariable=self.eta_var, style="CardTitle.TLabel").pack(
+            side="right", anchor="e"
+        )
         copy_body = ttk.Frame(speed_card, style="Card.TFrame")
-        copy_body.pack(fill="x", pady=(8, 0))
+        copy_body.pack(fill="x", pady=(9, 0))
         copy_metrics = ttk.Frame(copy_body, style="Card.TFrame")
         copy_metrics.pack(side="left", fill="both", expand=True)
         ttk.Label(copy_metrics, textvariable=self.speed_var, style="Metric.TLabel").pack(anchor="w")
-        ttk.Label(copy_metrics, textvariable=self.copy_elapsed_var, style="CardTitle.TLabel").pack(anchor="w", pady=(2, 0))
-        ttk.Label(copy_metrics, textvariable=self.copy_throughput_detail_var, style="CardTitle.TLabel").pack(anchor="w", pady=(2, 0))
-        self.copy_progress = ttk.Progressbar(copy_metrics, mode="determinate", maximum=100, variable=self.copy_percent_var)
-        self.copy_progress.pack(fill="x", pady=(9, 3))
-        ttk.Label(copy_metrics, textvariable=self.copy_progress_var, style="CardTitle.TLabel", wraplength=220).pack(anchor="w")
-        self.graph = tk.Canvas(copy_body, height=94, width=180, bg="#1b2638", highlightthickness=0)
-        self.graph.pack(side="right", fill="both", expand=True, padx=(12, 0))
+        ttk.Label(copy_metrics, textvariable=self.copy_elapsed_var, style="CardTitle.TLabel").pack(
+            anchor="w", pady=(3, 0)
+        )
+        ttk.Label(
+            copy_metrics, textvariable=self.copy_throughput_detail_var, style="CardTitle.TLabel"
+        ).pack(anchor="w", pady=(3, 0))
+        self.copy_progress = ttk.Progressbar(
+            copy_metrics, mode="determinate", maximum=100, variable=self.copy_percent_var
+        )
+        self.copy_progress.pack(fill="x", pady=(10, 4))
+        ttk.Label(
+            copy_metrics, textvariable=self.copy_progress_var, style="CardTitle.TLabel", wraplength=280
+        ).pack(anchor="w")
+        self.graph = tk.Canvas(copy_body, height=100, width=210, bg="#1b2638", highlightthickness=0)
+        self.graph.pack(side="right", fill="both", expand=True, padx=(16, 0))
 
-        upload_card = ttk.Frame(metrics, style="Card.TFrame", padding=14)
-        upload_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        upload_card = ttk.Frame(metrics, style="Card.TFrame", padding=15)
+        upload_card.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
         upload_header = ttk.Frame(upload_card, style="Card.TFrame")
         upload_header.pack(fill="x")
-        ttk.Label(upload_header, text="GOOGLE PHOTOS UPLOAD", style="CardTitle.TLabel").pack(side="left", anchor="w")
-        ttk.Label(upload_header, textvariable=self.upload_eta_var, style="CardTitle.TLabel").pack(side="right", anchor="e")
+        ttk.Label(upload_header, text="GOOGLE PHOTOS", style="CardTitle.TLabel").pack(
+            side="left", anchor="w"
+        )
+        ttk.Label(upload_header, textvariable=self.upload_eta_var, style="CardTitle.TLabel").pack(
+            side="right", anchor="e"
+        )
         upload_body = ttk.Frame(upload_card, style="Card.TFrame")
-        upload_body.pack(fill="x", pady=(8, 0))
+        upload_body.pack(fill="x", pady=(9, 0))
         upload_metrics = ttk.Frame(upload_body, style="Card.TFrame")
         upload_metrics.pack(side="left", fill="both", expand=True)
-        ttk.Label(upload_metrics, textvariable=self.upload_speed_var, style="Metric.TLabel").pack(anchor="w")
-        ttk.Label(upload_metrics, textvariable=self.upload_elapsed_var, style="CardTitle.TLabel").pack(anchor="w", pady=(2, 0))
-        ttk.Label(upload_metrics, textvariable=self.upload_throughput_detail_var, style="CardTitle.TLabel").pack(anchor="w", pady=(2, 0))
+        ttk.Label(upload_metrics, textvariable=self.upload_speed_var, style="Metric.TLabel").pack(
+            anchor="w"
+        )
+        ttk.Label(upload_metrics, textvariable=self.upload_elapsed_var, style="CardTitle.TLabel").pack(
+            anchor="w", pady=(3, 0)
+        )
+        ttk.Label(
+            upload_metrics, textvariable=self.upload_throughput_detail_var, style="CardTitle.TLabel"
+        ).pack(anchor="w", pady=(3, 0))
         self.upload_progress = ttk.Progressbar(
             upload_metrics, mode="determinate", maximum=100, variable=self.upload_percent_var
         )
-        self.upload_progress.pack(fill="x", pady=(9, 3))
-        ttk.Label(upload_metrics, textvariable=self.upload_progress_var, style="CardTitle.TLabel", wraplength=220).pack(anchor="w")
-        self.upload_graph = tk.Canvas(upload_body, height=94, width=180, bg="#1b2638", highlightthickness=0)
-        self.upload_graph.pack(side="right", fill="both", expand=True, padx=(12, 0))
-        metrics.columnconfigure(0, weight=1)
-        metrics.columnconfigure(1, weight=1)
-
-        detail = ttk.Frame(outer, style="Card.TFrame", padding=16)
-        detail.pack(fill="x", pady=(0, 12))
-        ttk.Label(detail, text="CURRENT FILE", style="CardTitle.TLabel").pack(anchor="w")
-        self.file_var = tk.StringVar(value="No active import")
-        ttk.Label(detail, textvariable=self.file_var, style="File.TLabel").pack(anchor="w", pady=(5, 8))
-        self.source_var = tk.StringVar(value="Source: —")
-        ttk.Label(detail, textvariable=self.source_var, style="CardTitle.TLabel").pack(anchor="w")
-
-        self.progress = ttk.Progressbar(outer, mode="determinate", maximum=100, value=0)
-        self.progress.pack(fill="x", pady=(4, 7))
-        ttk.Label(outer, textvariable=self.progress_var, style="Body.TLabel").pack(anchor="w")
-        self.message_var = tk.StringVar(value="")
-        ttk.Label(outer, textvariable=self.message_var, style="Subtitle.TLabel",
-                  wraplength=550).pack(anchor="w", pady=(9, 0))
-
-        ttk.Label(outer, text="AUTOMATIC IMPORT STATUS", style="Subtitle.TLabel").pack(anchor="w", pady=(12, 4))
-        auto_status = ttk.Frame(outer, style="Card.TFrame", padding=10)
-        auto_status.pack(fill="x")
-        self.auto_status_var = tk.StringVar(value="Waiting for trigger activity…")
-        ttk.Label(auto_status, textvariable=self.auto_status_var, style="Body.TLabel",
-                  wraplength=760).pack(anchor="w")
-        status_actions = ttk.Frame(auto_status, style="Card.TFrame")
-        status_actions.pack(fill="x", pady=(6, 0))
-        ttk.Button(status_actions, text="Toggle Live Debug Log", command=self.toggle_debug_log).pack(side="left")
-        self.terminal_output_button = ttk.Button(
-            status_actions, text=self.terminal_output_label(), command=self.toggle_terminal_output
+        self.upload_progress.pack(fill="x", pady=(10, 4))
+        ttk.Label(
+            upload_metrics, textvariable=self.upload_progress_var, style="CardTitle.TLabel",
+            wraplength=280
+        ).pack(anchor="w")
+        self.upload_graph = tk.Canvas(
+            upload_body, height=100, width=210, bg="#1b2638", highlightthickness=0
         )
-        self.terminal_output_button.pack(side="left", padx=(8, 0))
+        self.upload_graph.pack(side="right", fill="both", expand=True, padx=(16, 0))
+        metrics.columnconfigure(0, weight=1, uniform="transfer")
+        metrics.columnconfigure(1, weight=1, uniform="transfer")
+
+        # Current work and overall progress share one clear, full-width surface.
+        detail = ttk.Frame(outer, style="Card.TFrame", padding=15)
+        detail.pack(fill="x", pady=(0, 14))
+        detail_header = ttk.Frame(detail, style="Card.TFrame")
+        detail_header.pack(fill="x")
+        ttk.Label(detail_header, text="CURRENT ACTIVITY", style="CardTitle.TLabel").pack(
+            side="left", anchor="w"
+        )
+        self.source_var = tk.StringVar(value="Source: —")
+        ttk.Label(detail_header, textvariable=self.source_var, style="CardTitle.TLabel").pack(
+            side="right", anchor="e"
+        )
+        self.file_var = tk.StringVar(value="No active import")
+        ttk.Label(detail, textvariable=self.file_var, style="File.TLabel").pack(
+            anchor="w", pady=(6, 8)
+        )
+        self.progress = ttk.Progressbar(detail, mode="determinate", maximum=100, value=0)
+        self.progress.pack(fill="x", pady=(0, 6))
+        ttk.Label(detail, textvariable=self.progress_var, style="Body.TLabel").pack(anchor="w")
+        self.message_var = tk.StringVar(value="")
+        ttk.Label(
+            detail, textvariable=self.message_var, style="Subtitle.TLabel", wraplength=1000
+        ).pack(anchor="w", pady=(5, 0))
+
+        # Archive health and automation/cloud state are distinct from transfer activity.
+        lower_panels = ttk.Frame(outer)
+        lower_panels.pack(fill="x", pady=(0, 14))
+        catalog_status = ttk.Frame(lower_panels, style="Card.TFrame", padding=13)
+        catalog_status.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        ttk.Label(catalog_status, text="ARCHIVE & DATABASE HEALTH", style="CardTitle.TLabel").pack(
+            anchor="w", pady=(0, 7)
+        )
+        self.local_catalog_var = tk.StringVar(value="Checking local archive catalog…")
+        self.usb_catalog_var = tk.StringVar(value="Checking USB archive catalog…")
+        ttk.Label(
+            catalog_status, textvariable=self.local_catalog_var, style="Body.TLabel", wraplength=480
+        ).pack(anchor="w")
+        ttk.Label(
+            catalog_status, textvariable=self.usb_catalog_var, style="Body.TLabel", wraplength=480
+        ).pack(anchor="w", pady=(5, 0))
+
+        auto_status = ttk.Frame(lower_panels, style="Card.TFrame", padding=13)
+        auto_status.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        ttk.Label(auto_status, text="AUTOMATION & CLOUD STATUS", style="CardTitle.TLabel").pack(
+            anchor="w", pady=(0, 7)
+        )
+        self.auto_status_var = tk.StringVar(value="Waiting for trigger activity…")
+        ttk.Label(
+            auto_status, textvariable=self.auto_status_var, style="Body.TLabel", wraplength=480
+        ).pack(anchor="w")
         self.google_photos_var = tk.StringVar(value=self.google_photos_summary())
-        ttk.Label(auto_status, textvariable=self.google_photos_var, style="Body.TLabel", wraplength=760).pack(anchor="w", pady=(8, 0))
-        ttk.Button(status_actions, text="Sync Google Photos", command=self.start_google_photos_sync).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            auto_status, textvariable=self.google_photos_var, style="Body.TLabel", wraplength=480
+        ).pack(anchor="w", pady=(6, 0))
+        lower_panels.columnconfigure(0, weight=1, uniform="health")
+        lower_panels.columnconfigure(1, weight=1, uniform="health")
+
+        # A real log tail gives history context without mixing it into transfer metrics.
+        activity = ttk.Frame(outer, style="Card.TFrame", padding=13)
+        activity.pack(fill="both", expand=True)
+        activity_header = ttk.Frame(activity, style="Card.TFrame")
+        activity_header.pack(fill="x", pady=(0, 6))
+        ttk.Label(activity_header, text="RECENT ACTIVITY & HISTORY", style="CardTitle.TLabel").pack(
+            side="left", anchor="w"
+        )
+        ttk.Label(
+            activity_header, text="Latest importer and automatic-import log entries",
+            style="CardTitle.TLabel"
+        ).pack(side="right", anchor="e")
+        self.activity_text = tk.Text(
+            activity, height=5, wrap="word", state="disabled", bg="#111b2a",
+            fg="#d7e0ed", insertbackground="#f3f6fb", relief="flat", borderwidth=0,
+            font=("Menlo", 9), padx=9, pady=7
+        )
+        self.activity_text.pack(fill="both", expand=True)
+        self._activity_last_text = ""
+
+        ttk.Label(
+            outer,
+            text="Catalog refresh reuses cached metadata; it does not hash every file. Source media is never deleted.",
+            style="Subtitle.TLabel", wraplength=1000
+        ).pack(anchor="w", pady=(8, 0))
+
         self.debug_window = None
         self.debug_text = None
         self.debug_refresh_job = None
-
-        ttk.Label(outer, text="DATABASE STATUS", style="Subtitle.TLabel").pack(anchor="w", pady=(12, 4))
-        catalog_status = ttk.Frame(outer, style="Card.TFrame", padding=10)
-        catalog_status.pack(fill="x")
-        self.local_catalog_var = tk.StringVar(value="Checking catalog…")
-        self.usb_catalog_var = tk.StringVar(value="Checking catalog…")
-        ttk.Label(catalog_status, textvariable=self.local_catalog_var, style="Body.TLabel").pack(anchor="w")
-        ttk.Label(catalog_status, textvariable=self.usb_catalog_var, style="Body.TLabel").pack(anchor="w", pady=(4, 0))
-
-        actions = ttk.Frame(outer)
-        actions.pack(fill="x", pady=(12, 0))
-        ttk.Button(actions, text="Copy to USB Drive", command=self.start_usb_backup).pack(side="left")
-        ttk.Button(actions, text="Update File Catalog", command=self.start_catalog_update).pack(
-            side="left", padx=(8, 0)
-        )
-        ttk.Label(outer, text="Catalog update scans the Mac archive and mounted USB drive; it reuses valid metadata and does not hash every file.",
-                  style="Subtitle.TLabel", wraplength=550).pack(anchor="w", pady=(6, 0))
 
         self.root.after(500, self.refresh)
         self.root.mainloop()
@@ -611,9 +709,50 @@ class Dashboard:
         remaining = max(estimate_total - progress, 0) / rate
         return format_duration(remaining)
 
+    def refresh_activity_history(self) -> None:
+        """Display a small, separate tail of the importer and trigger logs."""
+        entries = []
+        for label, path in (("IMPORT", IMPORT_LOG), ("AUTO", TRIGGER_LOG)):
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    size = handle.tell()
+                    handle.seek(max(0, size - 12288))
+                    if size > 12288:
+                        handle.readline()
+                    lines = handle.read().decode("utf-8", errors="replace").splitlines()
+                entries.extend(f"[{label}] {line.strip()}" for line in lines[-4:] if line.strip())
+            except OSError:
+                continue
+        display = "\n".join(entries[-8:]) if entries else (
+            "No recent log entries available yet. Activity will appear here when the importer or trigger runs."
+        )
+        if display == self._activity_last_text:
+            return
+        self._activity_last_text = display
+        self.activity_text.configure(state="normal")
+        self.activity_text.delete("1.0", "end")
+        self.activity_text.insert("1.0", display)
+        self.activity_text.configure(state="disabled")
+        self.activity_text.see("end")
+
     def refresh(self) -> None:
         status = read_status()
         state = str(status.get("state", "idle"))
+        if state == "copying":
+            self.dashboard_state_var.set("TRANSFER IN PROGRESS")
+        elif state == "scanning":
+            self.dashboard_state_var.set("SCANNING / INDEXING")
+        elif state == "failed":
+            self.dashboard_state_var.set("ATTENTION NEEDED")
+        elif state == "canceled":
+            self.dashboard_state_var.set("CANCELED")
+        elif state == "complete":
+            self.dashboard_state_var.set("LAST TRANSFER COMPLETE")
+        elif PAUSE_FILE.exists():
+            self.dashboard_state_var.set("AUTOMATIC IMPORT PAUSED")
+        else:
+            self.dashboard_state_var.set("READY  •  WAITING FOR CAMERA")
         phase = str(status.get("phase", "") or "")
         source = str(status.get("source", "") or "")
         if state == "copying" and phase != "catalog-update":
@@ -771,6 +910,7 @@ class Dashboard:
         self.auto_status_var.set(self.trigger_status_summary())
         self.google_photos_var.set(self.google_photos_summary())
         self.refresh_google_photos_progress()
+        self.refresh_activity_history()
 
         current_file = str(status.get("current_file", "") or "")
         self.file_var.set(current_file if current_file else "No active import")
