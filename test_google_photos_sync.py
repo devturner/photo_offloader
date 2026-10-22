@@ -29,6 +29,17 @@ class TestGooglePhotosSync(unittest.TestCase):
     def test_parse_rclone_stats_line_without_eta(self):
         self.assertIsNone(sync.parse_rclone_stats_line("rclone starting upload"))
 
+    def test_google_photos_connection_preference_survives_install_directory_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            preferences = Path(tmp) / "PhotoOffloaderData" / "preferences.json"
+            with patch.object(sync, "PREFERENCES_PATH", preferences):
+                sync.remember_google_photos_connection("gphotos")
+            payload = json.loads(preferences.read_text(encoding="utf-8"))
+            self.assertEqual(payload["google_photos"]["remote"], "gphotos:")
+            self.assertTrue(payload["google_photos"]["configured"])
+            self.assertIn("last_connection_check", payload["google_photos"])
+            self.assertNotIn("token", json.dumps(payload).lower())
+
     def test_log_sync_event_appends_explicit_completion_message(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
