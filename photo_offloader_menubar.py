@@ -21,6 +21,7 @@ DASHBOARD_SCRIPT = INSTALL_DIR / "photo_offloader_ui.py"
 IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
 BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
 USB_VOLUME = Path("/Volumes/Photos")
+UI_LABEL = "com.user.photooffloader.menubar"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 
 
