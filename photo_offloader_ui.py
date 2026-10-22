@@ -24,6 +24,7 @@ BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
 IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
 GOOGLE_PHOTOS_SCRIPT = INSTALL_DIR / "google_photos_sync.py"
 GOOGLE_PHOTOS_STATUS = INSTALL_DIR / "google_photos_status.json"
+GOOGLE_PHOTOS_LOG = INSTALL_DIR / "google_photos_sync.log"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 USB_VOLUME = Path("/Volumes/Photos")
 LOCAL_ARCHIVES = (Path.home() / "Pictures" / "CameraImports", Path.home() / "Pictures" / "CameraImportsRaw")
@@ -301,7 +302,7 @@ class Dashboard:
             return
 
         try:
-            with LOG_PATH.open("rb") as handle:
+            with GOOGLE_PHOTOS_LOG.open("rb") as handle:
                 handle.seek(0, os.SEEK_END)
                 size = handle.tell()
                 handle.seek(max(size - 65536, 0))
