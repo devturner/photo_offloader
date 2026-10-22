@@ -5,10 +5,12 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Added
+- Optional rclone-based Google Photos uploader for JPG/JPEG photos and supported videos, with automatic post-import uploads, a dashboard manual-sync button, and separate upload status/logs.
 - RAW media is stored under a dedicated `CameraImportsRaw` top-level archive on the Mac; JPGs and other non-RAW media remain under `CameraImports`.
 - Added a preview-first Bash migration script to move existing RAW files into the separate archive without overwriting conflicts.
 
 ### Changed
+- Installer deploys the Google Photos sync helper; cloud upload failures remain independent of the verified local/USB import result.
 - USB backup reads both local archive roots and keeps the USB archive consolidated under `CameraImports`; catalog refresh covers both local roots and the single USB root.
 - Automatic imports run in the background by default; a dashboard toggle enables Terminal output for future imports.
 - Moved the rolling transfer-speed graph into the Copy Speed card to consolidate the graph and numeric speed display.
