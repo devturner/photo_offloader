@@ -60,13 +60,12 @@ fi
     # that job explicitly, with a predictable Homebrew/system PATH and working
     # directory; otherwise a successful card-detection log can be followed by
     # no visible importer progress until a terminal is opened.
-    printf '%s\\n' "$source_path" > "$STATE_FILE"
+    printf '%s\n' "$source_path" > "$STATE_FILE"
     nohup /bin/bash -c "$supervisor" photo-offloader-import-supervisor \
         "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" \
         >> "$import_log" 2>&1 </dev/null &
     local pid=$!
     log "Started detached background importer supervisor (pid $pid) for: $source_path"
-    fi
 }
 
 if [[ ! -x "$PYTHON" || ! -f "$IMPORTER" ]]; then
