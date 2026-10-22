@@ -4,6 +4,10 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Added
+- Added a Light/Dark theme selector to the dashboard header. The selected theme is saved under `ui.theme` in the persistent `PhotoOffloaderData/preferences.json` file, preserving existing Google Photos preferences and restoring the selection on next launch.
+
+
 ### Changed
 - Refreshed the dashboard with a light neutral palette, cleaner label backgrounds, styled primary/secondary buttons, and individually collapsible archive/database, automation/cloud, and activity/history sections. Diagnostic detail is hidden until requested.
 - Reset copy and Google Photos speed timelines and rolling throughput values when a transfer is no longer active, so the next run starts with a clean chart.
