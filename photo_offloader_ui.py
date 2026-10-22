@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -42,6 +43,18 @@ def format_bytes(value: float) -> str:
             return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
         amount /= 1024
     return f"{amount:.1f} TB"
+
+
+def parse_display_bytes(value: str) -> float:
+    """Convert rclone's human-readable byte totals into bytes for graph sampling."""
+    match = re.fullmatch(r"\s*([\d.]+)\s*(B|KB|KiB|MB|MiB|GB|GiB|TB|TiB)\s*", value, re.IGNORECASE)
+    if not match:
+        return 0.0
+    amount = float(match.group(1))
+    unit = match.group(2).upper()
+    exponent = {"B": 0, "KB": 1, "KIB": 1, "MB": 2, "MIB": 2,
+                "GB": 3, "GIB": 3, "TB": 4, "TIB": 4}[unit]
+    return amount * (1024 ** exponent)
 
 
 def format_duration(value: float) -> str:
@@ -393,7 +406,7 @@ class Dashboard:
         self.upload_progress_var.set(
             f"{percent:.0f}% • {progress['transferred']} of {progress['total']} uploaded"
         )
-        transferred_bytes = int(progress.get("bytes_transferred", 0) or 0)
+        transferred_bytes = parse_display_bytes(str(progress.get("transferred", "0 B")))
         sample_now = time.monotonic()
         elapsed = max(sample_now - self._upload_last_sample_time, 0.001)
         sample_speed = max(transferred_bytes - self._upload_last_bytes, 0) / elapsed
