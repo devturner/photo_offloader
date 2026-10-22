@@ -21,8 +21,8 @@ BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
 IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 USB_VOLUME = Path("/Volumes/Photos")
-LOCAL_ARCHIVE = Path.home() / "Pictures" / "CameraImports"
-USB_ARCHIVE = USB_VOLUME / "CameraImports"
+LOCAL_ARCHIVES = (Path.home() / "Pictures" / "CameraImports", Path.home() / "Pictures" / "CameraImportsRaw")
+USB_ARCHIVES = (USB_VOLUME / "CameraImports", USB_VOLUME / "CameraImportsRaw")
 CATALOG_DB = Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "catalog.sqlite3"
 TRIGGER_LOG = Path.home() / ".camera_transfer_trigger.log"
 IMPORT_LOG = Path.home() / ".camera_transfer.log"
@@ -256,13 +256,13 @@ class Dashboard:
                 refreshes = {}
             else:
                 with sqlite3.connect(f"file:{CATALOG_DB}?mode=ro", uri=True, timeout=0.5) as db:
-                    local_root = str(LOCAL_ARCHIVE.resolve())
-                    usb_root = str(USB_ARCHIVE.resolve())
+                    local_roots = tuple(str(root.resolve()) for root in LOCAL_ARCHIVES)
+                    usb_roots = tuple(str(root.resolve()) for root in USB_ARCHIVES)
                     local_count = db.execute(
-                        "SELECT COUNT(*) FROM file_locations WHERE root = ?", (local_root,)
+                        "SELECT COUNT(*) FROM file_locations WHERE root IN (?, ?)", local_roots
                     ).fetchone()[0]
                     usb_count = db.execute(
-                        "SELECT COUNT(*) FROM file_locations WHERE root = ?", (usb_root,)
+                        "SELECT COUNT(*) FROM file_locations WHERE root IN (?, ?)", usb_roots
                     ).fetchone()[0]
                     try:
                         refreshes = {row[0]: (row[1], row[2], row[3]) for row in db.execute(
@@ -275,15 +275,19 @@ class Dashboard:
             self.usb_catalog_var.set("Backup USB database: Status unavailable")
             return
 
-        def line(label: str, root: Path, count: int) -> str:
-            key = str(root.resolve())
-            if catalog_running and (catalog_root == key or current_path == key
-                                      or current_path.startswith(key + os.sep)):
+        def line(label: str, roots: tuple[Path, ...], count: int) -> str:
+            keys = tuple(str(root.resolve()) for root in roots)
+            if catalog_running and any(
+                catalog_root == key or current_path == key or current_path.startswith(key + os.sep)
+                for key in keys
+            ):
                 scanned = int(status.get("catalog_scanned", 0) or 0)
                 return f"{label}: Updating • {scanned:,} files scanned • {count:,} indexed so far"
-            info = refreshes.get(key)
-            if info:
-                updated, scanned, refresh_state = info
+            infos = [refreshes[key] for key in keys if key in refreshes]
+            if infos:
+                updated = max(info[0] for info in infos)
+                scanned = sum(info[1] for info in infos)
+                refresh_state = "complete" if all(info[2] == "complete" for info in infos) else "in progress"
                 when = datetime.fromtimestamp(updated).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
                 return f"{label}: {refresh_state.title()} • Last updated {when} • {scanned:,} files scanned • {count:,} indexed"
             if count:
@@ -292,11 +296,8 @@ class Dashboard:
                 return f"{label}: Drive not mounted • Previous catalog records are preserved"
             return f"{label}: Not yet updated"
 
-        self.local_catalog_var.set(line("Internal SSD", LOCAL_ARCHIVE, local_count))
-        if not USB_VOLUME.is_dir():
-            self.usb_catalog_var.set(line("Backup USB", USB_ARCHIVE, usb_count))
-        else:
-            self.usb_catalog_var.set(line("Backup USB", USB_ARCHIVE, usb_count))
+        self.local_catalog_var.set(line("Internal SSD", LOCAL_ARCHIVES, local_count))
+        self.usb_catalog_var.set(line("Backup USB", USB_ARCHIVES, usb_count))
 
     def start_catalog_update(self) -> None:
         try:
