@@ -1,3 +1,5 @@
+> **HTML documentation:** The GitHub Pages version is available at [Photo Offloader Documentation](https://devturner.github.io/photo_offloader/). The hosted page is maintained in `index.html` on `main`.
+
 # 📸 Photo Offloader Automation Suite
 
 A macOS-focused camera media offloader that safely copies photos and video from camera cards to local storage and, when available, an external backup drive.
