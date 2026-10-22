@@ -26,11 +26,11 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.background_args = self.root / "background-import-args.txt"
         self.background_path = self.root / "background-import-path.txt"
         self.python.write_text(
-            "#!/bin/bash\\n"
+            "#!/bin/bash\n"
             + "if [[ \"$1\" == \"$PHOTO_OFFLOADER_IMPORTER\" ]]; then "
             + f"printf '%s\\n' \"$@\" > {self.background_args}; "
-            + f"printf '%s\\n' \"$PATH\" > {self.background_path}; sleep 0.2; fi\\n"
-            + "exit 0\\n"
+            + f"printf '%s\\n' \"$PATH\" > {self.background_path}; sleep 0.2; fi\n"
+            + "exit 0\n"
         )
         self.importer.write_text("#!/bin/bash\nexit 0\n")
         self.dashboard = self.install / "photo_offloader_ui.py"
