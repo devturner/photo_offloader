@@ -4,6 +4,14 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Added
+- RAW media is stored under a dedicated `CameraImportsRaw` top-level archive on the Mac and matching USB backup root; JPGs and other non-RAW media remain under `CameraImports`.
+- Added a preview-first Bash migration script to move existing RAW files into the separate archive without overwriting conflicts.
+
+### Changed
+- USB backup and catalog refresh now cover both the standard and RAW archive roots.
+
+
 ### Fixed
 - Automatic card detection now runs at launch and polls every 30 seconds as a fallback when macOS misses a removable-volume WatchPaths event.
 - Catalog updates now show phase-aware remaining-time estimates when scan progress supports one, and a clear metadata-reading label during ExifTool batches.
