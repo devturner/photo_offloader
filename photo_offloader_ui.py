@@ -63,8 +63,8 @@ class Dashboard:
         self.root.title("Photo Offloader")
         # Leave enough vertical space for the live graph and both action buttons.
         # The previous 610x600 default clipped the bottom controls on macOS.
-        self.root.geometry("900x820")
-        self.root.minsize(760, 700)
+        self.root.geometry("900x900")
+        self.root.minsize(760, 780)
         self.root.configure(bg="#101827")
 
         style = ttk.Style(self.root)
