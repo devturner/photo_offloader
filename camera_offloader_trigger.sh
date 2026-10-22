@@ -43,6 +43,8 @@ importer="$2"
 source_path="$3"
 state_file="$4"
 trigger_log="$5"
+install_dir="$6"
+cd "$install_dir" || exit 125
 if "$python" "$importer" --source "$source_path"; then
     printf "[%s] Background importer exited successfully for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$source_path" >> "$trigger_log"
 else
@@ -58,12 +60,18 @@ fi
     # that job explicitly, with a predictable Homebrew/system PATH and working
     # directory; otherwise a successful card-detection log can be followed by
     # no visible importer progress until a terminal is opened.
-    nohup /bin/bash -c "$supervisor" photo-offloader-import-supervisor \
-        "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" \
-        >> "$import_log" 2>&1 </dev/null &
-    local pid=$!
     printf '%s\\n' "$source_path" > "$STATE_FILE"
-    log "Started detached background importer supervisor (pid $pid) for: $source_path"
+    if nohup /bin/bash -c "$supervisor" photo-offloader-import-supervisor \
+        "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" \
+        >> "$import_log" 2>&1 </dev/null &
+    then
+        local pid=$!
+        log "Started detached background importer supervisor (pid $pid) for: $source_path"
+    else
+        rm -f "$STATE_FILE"
+        log "Could not start detached background importer supervisor for: $source_path"
+        return 1
+    fi
 }
 
 if [[ ! -x "$PYTHON" || ! -f "$IMPORTER" ]]; then
