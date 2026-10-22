@@ -22,6 +22,9 @@ OSASCRIPT="${PHOTO_OFFLOADER_OSASCRIPT:-/usr/bin/osascript}"
 TERMINAL_APP="${PHOTO_OFFLOADER_TERMINAL_APP:-iTerm2}"
 TERMINAL_OUTPUT_FILE="${PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE:-$INSTALL_DIR/.terminal-output-enabled}"
 VOLUMES_ROOT="${PHOTO_OFFLOADER_VOLUMES_ROOT:-/Volumes}"
+# launchd does not load interactive shell startup files. Keep common Homebrew
+# paths available to ExifTool, ffmpeg, and other optional media helpers.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 log() {
     mkdir -p "$(dirname "$LOG")"
@@ -33,21 +36,34 @@ log() {
 # silently treating a failed launch as a completed import.
 start_background_import() {
     local source_path="$1"
-    (
-        if "$PYTHON" "$IMPORTER" --source "$source_path"; then
-            log "Background importer exited successfully for: $source_path"
-        else
-            local result=$?
-            log "Background importer failed with status $result for: $source_path"
-            if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$source_path" ]]; then
-                rm -f "$STATE_FILE"
-                log "Cleared trigger state so this card can be retried."
-            fi
-        fi
-    ) >> "$HOME/.camera_transfer.log" 2>&1 </dev/null &
+    local import_log="$HOME/.camera_transfer.log"
+    local supervisor='
+python="$1"
+importer="$2"
+source_path="$3"
+state_file="$4"
+trigger_log="$5"
+if "$python" "$importer" --source "$source_path"; then
+    printf "[%s] Background importer exited successfully for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$source_path" >> "$trigger_log"
+else
+    result=$?
+    printf "[%s] Background importer failed with status %s for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$result" "$source_path" >> "$trigger_log"
+    if [[ -f "$state_file" ]] && [[ "$(cat "$state_file")" == "$source_path" ]]; then
+        rm -f "$state_file"
+        printf "[%s] Cleared trigger state so this card can be retried.\\n" "$(date "+%Y-%m-%d %H:%M:%S")" >> "$trigger_log"
+    fi
+fi
+'
+    # launchd jobs may be short-lived. Detach the supervisor and importer from
+    # that job explicitly, with a predictable Homebrew/system PATH and working
+    # directory; otherwise a successful card-detection log can be followed by
+    # no visible importer progress until a terminal is opened.
+    nohup /bin/bash -c "$supervisor" photo-offloader-import-supervisor \
+        "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" \
+        >> "$import_log" 2>&1 </dev/null &
     local pid=$!
-    printf '%s\n' "$source_path" > "$STATE_FILE"
-    log "Started background importer (pid $pid) for: $source_path"
+    printf '%s\\n' "$source_path" > "$STATE_FILE"
+    log "Started detached background importer supervisor (pid $pid) for: $source_path"
 }
 
 if [[ ! -x "$PYTHON" || ! -f "$IMPORTER" ]]; then
