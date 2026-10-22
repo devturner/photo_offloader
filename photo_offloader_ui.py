@@ -129,12 +129,14 @@ class Dashboard:
         self.copy_title_var = tk.StringVar(value="Import to HD")
         self.copy_percent_var = tk.DoubleVar(value=0.0)
         self.copy_progress_var = tk.StringVar(value="Waiting for a camera card")
-        self.copy_elapsed_var = tk.StringVar(value="Elapsed 00:00")
+        self.copy_elapsed_var = tk.StringVar(value="Elapsed 00:00:00")
+        self.copy_throughput_detail_var = tk.StringVar(value="Average — • Peak —")
         self.upload_speed_var = tk.StringVar(value="—")
         self.upload_eta_var = tk.StringVar(value="ETA —")
         self.upload_progress_var = tk.StringVar(value="Waiting for upload")
         self.upload_percent_var = tk.DoubleVar(value=0.0)
-        self.upload_elapsed_var = tk.StringVar(value="Elapsed 00:00")
+        self.upload_elapsed_var = tk.StringVar(value="Elapsed 00:00:00")
+        self.upload_throughput_detail_var = tk.StringVar(value="Average — • Peak —")
         self.progress_var = tk.StringVar(value="Waiting for a camera card")
         self.speed_history = deque([0.0] * 60, maxlen=60)
         self.upload_speed_history = deque([0.0] * 60, maxlen=60)
@@ -161,6 +163,7 @@ class Dashboard:
         copy_metrics.pack(side="left", fill="both", expand=True)
         ttk.Label(copy_metrics, textvariable=self.speed_var, style="Metric.TLabel").pack(anchor="w")
         ttk.Label(copy_metrics, textvariable=self.copy_elapsed_var, style="CardTitle.TLabel").pack(anchor="w", pady=(2, 0))
+        ttk.Label(copy_metrics, textvariable=self.copy_throughput_detail_var, style="CardTitle.TLabel").pack(anchor="w", pady=(2, 0))
         self.copy_progress = ttk.Progressbar(copy_metrics, mode="determinate", maximum=100, variable=self.copy_percent_var)
         self.copy_progress.pack(fill="x", pady=(9, 3))
         ttk.Label(copy_metrics, textvariable=self.copy_progress_var, style="CardTitle.TLabel", wraplength=220).pack(anchor="w")
@@ -179,6 +182,7 @@ class Dashboard:
         upload_metrics.pack(side="left", fill="both", expand=True)
         ttk.Label(upload_metrics, textvariable=self.upload_speed_var, style="Metric.TLabel").pack(anchor="w")
         ttk.Label(upload_metrics, textvariable=self.upload_elapsed_var, style="CardTitle.TLabel").pack(anchor="w", pady=(2, 0))
+        ttk.Label(upload_metrics, textvariable=self.upload_throughput_detail_var, style="CardTitle.TLabel").pack(anchor="w", pady=(2, 0))
         self.upload_progress = ttk.Progressbar(
             upload_metrics, mode="determinate", maximum=100, variable=self.upload_percent_var
         )
@@ -412,6 +416,13 @@ class Dashboard:
         elapsed = max(sample_now - self._upload_last_sample_time, 0.001)
         sample_speed = max(transferred_bytes - self._upload_last_bytes, 0) / elapsed
         self.upload_speed_history.append(sample_speed)
+        active_samples = [sample for sample in self.upload_speed_history if sample > 0]
+        average_recent = sum(active_samples) / len(active_samples) if active_samples else 0.0
+        peak_recent = max(self.upload_speed_history, default=0.0)
+        self.upload_throughput_detail_var.set(
+            f"Average {format_bytes(average_recent)}/s • Peak {format_bytes(peak_recent)}/s (last 60s)"
+            if active_samples else "Average — • Peak —"
+        )
         self._upload_last_bytes = transferred_bytes
         self._upload_last_sample_time = sample_now
         self.draw_upload_speed_graph()
@@ -575,7 +586,8 @@ class Dashboard:
         now = time.monotonic()
         marker = (status.get("run_id"), status.get("catalog_root"), stage)
         if getattr(self, "_catalog_eta_marker", None) != marker:
-            self._catalog_eta_marker = marker            self._catalog_eta_started = now
+            self._catalog_eta_marker = marker
+            self._catalog_eta_started = now
             self._catalog_eta_progress = 0
         elapsed = max(now - getattr(self, "_catalog_eta_started", now), 0.0)
 
@@ -645,6 +657,13 @@ class Dashboard:
         self.last_transferred_bytes = transferred
         eta = float(status.get("eta_seconds", 0) or 0)
         self.speed_history.append(max(speed, 0.0))
+        active_samples = [sample for sample in self.speed_history if sample > 0]
+        average_recent = sum(active_samples) / len(active_samples) if active_samples else 0.0
+        peak_recent = max(self.speed_history, default=0.0)
+        self.copy_throughput_detail_var.set(
+            f"Average {format_bytes(average_recent)}/s • Peak {format_bytes(peak_recent)}/s (last 60s)"
+            if active_samples else "Average — • Peak —"
+        )
         self.draw_speed_graph()
 
         display_speed = speed if speed > 0 else average_speed if state == "copying" else 0
