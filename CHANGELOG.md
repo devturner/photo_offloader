@@ -5,6 +5,14 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Changed
+- Refreshed the dashboard with a light neutral palette, cleaner label backgrounds, styled primary/secondary buttons, and individually collapsible archive/database, automation/cloud, and activity/history sections. Diagnostic detail is hidden until requested.
+- Reset copy and Google Photos speed timelines and rolling throughput values when a transfer is no longer active, so the next run starts with a clean chart.
+
+### Fixed
+- Made terminal-free automatic imports run under a detached supervisor, set a predictable launchd-safe PATH for Homebrew media tools, set the importer's working directory, and ensure failed imports clear their handled-card state so they can be retried.
+- Added trigger regression coverage for detached background imports and the launchd-safe PATH.
+
+### Changed
 - Restored the full dashboard redesign: compact workflow header and state indicator, prominent quick actions, separate transfer panels, a dedicated current-activity/progress surface, side-by-side archive/database and automation/cloud health cards, and a separate recent-log history panel.
 
 ### Fixed
