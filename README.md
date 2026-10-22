@@ -81,7 +81,7 @@ Local storage uses two top-level roots:
 A camera import now runs in two stages:
 
 1. **Card → Mac SSD:** non-RAW media is copied to `~/Pictures/CameraImports/`; RAW media is copied to `~/Pictures/CameraImportsRaw/`. Each file is verified using the existing safe-copy rules.
-2. **Mac SSD → USB:** if `/Volumes/Photos` is mounted, Photo Offloader mirrors both roots to `/Volumes/Photos/CameraImports/` and `/Volumes/Photos/CameraImportsRaw/`. Existing files are SHA-256 checked; matching files are skipped, and mismatching files are reported as conflicts rather than overwritten.
+2. **Mac SSD → USB:** if `/Volumes/Photos` is mounted, Photo Offloader backs up files from both local roots into the single `/Volumes/Photos/CameraImports/` tree, preserving the existing date/camera and `Photos`/`Raws`/`Movies` subfolders. Existing files are SHA-256 checked; matching files are skipped, and mismatching files are reported as conflicts rather than overwritten.
 
 Once the local SSD stage has succeeded, the camera card can be ejected while the USB backup continues. A USB backup failure therefore does not invalidate the verified local import; rerun the USB-only sync after reconnecting the drive.
 
