@@ -4,6 +4,9 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Changed
+- Restored the full dashboard redesign: compact workflow header and state indicator, prominent quick actions, separate transfer panels, a dedicated current-activity/progress surface, side-by-side archive/database and automation/cloud health cards, and a separate recent-log history panel.
+
 ### Fixed
 - Fixed a syntax error in catalog ETA tracking that prevented the dashboard from launching.
 
