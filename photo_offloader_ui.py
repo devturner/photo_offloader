@@ -92,56 +92,19 @@ class Dashboard:
         # The previous 610x600 default clipped the bottom controls on macOS.
         self.root.geometry("1120x960")
         self.root.minsize(900, 800)
-        self.root.configure(bg="#f3f6fb")
-
-        style = ttk.Style(self.root)
+        self.preferences = self.load_preferences()
+        self.theme_var = tk.StringVar(
+            value=str(self.preferences.get("ui", {}).get("theme", "light")).lower()
+            if isinstance(self.preferences.get("ui", {}), dict) else "light"
+        )
+        if self.theme_var.get() not in ("light", "dark"):
+            self.theme_var.set("light")
+        self.style = ttk.Style(self.root)
         try:
-            style.theme_use("clam")
+            self.style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("TFrame", background="#f3f6fb")
-        style.configure("Card.TFrame", background="#ffffff")
-        style.configure("Title.TLabel", background="#f3f6fb", foreground="#172033",
-                        font=("SF Pro Display", 25, "bold"))
-        style.configure("Status.TLabel", background="#dbeafe", foreground="#1d4ed8",
-                        font=("SF Pro Text", 10, "bold"), padding=(12, 7))
-        style.configure("Subtitle.TLabel", background="#f3f6fb", foreground="#64748b",
-                        font=("SF Pro Text", 10))
-        style.configure("CardTitle.TLabel", background="#ffffff", foreground="#64748b",
-                        font=("SF Pro Text", 10))
-        style.configure("Metric.TLabel", background="#ffffff", foreground="#172033",
-                        font=("SF Pro Display", 18, "bold"))
-        style.configure("Body.TLabel", background="#ffffff", foreground="#334155",
-                        font=("SF Pro Text", 10))
-        style.configure("File.TLabel", background="#ffffff", foreground="#172033",
-                        font=("SF Pro Text", 11, "bold"))
-        style.configure("Horizontal.TProgressbar", troughcolor="#dbe3ef",
-                        background="#16a34a", thickness=9)
-        style.configure(
-            "TButton", background="#ffffff", foreground="#1e293b",
-            padding=(12, 8), relief="flat", borderwidth=1,
-            font=("SF Pro Text", 10, "bold")
-        )
-        style.map(
-            "TButton",
-            background=[("active", "#eaf0f8"), ("pressed", "#dbeafe"), ("disabled", "#f1f5f9")],
-            foreground=[("disabled", "#94a3b8")]
-        )
-        style.configure(
-            "Primary.TButton", background="#2563eb", foreground="#ffffff",
-            padding=(13, 8), relief="flat", borderwidth=0,
-            font=("SF Pro Text", 10, "bold")
-        )
-        style.map(
-            "Primary.TButton",
-            background=[("active", "#1d4ed8"), ("pressed", "#1e40af")]
-        )
-        style.configure(
-            "Disclosure.TButton", background="#f3f6fb", foreground="#334155",
-            padding=(10, 8), relief="flat", borderwidth=0,
-            font=("SF Pro Text", 10, "bold"), anchor="w"
-        )
-        style.map("Disclosure.TButton", background=[("active", "#eaf0f8")])
+        self.apply_theme()
 
         outer = ttk.Frame(self.root, padding=22)
         outer.pack(fill="both", expand=True)
@@ -159,6 +122,15 @@ class Dashboard:
         ttk.Label(header, textvariable=self.dashboard_state_var, style="Status.TLabel").pack(
             side="right", anchor="center", padx=(12, 0)
         )
+        theme_picker = ttk.Frame(header)
+        theme_picker.pack(side="right", anchor="center", padx=(0, 12))
+        ttk.Label(theme_picker, text="THEME", style="Subtitle.TLabel").pack(anchor="w")
+        self.theme_picker = ttk.Combobox(
+            theme_picker, textvariable=self.theme_var, values=("light", "dark"),
+            state="readonly", width=8
+        )
+        self.theme_picker.pack(anchor="e")
+        self.theme_picker.bind("<<ComboboxSelected>>", self.on_theme_selected)
 
         # Shared state and metrics for the independent transfer cards.
         self.speed_var = tk.StringVar(value="—")
@@ -240,7 +212,7 @@ class Dashboard:
         ttk.Label(
             copy_metrics, textvariable=self.copy_progress_var, style="CardTitle.TLabel", wraplength=280
         ).pack(anchor="w")
-        self.graph = tk.Canvas(copy_body, height=100, width=210, bg="#ffffff", highlightthickness=0)
+        self.graph = tk.Canvas(copy_body, height=100, width=210, bg=self.colors["card"], highlightthickness=0)
         self.graph.pack(side="right", fill="both", expand=True, padx=(16, 0))
 
         upload_card = ttk.Frame(metrics, style="Card.TFrame", padding=15)
@@ -335,9 +307,9 @@ class Dashboard:
             style="CardTitle.TLabel"
         ).pack(anchor="w", pady=(0, 6))
         self.activity_text = tk.Text(
-            activity, height=5, wrap="word", state="disabled", bg="#f8fafc",
-            fg="#334155", insertbackground="#172033", relief="flat", borderwidth=1,
-            highlightthickness=1, highlightbackground="#dbe3ef",
+            activity, height=5, wrap="word", state="disabled", bg=self.colors["input"],
+            fg=self.colors["text"], insertbackground=self.colors["text"], relief="flat", borderwidth=1,
+            highlightthickness=1, highlightbackground=self.colors["border"],
             font=("Menlo", 9), padx=9, pady=7
         )
         self.activity_text.pack(fill="x", expand=False)
@@ -355,6 +327,119 @@ class Dashboard:
 
         self.root.after(500, self.refresh)
         self.root.mainloop()
+
+    @staticmethod
+    def load_preferences() -> Dict[str, Any]:
+        try:
+            payload = json.loads(PREFERENCES_FILE.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save_preferences(self) -> None:
+        """Merge UI preferences into the shared persistent settings without losing other keys."""
+        PREFERENCES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        current = self.load_preferences()
+        ui = current.get("ui")
+        if not isinstance(ui, dict):
+            ui = {}
+        ui["theme"] = self.theme_var.get()
+        current["ui"] = ui
+        temporary = PREFERENCES_FILE.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(current, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+        temporary.replace(PREFERENCES_FILE)
+        self.preferences = current
+
+    def apply_theme(self) -> None:
+        """Apply the selected light/dark palette to native widgets and charts."""
+        dark = getattr(self, "theme_var", tk.StringVar(value="light")).get() == "dark"
+        self.colors = {
+            "background": "#151922" if dark else "#f3f6fb",
+            "card": "#202633" if dark else "#ffffff",
+            "text": "#e7edf7" if dark else "#172033",
+            "muted": "#a2aec2" if dark else "#64748b",
+            "body": "#d4dceb" if dark else "#334155",
+            "border": "#3a4558" if dark else "#dbe3ef",
+            "input": "#171d28" if dark else "#f8fafc",
+            "accent": "#60a5fa" if dark else "#2563eb",
+            "accent_active": "#3b82f6" if dark else "#1d4ed8",
+            "status_bg": "#263b59" if dark else "#dbeafe",
+            "status_fg": "#bfdbfe" if dark else "#1d4ed8",
+            "button_bg": "#2b3444" if dark else "#ffffff",
+            "button_fg": "#e7edf7" if dark else "#1e293b",
+            "button_active": "#3a465b" if dark else "#eaf0f8",
+            "disabled": "#7f8ba0" if dark else "#94a3b8",
+            "grid": "#3a4558" if dark else "#dbe3ef",
+            "success": "#4ade80" if dark else "#16a34a",
+        }
+        c = self.colors
+        self.root.configure(bg=c["background"])
+        style = getattr(self, "style", ttk.Style(self.root))
+        style.configure("TFrame", background=c["background"])
+        style.configure("Card.TFrame", background=c["card"])
+        style.configure("Title.TLabel", background=c["background"], foreground=c["text"],
+                        font=("SF Pro Display", 25, "bold"))
+        style.configure("Status.TLabel", background=c["status_bg"], foreground=c["status_fg"],
+                        font=("SF Pro Text", 10, "bold"), padding=(12, 7))
+        style.configure("Subtitle.TLabel", background=c["background"], foreground=c["muted"],
+                        font=("SF Pro Text", 10))
+        style.configure("CardTitle.TLabel", background=c["card"], foreground=c["muted"],
+                        font=("SF Pro Text", 10))
+        style.configure("Metric.TLabel", background=c["card"], foreground=c["text"],
+                        font=("SF Pro Display", 18, "bold"))
+        style.configure("Body.TLabel", background=c["card"], foreground=c["body"],
+                        font=("SF Pro Text", 10))
+        style.configure("File.TLabel", background=c["card"], foreground=c["text"],
+                        font=("SF Pro Text", 11, "bold"))
+        style.configure("Horizontal.TProgressbar", troughcolor=c["border"],
+                        background=c["success"], thickness=9)
+        style.configure("TButton", background=c["button_bg"], foreground=c["button_fg"],
+                        padding=(12, 8), relief="flat", borderwidth=1,
+                        font=("SF Pro Text", 10, "bold"))
+        style.map("TButton", background=[("active", c["button_active"]),
+                                         ("pressed", c["status_bg"]),
+                                         ("disabled", c["card"])],
+                  foreground=[("disabled", c["disabled"])])
+        style.configure("Primary.TButton", background=c["accent"], foreground="#ffffff",
+                        padding=(13, 8), relief="flat", borderwidth=0,
+                        font=("SF Pro Text", 10, "bold"))
+        style.map("Primary.TButton", background=[("active", c["accent_active"]),
+                                                 ("pressed", c["accent_active"])])
+        style.configure("Disclosure.TButton", background=c["background"], foreground=c["body"],
+                        padding=(10, 8), relief="flat", borderwidth=0,
+                        font=("SF Pro Text", 10, "bold"), anchor="w")
+        style.map("Disclosure.TButton", background=[("active", c["button_active"])])
+        style.configure("TCombobox", fieldbackground=c["button_bg"], background=c["button_bg"],
+                        foreground=c["button_fg"], arrowcolor=c["button_fg"])
+        style.map("TCombobox", fieldbackground=[("readonly", c["button_bg"])],
+                  foreground=[("readonly", c["button_fg"])])
+
+        # Canvas and Text widgets do not inherit ttk styles.
+        for name in ("graph", "upload_graph"):
+            canvas = getattr(self, name, None)
+            if canvas is not None:
+                canvas.configure(bg=c["card"])
+        activity_text = getattr(self, "activity_text", None)
+        if activity_text is not None:
+            activity_text.configure(bg=c["input"], fg=c["body"],
+                                    insertbackground=c["text"], highlightbackground=c["border"])
+        if hasattr(self, "theme_picker"):
+            self.theme_picker.configure(style="TCombobox")
+
+        # Redraw both timelines immediately with the new grid and accent colors.
+        if hasattr(self, "speed_history"):
+            self.draw_speed_graph()
+        if hasattr(self, "upload_speed_history"):
+            self.draw_upload_speed_graph()
+
+    def on_theme_selected(self, _event: object = None) -> None:
+        if self.theme_var.get() not in ("light", "dark"):
+            return
+        self.apply_theme()
+        try:
+            self.save_preferences()
+        except OSError as exc:
+            self.message_var.set(f"Theme changed for this session, but settings could not be saved: {exc}")
 
     def _create_collapsible_section(self, parent: ttk.Frame, title: str) -> ttk.Frame:
         """Create a compact disclosure row whose details are hidden by default."""
@@ -689,7 +774,7 @@ class Dashboard:
         left, right, top, bottom = 5, width - 5, 8, height - 15
         for fraction in (0.25, 0.5, 0.75, 1.0):
             y = bottom - (bottom - top) * fraction
-            canvas.create_line(left, y, right, y, fill="#dbe3ef", dash=(2, 3))
+            canvas.create_line(left, y, right, y, fill=self.colors["grid"], dash=(2, 3))
         values = list(history)
         peak = max(values, default=0.0)
         if peak <= 0:
