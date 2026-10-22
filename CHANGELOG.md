@@ -5,11 +5,11 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Added
-- RAW media is stored under a dedicated `CameraImportsRaw` top-level archive on the Mac and matching USB backup root; JPGs and other non-RAW media remain under `CameraImports`.
+- RAW media is stored under a dedicated `CameraImportsRaw` top-level archive on the Mac; JPGs and other non-RAW media remain under `CameraImports`.
 - Added a preview-first Bash migration script to move existing RAW files into the separate archive without overwriting conflicts.
 
 ### Changed
-- USB backup and catalog refresh now cover both the standard and RAW archive roots.
+- USB backup reads both local archive roots and keeps the USB archive consolidated under `CameraImports`; catalog refresh covers both local roots and the single USB root.
 
 
 ### Fixed
