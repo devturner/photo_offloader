@@ -17,6 +17,7 @@ from typing import Any, Dict
 INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 STATUS_FILE = Path(os.environ.get("PHOTO_OFFLOADER_STATUS_FILE", str(INSTALL_DIR / "status.json")))
 PAUSE_FILE = Path(os.environ.get("PHOTO_OFFLOADER_PAUSE_FILE", str(INSTALL_DIR / ".paused")))
+TERMINAL_OUTPUT_FILE = INSTALL_DIR / ".terminal-output-enabled"
 BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
 IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
@@ -100,13 +101,21 @@ class Dashboard:
         self.speed_var = tk.StringVar(value="—")
         self.eta_var = tk.StringVar(value="—")
         self.progress_var = tk.StringVar(value="Waiting for a camera card")
-        for column, title, variable in (
-            (0, "COPY SPEED", self.speed_var), (1, "TIME REMAINING", self.eta_var)
-        ):
-            card = ttk.Frame(metrics, style="Card.TFrame", padding=14)
-            card.grid(row=0, column=column, sticky="nsew", padx=(0, 8) if column == 0 else (8, 0))
-            ttk.Label(card, text=title, style="CardTitle.TLabel").pack(anchor="w")
-            ttk.Label(card, textvariable=variable, style="Metric.TLabel").pack(anchor="w", pady=(5, 0))
+        self.speed_history = deque([0.0] * 60, maxlen=60)
+        self.last_sample_time = time.monotonic()
+        self.last_transferred_bytes = 0
+
+        speed_card = ttk.Frame(metrics, style="Card.TFrame", padding=14)
+        speed_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        ttk.Label(speed_card, text="COPY SPEED", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(speed_card, textvariable=self.speed_var, style="Metric.TLabel").pack(anchor="w", pady=(5, 0))
+        self.graph = tk.Canvas(speed_card, height=82, bg="#1b2638", highlightthickness=0)
+        self.graph.pack(fill="x", pady=(5, 0))
+
+        eta_card = ttk.Frame(metrics, style="Card.TFrame", padding=14)
+        eta_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        ttk.Label(eta_card, text="TIME REMAINING", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(eta_card, textvariable=self.eta_var, style="Metric.TLabel").pack(anchor="w", pady=(5, 0))
         metrics.columnconfigure(0, weight=1)
         metrics.columnconfigure(1, weight=1)
 
@@ -134,6 +143,10 @@ class Dashboard:
         status_actions = ttk.Frame(auto_status, style="Card.TFrame")
         status_actions.pack(fill="x", pady=(6, 0))
         ttk.Button(status_actions, text="Toggle Live Debug Log", command=self.toggle_debug_log).pack(side="left")
+        self.terminal_output_button = ttk.Button(
+            status_actions, text=self.terminal_output_label(), command=self.toggle_terminal_output
+        )
+        self.terminal_output_button.pack(side="left", padx=(8, 0))
         self.debug_window = None
         self.debug_text = None
         self.debug_refresh_job = None
@@ -146,12 +159,6 @@ class Dashboard:
         ttk.Label(catalog_status, textvariable=self.local_catalog_var, style="Body.TLabel").pack(anchor="w")
         ttk.Label(catalog_status, textvariable=self.usb_catalog_var, style="Body.TLabel").pack(anchor="w", pady=(4, 0))
 
-        ttk.Label(outer, text="TRANSFER SPEED", style="Subtitle.TLabel").pack(anchor="w", pady=(14, 4))
-        self.speed_history = deque([0.0] * 60, maxlen=60)
-        self.last_sample_time = time.monotonic()
-        self.last_transferred_bytes = 0
-        self.graph = tk.Canvas(outer, height=110, bg="#1b2638", highlightthickness=0)
-        self.graph.pack(fill="x", expand=False)
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=(12, 0))
         ttk.Button(actions, text="Copy to USB Drive", command=self.start_usb_backup).pack(side="left")
@@ -163,6 +170,24 @@ class Dashboard:
 
         self.root.after(500, self.refresh)
         self.root.mainloop()
+
+    @staticmethod
+    def terminal_output_label() -> str:
+        return ("Disable Terminal Output" if TERMINAL_OUTPUT_FILE.exists()
+                else "Enable Terminal Output")
+
+    def toggle_terminal_output(self) -> None:
+        try:
+            INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+            if TERMINAL_OUTPUT_FILE.exists():
+                TERMINAL_OUTPUT_FILE.unlink()
+                self.message_var.set("Terminal windows disabled. Imports will run in the background.")
+            else:
+                TERMINAL_OUTPUT_FILE.touch()
+                self.message_var.set("Terminal windows enabled for future automatic imports.")
+            self.terminal_output_button.configure(text=self.terminal_output_label())
+        except OSError as exc:
+            self.message_var.set(f"Could not change terminal output setting: {exc}")
 
     def trigger_status_summary(self) -> str:
         try:
