@@ -78,10 +78,10 @@ while IFS= read -r -d '' source; do
     printf 'WOULD MOVE: %s\n  -> %s\n' "$source" "$destination"
     ((moved+=1))
   fi
-done < <(find "$SOURCE_ROOT" -type f \\( \
+done < <(find "$SOURCE_ROOT" -type f \( \
   -iname '*.nef' -o -iname '*.arw' -o -iname '*.cr2' -o \
   -iname '*.cr3' -o -iname '*.dng' -o -iname '*.raf' -o \
-  -iname '*.orf' -o -iname '*.rw2' \\) -print0)
+  -iname '*.orf' -o -iname '*.rw2' \) -print0)
 
 printf '\nSummary: %d RAW file(s) found; %d %s; %d conflict(s); %d error(s).\n' \
   "$seen" "$moved" "$([[ $APPLY -eq 1 ]] && printf 'moved' || printf 'would move')" "$conflicts" "$failed"

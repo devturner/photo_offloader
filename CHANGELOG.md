@@ -10,6 +10,8 @@ All notable changes to Photo Offloader are documented here.
 
 ### Changed
 - USB backup reads both local archive roots and keeps the USB archive consolidated under `CameraImports`; catalog refresh covers both local roots and the single USB root.
+- Automatic imports run in the background by default; a dashboard toggle enables Terminal output for future imports.
+- Moved the rolling transfer-speed graph into the Copy Speed card to consolidate the graph and numeric speed display.
 
 
 ### Fixed
@@ -55,7 +57,7 @@ All notable changes to Photo Offloader are documented here.
 - Camera imports now complete and verify the Mac SSD stage before starting a separate Mac-to-USB backup stage.
 - The camera card can be ejected after the verified local SSD stage while the USB backup continues.
 - USB backup sync copies missing files only, SHA-256 checks existing files, and reports conflicting files without overwriting them.
-- Camera import output now opens in iTerm2 by default, with `PHOTO_OFFLOADER_TERMINAL_APP` available to override the terminal application.
+- Camera import output can be opened in iTerm2 or another configured terminal when Terminal output is enabled in the dashboard; background mode is the default.
 - Imported media is now organized as `YYYY-MM/Camera-Model/Media-Type/filename`, using `Photos`, `Raws`, and `Movies` folders; camera identity comes from EXIF make/model when available, with `Unknown-Camera` as a fallback.
 - Video camera identity now uses embedded Make/Model metadata through optional `exiftool` support when available, so compatible MOV/MP4 files are grouped with the correct camera.
 

@@ -20,6 +20,7 @@ SETTLE_SECONDS="${PHOTO_OFFLOADER_TRIGGER_SETTLE_SECONDS:-1}"
 PGREP="${PHOTO_OFFLOADER_PGREP:-/usr/bin/pgrep}"
 OSASCRIPT="${PHOTO_OFFLOADER_OSASCRIPT:-/usr/bin/osascript}"
 TERMINAL_APP="${PHOTO_OFFLOADER_TERMINAL_APP:-iTerm2}"
+TERMINAL_OUTPUT_FILE="${PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE:-$INSTALL_DIR/.terminal-output-enabled}"
 VOLUMES_ROOT="${PHOTO_OFFLOADER_VOLUMES_ROOT:-/Volumes}"
 
 log() {
@@ -118,37 +119,47 @@ if [[ "$OPEN_DASHBOARD" == "1" && -f "$DASHBOARD" ]]; then
     fi
 fi
 
-# Build a shell-safe command without interpolating the path into AppleScript.
-# %q is bash-specific and preserves spaces and other shell metacharacters in
-# the volume name.
+# Keep the import attached to the dashboard/status file by default; Terminal output is
+# optional and controlled from the dashboard. Both paths use the same importer
+# and preserve the shell-safe handling of camera volume names containing spaces.
 command="$(printf '%q ' "$PYTHON" "$IMPORTER" --source "$camera_dcim")"
 
-if [[ "$TERMINAL_APP" == "iTerm2" ]]; then
-    if "$OSASCRIPT" - "$command" <<'APPLESCRIPT' >/dev/null 2>&1
+if [[ -f "$TERMINAL_OUTPUT_FILE" ]]; then
+    if [[ "$TERMINAL_APP" == "iTerm2" ]]; then
+        if "$OSASCRIPT" - "$command" <<'APPLESCRIPT' >/dev/null 2>&1
 on run argv
     tell application "iTerm2"
         create window with default profile command (item 1 of argv)
     end tell
 end run
 APPLESCRIPT
-    then
-        printf '%s\n' "$camera_dcim" > "$STATE_FILE"
-        log "Launched iTerm2 importer for: $camera_dcim"
+        then
+            printf '%s\n' "$camera_dcim" > "$STATE_FILE"
+            log "Launched iTerm2 importer for: $camera_dcim"
+        else
+            log "Failed to launch iTerm2 importer; falling back to background import."
+            nohup "$PYTHON" "$IMPORTER" --source "$camera_dcim" >> "$HOME/.camera_transfer.log" 2>&1 </dev/null &
+            printf '%s\n' "$camera_dcim" > "$STATE_FILE"
+        fi
     else
-        log "Failed to launch iTerm2 importer for: $camera_dcim"
-    fi
-else
-    if "$OSASCRIPT" - "$command" "$TERMINAL_APP" <<'APPLESCRIPT' >/dev/null 2>&1
+        if "$OSASCRIPT" - "$command" "$TERMINAL_APP" <<'APPLESCRIPT' >/dev/null 2>&1
 on run argv
     tell application (item 2 of argv)
         do script (item 1 of argv)
     end tell
 end run
 APPLESCRIPT
-    then
-        printf '%s\n' "$camera_dcim" > "$STATE_FILE"
-        log "Launched $TERMINAL_APP importer for: $camera_dcim"
-    else
-        log "Failed to launch $TERMINAL_APP importer for: $camera_dcim"
+        then
+            printf '%s\n' "$camera_dcim" > "$STATE_FILE"
+            log "Launched $TERMINAL_APP importer for: $camera_dcim"
+        else
+            log "Failed to launch $TERMINAL_APP importer; falling back to background import."
+            nohup "$PYTHON" "$IMPORTER" --source "$camera_dcim" >> "$HOME/.camera_transfer.log" 2>&1 </dev/null &
+            printf '%s\n' "$camera_dcim" > "$STATE_FILE"
+        fi
     fi
+else
+    nohup "$PYTHON" "$IMPORTER" --source "$camera_dcim" >> "$HOME/.camera_transfer.log" 2>&1 </dev/null &
+    printf '%s\n' "$camera_dcim" > "$STATE_FILE"
+    log "Started background importer (Terminal output disabled) for: $camera_dcim"
 fi

@@ -47,6 +47,9 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.log = self.root / "trigger.log"
         self.state = self.root / "state"
         self.lock = self.root / "trigger.lock"
+        # Preserve terminal-mode expectations for legacy trigger tests; tests
+        # for the new default explicitly remove this opt-in marker.
+        (self.install / ".terminal-output-enabled").touch()
         self.script = Path(__file__).with_name("camera_offloader_trigger.sh")
 
     def tearDown(self):
@@ -67,6 +70,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
                 "PHOTO_OFFLOADER_PGREP": str(self.pgrep),
                 "PHOTO_OFFLOADER_OSASCRIPT": str(self.osascript),
                 "PHOTO_OFFLOADER_VOLUMES_ROOT": str(self.volumes),
+                "PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE": str(self.install / ".terminal-output-enabled"),
             }
         )
         env.update(extra)
@@ -92,14 +96,24 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Opened progress dashboard", self.log.read_text())
 
-    def test_default_terminal_is_iterm2(self):
+    def test_default_import_runs_without_opening_terminal(self):
+        (self.install / ".terminal-output-enabled").unlink()
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.script_capture.exists())
+        self.assertIn("Terminal output disabled", self.log.read_text())
+        self.assertEqual(self.state.read_text().strip(), str(self.dcim))
+
+    def test_terminal_can_be_enabled_by_dashboard_toggle(self):
+        (self.install / ".terminal-output-enabled").touch()
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0, result.stderr)
         script = self.script_capture.read_text()
         self.assertIn('tell application "iTerm2"', script)
         self.assertIn("create window with default profile command", script)
 
-    def test_terminal_app_can_be_overridden(self):
+    def test_terminal_app_can_be_overridden_when_enabled(self):
+        (self.install / ".terminal-output-enabled").touch()
         result = self.run_trigger(PHOTO_OFFLOADER_TERMINAL_APP="Terminal")
         self.assertEqual(result.returncode, 0, result.stderr)
         script = self.script_capture.read_text()
