@@ -82,6 +82,18 @@ def publish_status(state: str, message: str) -> None:
     os.replace(temporary, STATUS_PATH)
 
 
+def log_sync_event(message: str) -> None:
+    """Append an application-level lifecycle message to the rclone log."""
+    SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().astimezone().strftime("%Y/%m/%d %H:%M:%S")
+    try:
+        with LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(f"{stamp} INFO  : Photo Offloader: {message}\\n")
+    except OSError:
+        # Logging must never turn an otherwise successful upload into a failure.
+        pass
+
+
 def find_rclone() -> Optional[str]:
     found = shutil.which("rclone")
     if found:
@@ -205,6 +217,10 @@ def _sync() -> int:
             )
             return 1
 
+        log_sync_event(
+            f"Google Photos sync completed successfully for album '{ALBUM_NAME}'; "
+            "rclone exited successfully and per-file catalog status was saved."
+        )
         publish_status(
             "complete",
             f"Google Photos upload finished for JPGs and supported videos in '{ALBUM_NAME}'; "
