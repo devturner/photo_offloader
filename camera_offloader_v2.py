@@ -213,6 +213,17 @@ def catalog_connection() -> sqlite3.Connection:
             )
         """)
         connection.execute("""
+            CREATE TABLE IF NOT EXISTS google_photos_uploads (
+                path TEXT PRIMARY KEY,
+                size INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                inode INTEGER NOT NULL,
+                uploaded_at REAL NOT NULL,
+                remote TEXT NOT NULL,
+                album TEXT NOT NULL
+            )
+        """)
+        connection.execute("""
             CREATE TABLE IF NOT EXISTS catalog_refreshes (
                 root TEXT PRIMARY KEY,
                 last_updated REAL NOT NULL,
@@ -236,6 +247,39 @@ def catalog_db() -> Iterator[sqlite3.Connection]:
             yield connection
     finally:
         connection.close()
+
+
+def mark_google_photos_uploaded(path: Path, remote: str, album: str) -> None:
+    """Record successful cloud upload for this exact local-file fingerprint."""
+    fingerprint = file_fingerprint(path)
+    resolved = str(path.resolve())
+    with catalog_db() as db:
+        db.execute(
+            """INSERT INTO google_photos_uploads
+               (path, size, mtime_ns, inode, uploaded_at, remote, album)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(path) DO UPDATE SET
+                 size=excluded.size, mtime_ns=excluded.mtime_ns, inode=excluded.inode,
+                 uploaded_at=excluded.uploaded_at, remote=excluded.remote, album=excluded.album""",
+            (resolved, fingerprint.size, fingerprint.mtime_ns, fingerprint.inode,
+             time.time(), remote, album),
+        )
+
+
+def google_photos_upload_record(path: Path) -> Optional[dict]:
+    """Return upload details only when the file still matches its uploaded fingerprint."""
+    try:
+        fingerprint = file_fingerprint(path)
+        with catalog_db() as db:
+            row = db.execute(
+                "SELECT size, mtime_ns, inode, uploaded_at, remote, album "
+                "FROM google_photos_uploads WHERE path = ?", (str(path.resolve()),)
+            ).fetchone()
+        if row and row[:3] == (fingerprint.size, fingerprint.mtime_ns, fingerprint.inode):
+            return {"uploaded_at": row[3], "remote": row[4], "album": row[5]}
+    except (OSError, sqlite3.Error) as exc:
+        logger.debug("Could not read Google Photos upload record for %s: %s", path, exc)
+    return None
 
 
 def catalog_row(path: Path, fingerprint: Optional[FileFingerprint] = None) -> Optional[tuple]:
