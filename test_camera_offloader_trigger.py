@@ -24,11 +24,13 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.python = self.install / "python3"
         self.importer = self.install / "camera_offloader_v2.py"
         self.background_args = self.root / "background-import-args.txt"
+        self.background_path = self.root / "background-import-path.txt"
         self.python.write_text(
-            "#!/bin/bash\n"
+            "#!/bin/bash\\n"
             + "if [[ \"$1\" == \"$PHOTO_OFFLOADER_IMPORTER\" ]]; then "
-            + f"printf '%s\\n' \"$@\" > {self.background_args}; sleep 0.2; fi\n"
-            + "exit 0\n"
+            + f"printf '%s\\n' \"$@\" > {self.background_args}; "
+            + f"printf '%s\\n' \"$PATH\" > {self.background_path}; sleep 0.2; fi\\n"
+            + "exit 0\\n"
         )
         self.importer.write_text("#!/bin/bash\nexit 0\n")
         self.dashboard = self.install / "photo_offloader_ui.py"
@@ -119,6 +121,8 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         args = self.background_args.read_text()
         self.assertIn("--source", args)
         self.assertIn(str(self.dcim), args)
+        self.assertIn("/opt/homebrew/bin", self.background_path.read_text())
+        self.assertIn("Started detached background importer supervisor", self.log.read_text())
 
     def test_terminal_can_be_enabled_by_dashboard_toggle(self):
         (self.install / ".terminal-output-enabled").touch()
