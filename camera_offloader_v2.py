@@ -1614,7 +1614,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             usb_expected = not args.no_usb and usb_is_mounted()
             usb_identity = get_volume_identity(USB_DEST_VOLUME) if usb_expected else None
             local_destinations = [LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT]
-            validate_destinations(local_destinations, source_bytes)
+            local_required = {
+                LOCAL_DEST_ROOT: sum(path.stat().st_size for category in ("JPG", "VIDEO") for path in files[category]),
+                LOCAL_RAW_DEST_ROOT: sum(path.stat().st_size for path in files["RAW"]),
+            }
+            for destination in local_destinations:
+                validate_destinations([destination], local_required[destination])
             logger.info("Stage 1 destinations: %s and %s", LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT)
             if usb_expected:
                 logger.info("USB backup is mounted; it will be synchronized after the local SSD import.")
