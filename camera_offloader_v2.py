@@ -61,8 +61,10 @@ CARD_VOLUME_GLOBS = [
     "/Volumes/EOS*/DCIM",
 ]
 LOCAL_DEST_ROOT = Path.home() / "Pictures" / "CameraImports"
+LOCAL_RAW_DEST_ROOT = Path.home() / "Pictures" / "CameraImportsRaw"
 USB_DEST_VOLUME = Path("/Volumes/Photos")
 USB_DEST_ROOT = USB_DEST_VOLUME / "CameraImports"
+USB_RAW_DEST_ROOT = USB_DEST_VOLUME / "CameraImportsRaw"
 LOG_FILE_PATH = Path.home() / ".camera_transfer.log"
 SESSION_LOCK_PATH = Path.home() / "Library" / "Caches" / "PhotoOffloader" / "import.lock"
 WAIT_SECONDS = 30
@@ -261,7 +263,7 @@ def catalog_record(path: Path, *, sha256: Optional[str] = None,
         fingerprint = file_fingerprint(path)
         resolved = path.resolve()
         known_root = next(
-            (candidate.resolve() for candidate in (LOCAL_DEST_ROOT, USB_DEST_ROOT)
+            (candidate.resolve() for candidate in (LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT, USB_DEST_ROOT, USB_RAW_DEST_ROOT)
              if resolved == candidate.resolve() or candidate.resolve() in resolved.parents),
             None,
         )
@@ -893,6 +895,16 @@ def get_media_type_folder(source: Path) -> str:
     return {"JPG": "Photos", "RAW": "Raws", "VIDEO": "Movies"}.get(category, "Other")
 
 
+def local_root_for_category(category: str) -> Path:
+    """Choose the top-level local archive by media category."""
+    return LOCAL_RAW_DEST_ROOT if category == "RAW" else LOCAL_DEST_ROOT
+
+
+def usb_root_for_category(category: str) -> Path:
+    """Choose the matching top-level USB archive by media category."""
+    return USB_RAW_DEST_ROOT if category == "RAW" else USB_DEST_ROOT
+
+
 def build_destination_path(source: Path, dcim_folder: Path, destination_base: Path) -> Path:
     return (
         destination_base
@@ -1131,13 +1143,15 @@ def update_file_catalog() -> Dict[str, int]:
     indexed without a hash until a verification operation computes one.
     """
     roots: List[Path] = []
-    if LOCAL_DEST_ROOT.is_dir():
-        roots.append(LOCAL_DEST_ROOT)
-    else:
-        logger.warning("Local archive is not available for catalog update: %s", LOCAL_DEST_ROOT)
+    for local_root in (LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT):
+        if local_root.is_dir():
+            roots.append(local_root)
+        else:
+            logger.info("Local archive root is not available for catalog update: %s", local_root)
     if usb_is_mounted():
-        if USB_DEST_ROOT.is_dir():
-            roots.append(USB_DEST_ROOT)
+        for usb_root in (USB_DEST_ROOT, USB_RAW_DEST_ROOT):
+            if usb_root.is_dir():
+                roots.append(usb_root)
     else:
         logger.info("USB volume is not mounted; skipping USB catalog refresh.")
 
@@ -1344,26 +1358,26 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
         expected_identity, get_volume_identity(USB_DEST_VOLUME)
     ):
         raise RuntimeError("USB backup volume identity changed before backup started.")
-    source_root = LOCAL_DEST_ROOT
-    destination_root = USB_DEST_ROOT
-    if not source_root.is_dir():
-        raise RuntimeError(f"Local archive does not exist: {source_root}")
-
-    files: List[Path] = []
-    for path in source_root.rglob("*"):
-        try:
-            if path.is_file() and not path.is_symlink() and not any(part.startswith(".") for part in path.relative_to(source_root).parts):
-                files.append(path)
-        except OSError as exc:
-            logger.warning("Could not inspect local archive file %s: %s", path, exc)
-    files.sort(key=lambda path: str(path).lower())
+    root_pairs = ((LOCAL_DEST_ROOT, USB_DEST_ROOT), (LOCAL_RAW_DEST_ROOT, USB_RAW_DEST_ROOT))
+    files: List[Tuple[Path, Path]] = []
+    for source_root, destination_root in root_pairs:
+        if not source_root.is_dir():
+            logger.info("Local archive root is not present; skipping USB backup root: %s", source_root)
+            continue
+        for path in source_root.rglob("*"):
+            try:
+                if (path.is_file() and not path.is_symlink()
+                        and not any(part.startswith(".") for part in path.relative_to(source_root).parts)):
+                    files.append((path, destination_root / path.relative_to(source_root)))
+            except OSError as exc:
+                logger.warning("Could not inspect local archive file %s: %s", path, exc)
+    files.sort(key=lambda item: str(item[0]).lower())
     stats = ImportStats(found=len(files))
     pending: List[Tuple[Path, Path, FileFingerprint]] = []
 
-    update_status(state="scanning", phase="USB backup", source=str(source_root),
-                  message="Comparing local archive with USB backup", current_file="")
-    for source in files:
-        destination = destination_root / source.relative_to(source_root)
+    update_status(state="scanning", phase="USB backup", source="; ".join(str(pair[0]) for pair in root_pairs),
+                  message="Comparing local archives with USB backup", current_file="")
+    for source, destination in files:
         try:
             fingerprint = file_fingerprint(source)
             catalog_record(source)
@@ -1392,7 +1406,15 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
             stats.errors.append((str(source), str(exc)))
             logger.exception("Could not inspect backup candidate %s", source)
 
-    validate_destinations([destination_root], stats.source_bytes if pending else 0)
+    if pending:
+        validate_destinations([USB_DEST_ROOT, USB_RAW_DEST_ROOT])
+        total_by_root: Dict[Path, int] = {USB_DEST_ROOT: 0, USB_RAW_DEST_ROOT: 0}
+        for _, destination, fingerprint in pending:
+            root = USB_RAW_DEST_ROOT if destination == USB_RAW_DEST_ROOT or USB_RAW_DEST_ROOT in destination.parents else USB_DEST_ROOT
+            total_by_root[root] += fingerprint.size
+        for root, required in total_by_root.items():
+            if required:
+                validate_destinations([root], required)
     global _PROGRESS_STARTED
     _PROGRESS_STARTED = time.monotonic()
     _PROGRESS.update({"state": "copying", "phase": "USB backup", "bytes_done": 0,
@@ -1561,7 +1583,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if args.backup_usb:
                 logger.info("Starting independent local-to-USB backup.")
                 backup_stats = copy_local_archive_to_usb()
-                print_summary(LOCAL_DEST_ROOT, [LOCAL_DEST_ROOT, USB_DEST_ROOT], backup_stats, False, False)
+                print_summary(LOCAL_DEST_ROOT, [LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT, USB_DEST_ROOT, USB_RAW_DEST_ROOT], backup_stats, False, False)
                 if backup_stats.failed:
                     notify("USB Backup Incomplete", f"{backup_stats.failed} backup failure(s).")
                     return 1
@@ -1591,8 +1613,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
             usb_expected = not args.no_usb and usb_is_mounted()
             usb_identity = get_volume_identity(USB_DEST_VOLUME) if usb_expected else None
-            validate_destinations([LOCAL_DEST_ROOT], source_bytes)
-            logger.info("Stage 1 destination: %s", LOCAL_DEST_ROOT)
+            local_destinations = [LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT]
+            validate_destinations(local_destinations, source_bytes)
+            logger.info("Stage 1 destinations: %s and %s", LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT)
             if usb_expected:
                 logger.info("USB backup is mounted; it will be synchronized after the local SSD import.")
             else:
@@ -1604,10 +1627,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                               "phase": "card-to-ssd", "message": "Copying camera card to Mac SSD"})
             update_status()
             for category in ("JPG", "RAW", "VIDEO"):
-                copy_category(files[category], dcim_folder, [LOCAL_DEST_ROOT], category, local_stats)
+                category_root = local_root_for_category(category)
+                copy_category(files[category], dcim_folder, [category_root], category, local_stats)
 
             if local_stats.failed:
-                print_summary(dcim_folder, [LOCAL_DEST_ROOT], local_stats, False, False)
+                print_summary(dcim_folder, local_destinations, local_stats, False, False)
                 update_status(state="failed", phase="card-to-ssd",
                               message=f"Local SSD import failed: {local_stats.failed} failure(s)",
                               current_file="", current_path="")
@@ -1643,7 +1667,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                               message="Mac SSD import complete; USB backup skipped",
                               current_file="", current_path="")
 
-            print_summary(dcim_folder, [LOCAL_DEST_ROOT] + ([USB_DEST_ROOT] if usb_expected else []),
+            print_summary(dcim_folder, local_destinations + ([USB_DEST_ROOT, USB_RAW_DEST_ROOT] if usb_expected else []),
                           backup_stats if usb_expected else local_stats, eject_attempted, eject_success)
             if backup_stats.failed:
                 update_status(state="failed", phase="usb-backup",
