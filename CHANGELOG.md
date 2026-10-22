@@ -5,6 +5,9 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Added
+- Dashboard now shows Google Photos upload percentage, current transfer speed, and estimated time remaining beside the existing copy-speed monitor. ETA labels sit in the upper-right corner of each speed card.
+
+### Added
 - Optional rclone-based Google Photos uploader for JPG/JPEG photos and supported videos, with automatic post-import uploads, a dashboard manual-sync button, separate upload status/logs, and per-file upload records in the SQLite catalog.
 - RAW media is stored under a dedicated `CameraImportsRaw` top-level archive on the Mac; JPGs and other non-RAW media remain under `CameraImports`.
 - Added a preview-first Bash migration script to move existing RAW files into the separate archive without overwriting conflicts.
