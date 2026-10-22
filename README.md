@@ -71,16 +71,17 @@ The state is cleared when no recognized camera volume is mounted, allowing the s
 
 ### 💾 Local + external backup
 
-Local storage defaults to:
+Local storage uses two top-level roots:
 
 ```text
-~/Pictures/CameraImports/
+~/Pictures/CameraImports/       # JPG/HEIC, videos, and other non-RAW media
+~/Pictures/CameraImportsRaw/    # RAW media (NEF, ARW, CR2/CR3, DNG, RAF, ORF, RW2)
 ```
 
 A camera import now runs in two stages:
 
-1. **Card → Mac SSD:** media is copied to `~/Pictures/CameraImports/` and verified.
-2. **Mac SSD → USB:** if `/Volumes/Photos` is mounted, Photo Offloader compares the local archive with `/Volumes/Photos/CameraImports/` and copies only files missing from the USB backup. Existing files are SHA-256 checked; matching files are skipped, and mismatching files are reported as conflicts rather than overwritten.
+1. **Card → Mac SSD:** non-RAW media is copied to `~/Pictures/CameraImports/`; RAW media is copied to `~/Pictures/CameraImportsRaw/`. Each file is verified using the existing safe-copy rules.
+2. **Mac SSD → USB:** if `/Volumes/Photos` is mounted, Photo Offloader mirrors both roots to `/Volumes/Photos/CameraImports/` and `/Volumes/Photos/CameraImportsRaw/`. Existing files are SHA-256 checked; matching files are skipped, and mismatching files are reported as conflicts rather than overwritten.
 
 Once the local SSD stage has succeeded, the camera card can be ejected while the USB backup continues. A USB backup failure therefore does not invalidate the verified local import; rerun the USB-only sync after reconnecting the drive.
 
@@ -131,6 +132,10 @@ Before copying, the importer calculates the total source bytes and checks every 
 
 The default safety buffer is 100 MiB and can be changed with `MIN_FREE_SPACE_BUFFER_BYTES` in the Python configuration.
 
+### Migrating existing RAW files
+
+To move RAW files already stored under `CameraImports` into the sibling `CameraImportsRaw` tree, use `./move_raw_to_separate_folder.sh` for a dry run. The script preserves relative paths and never overwrites an existing destination. Review the preview first, then run `./move_raw_to_separate_folder.sh --apply` to perform the move. It does not delete or modify JPGs or other non-RAW files.
+
 ### 📁 Archive layout
 
 Files are organized into `YYYY-MM` folders while preserving native camera subfolders:
@@ -139,10 +144,19 @@ Files are organized into `YYYY-MM` folders while preserving native camera subfol
 CameraImports/
 └── YYYY-MM/
     ├── 100NIKON/
-    │   ├── DSC_0001.NEF
-    │   └── DSC_0002.JPG
+    │   ├── Photos/
+    │   │   └── DSC_0002.JPG
+    │   └── Movies/
+    │       └── DSC_0004.MOV
     └── 101NIKON/
-        └── DSC_0003.JPG
+        └── Photos/
+            └── DSC_0003.JPG
+
+CameraImportsRaw/
+└── YYYY-MM/
+    └── 100NIKON/
+        └── Raws/
+            └── DSC_0001.NEF
 ```
 
 EXIF capture date is preferred for the month folder, followed by filesystem birth time and modification time.
@@ -334,7 +348,7 @@ It watches `/Volumes`. Do not remove the trigger-level and importer-level locks;
 ./uninstall.sh
 ```
 
-This removes the application files, runtime environment, trigger state, LaunchAgent, and logs. Imported media under `~/Pictures/CameraImports` is intentionally left untouched.
+This removes the application files, runtime environment, trigger state, LaunchAgent, and logs. Imported media under `~/Pictures/CameraImports` and `~/Pictures/CameraImportsRaw` is intentionally left untouched.
 
 ## 📝 Change tracking
 
