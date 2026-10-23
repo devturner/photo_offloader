@@ -136,6 +136,15 @@ if [[ -d "$INSTALL_DIR" ]]; then
 fi
 bootout_agent "$LABEL" "$AGENTS_DIR/$LABEL.plist"
 bootout_agent "$UI_LABEL" "$AGENTS_DIR/$UI_LABEL.plist"
+# Submitted jobs are not installed from a plist, so signal the service explicitly too.
+if exists_in_launchd "$IMPORT_LABEL"; then
+  log INFO "Sending TERM to submitted import worker $IMPORT_LABEL"
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    launchctl kill SIGTERM "$DOMAIN/$IMPORT_LABEL" 2>/dev/null || log WARN "launchctl could not signal submitted worker; checking installed processes next"
+  else
+    log INFO "DRY RUN: launchctl kill SIGTERM $DOMAIN/$IMPORT_LABEL"
+  fi
+fi
 bootout_agent "$IMPORT_LABEL" "$AGENTS_DIR/$IMPORT_LABEL.plist"
 
 # Stop any installed-script processes that were launched outside launchd.
