@@ -19,9 +19,53 @@ echo "==========================================="
 echo " Installing Photo Offloader v2.4"
 echo "==========================================="
 
-# Stop a worker submitted by an older trigger before replacing installed scripts.
-# Do not fail a fresh install if no such job is registered.
-launchctl kill SIGTERM "gui/$(id -u)/com.user.photooffloader.import" 2>/dev/null || true
+# Stop and verify any worker submitted by an older trigger before replacing
+# installed scripts. Fail closed: never overwrite code still used by a live worker.
+IMPORT_LABEL="com.user.photooffloader.import"
+DOMAIN="gui/$(id -u)"
+SHUTDOWN_WAIT_SECONDS="${PHOTO_OFFLOADER_SHUTDOWN_WAIT_SECONDS:-10}"
+if ! [[ "$SHUTDOWN_WAIT_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "Error: PHOTO_OFFLOADER_SHUTDOWN_WAIT_SECONDS must be a non-negative integer." >&2
+  exit 2
+fi
+
+import_process_running() {
+  local target
+  for target in \
+    "$INSTALL_DIR/photo_offloader_import_supervisor.sh" \
+    "$INSTALL_DIR/camera_offloader_v2.py"; do
+    if /usr/bin/pgrep -f -- "$target" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if launchctl print "$DOMAIN/$IMPORT_LABEL" >/dev/null 2>&1; then
+  echo "Stopping existing import worker before upgrading..."
+  launchctl kill SIGTERM "$DOMAIN/$IMPORT_LABEL" 2>/dev/null || true
+  # Unregister the submitted job as well as signaling its process.
+  launchctl bootout "$DOMAIN/$IMPORT_LABEL" 2>/dev/null || true
+fi
+
+shutdown_verified=0
+for ((attempt=0; attempt<=SHUTDOWN_WAIT_SECONDS; attempt++)); do
+  job_running=0
+  launchctl print "$DOMAIN/$IMPORT_LABEL" >/dev/null 2>&1 && job_running=1
+  process_running=0
+  import_process_running && process_running=1
+  if [[ "$job_running" -eq 0 && "$process_running" -eq 0 ]]; then
+    shutdown_verified=1
+    break
+  fi
+  [[ "$attempt" -lt "$SHUTDOWN_WAIT_SECONDS" ]] && sleep 1
+done
+
+if [[ "$shutdown_verified" -ne 1 ]]; then
+  echo "Error: existing import worker shutdown could not be verified after ${SHUTDOWN_WAIT_SECONDS}s." >&2
+  echo "Installed files were not replaced. Close the worker or run ./uninstall.sh --verbose, then retry." >&2
+  exit 1
+fi
 
 mkdir -p "$INSTALL_DIR" "$HOME/Library/LaunchAgents"
 

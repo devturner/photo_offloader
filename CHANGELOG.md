@@ -5,6 +5,37 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Import supervisor now removes its named `launchctl submit` job after writing terminal status, preventing a completed import worker from being relaunched under the stale label.
+- Added regression assertions that worker-job cleanup follows success/failure status persistence and disables traps before launchd cleanup.
+- Installer now waits for the submitted import job and app-owned import processes to stop before replacing installed scripts; it aborts safely if shutdown cannot be verified.
+- Uninstaller now verifies both launchd registration and installed-script processes have disappeared before removing application files or LaunchAgent plists, retaining files when cleanup is incomplete.
+- Added regression tests for installer shutdown ordering and uninstaller process verification.
+
+### Fixed
+- Fixed a duplicate `fi` in the camera trigger that caused a shell syntax error and stopped trigger processing immediately after build-provenance logging; this also caused the trigger regression tests to fail.
+
+
+### Fixed
+- Stop automatic relaunch loops by preserving handled-card state when a background worker exits without a visible success record; retry is deferred until the card is unmounted and reinserted.
+- Added regression coverage ensuring a handled mount without completion status is not relaunched on every trigger poll.
+
+
+### Fixed
+- Preserve successful handled-card state when the camera DCIM directory is briefly absent, preventing repeated successful imports during mount visibility churn.
+- Added a trigger regression test for a successful import followed by a transient missing-DCIM event.
+
+
+### Fixed
+- Prevented registered launchd import workers from causing the trigger to delete handled-card state and relaunch the same failing source on every poll.
+- Revalidated camera DCIM paths immediately before submission/launch and skip stale paths that disappeared during mount churn.
+- Enforced auto-eject-off at the importer CLI boundary by passing `--no-eject` to automatic imports unless the explicit auto-eject marker is enabled; the supervisor defaults to no-eject when its flag is omitted.
+- Added regression coverage for registered-worker retry suppression and for enforcing `--no-eject` on automatic background imports.
+
+### Fixed
+- Prevented failed camera imports from being relaunched on every trigger poll. The failed status and handled-card state are preserved until the DCIM folder disappears on unmount, allowing a fresh attempt after remount.
+- Added regression tests for failure-loop suppression and retry eligibility after unmount/remount.
+
+### Fixed
 - Run terminal-free camera imports as a separately submitted user-domain launchd job instead of relying on a `nohup` child of the short-lived volume trigger. Submission failures are logged and clear the handled-card state for retry.
 - Hardened uninstall to unload known LaunchAgents, stop installed-script processes, verify known jobs are unloaded before reporting success, and preserve imported media and the persistent catalog.
 

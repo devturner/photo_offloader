@@ -57,12 +57,21 @@ start_background_import() {
     # The unique label also prevents duplicate workers for a single user session.
     local domain="gui/$(id -u)"
     if "$LAUNCHCTL" print "$domain/$IMPORT_WORKER_LABEL" >/dev/null 2>&1; then
-        log "Import worker job is already registered; not submitting a duplicate: $IMPORT_WORKER_LABEL"
+        log "Import worker job is already registered; preserving handled state and not submitting a duplicate: $IMPORT_WORKER_LABEL"
+        return 0
+    fi
+
+    # The importer has its own eject implementation. Pass an explicit no-eject
+    # setting when the trigger's auto-eject opt-in marker is absent.
+    local no_eject="0"
+    [[ -f "$AUTO_EJECT_FILE" ]] || no_eject="1"
+    if [[ ! -d "$source_path" ]]; then
+        log "Source DCIM disappeared before worker submission; skipping launch: $source_path"
         rm -f "$STATE_FILE"
-        return 1
+        return 0
     fi
     if "$LAUNCHCTL" submit -l "$IMPORT_WORKER_LABEL" -- /bin/bash "$supervisor_script" \
-        "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" "$import_log" "$IMPORT_STATUS_FILE" \
+        "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" "$import_log" "$IMPORT_STATUS_FILE" "$no_eject" \
         >> "$import_log" 2>&1; then
         log "Submitted importer supervisor to launchd as $IMPORT_WORKER_LABEL for: $source_path"
     else
@@ -124,14 +133,36 @@ for volume in "$VOLUMES_ROOT"/NIKON* "$VOLUMES_ROOT"/SONY* "$VOLUMES_ROOT"/EOS*;
 done
 
 if [[ -z "$camera_dcim" ]]; then
-    rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
-    log "No recognized camera DCIM currently mounted."
+    # A transient /Volumes/DCIM visibility gap must not make a successfully
+    # handled card eligible for another import. Keep successful state across
+    # brief mount churn; failed/incomplete attempts can still be retried after
+    # the source is genuinely removed. This deliberately prioritizes one run
+    # per successful card session over automatic re-import after a clean success.
+    handled_source=""
+    if [[ -f "$STATE_FILE" ]]; then
+        handled_source="$(cat "$STATE_FILE" 2>/dev/null || true)"
+    fi
+    if [[ -n "$handled_source" ]] && grep -Fq "success|$handled_source|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
+        log "No recognized camera DCIM currently mounted; preserving successful handled-state through mount visibility gap: $handled_source"
+    else
+        rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
+        log "No recognized camera DCIM currently mounted; cleared incomplete handled-state."
+    fi
     exit 0
 fi
 
 # The same mounted card can cause several /Volumes events. Do not launch it
 # again until the card disappears and the state file is cleared.
 if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; then
+    # A submitted launchd worker can remain registered briefly between runs.
+    # Never erase handled-state just because launchd still knows the label:
+    # doing so makes the next periodic poll submit the same failing source again.
+    local_domain="gui/$(id -u)"
+    if "$LAUNCHCTL" print "$local_domain/$IMPORT_WORKER_LABEL" >/dev/null 2>&1; then
+        log "Import worker remains registered; preserving handled state and suppressing duplicate launch: $camera_dcim"
+        exit 0
+    fi
+
     # A state entry is written at launch time. Never eject while the importer is
     # still active; once it has exited, the completed/no-work mount can be ejected.
     if "$PGREP" -f "$IMPORTER" >/dev/null 2>&1; then
@@ -142,13 +173,24 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
         exit 0
     fi
 
-    # A background launch is considered handled only after the supervisor records
-    # success. A missing/running/failed status with no live importer means the
-    # detached child disappeared or failed to start: clear stale state and retry.
+    # A recorded failure is terminal for this mount. Do not immediately relaunch
+    # a failing/disconnected source on every poll; the no-DCIM path below clears
+    # state on unmount, allowing a fresh attempt after the card is reconnected.
+    if grep -Fq "failed|$camera_dcim|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
+        log "Previous import failed for this mount; suppressing automatic retry until the card is unmounted: $camera_dcim"
+        exit 0
+    fi
+
+    # Once a source has been submitted, do not clear its handled-state merely
+    # because a completion marker is absent. launchd may unregister the worker
+    # before a status write is visible, and clearing state here re-launches the
+    # same mounted card on every poll. Failures and incomplete attempts remain
+    # suppressed until unmount; a real unmount clears state in the no-DCIM path.
     if [[ ! -f "$TERMINAL_OUTPUT_FILE" ]] && ! grep -Fq "success|$camera_dcim|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
-        log "Background import has no successful completion record; clearing stale state for retry: $camera_dcim"
-        rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
-    else
+        log "No successful completion record for this already-handled mount; suppressing relaunch until unmount: $camera_dcim"
+        exit 0
+    fi
+
     # Suppress duplicate success/eject messages after a successful eject. A
     # failed eject is deliberately retried on the next volume poll.
     if [[ -f "$EJECT_STATE_FILE" ]] && [[ "$(cat "$EJECT_STATE_FILE")" == "$camera_dcim:ejected" ]]; then
@@ -185,7 +227,6 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
         rm -f "$EJECT_STATE_FILE"
     fi
     exit 0
-    fi
 fi
 
 # The importer has its own advisory lock. Avoid opening extra Terminal windows
@@ -199,6 +240,11 @@ fi
 # Check again immediately before launching in case the user paused after the scan.
 if [[ -f "$PAUSE_FILE" ]]; then
     log "Automatic import was paused before launch; not starting a copy."
+    exit 0
+fi
+if [[ ! -d "$camera_dcim" ]]; then
+    log "Camera DCIM disappeared before importer launch; skipping stale source: $camera_dcim"
+    rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
     exit 0
 fi
 
@@ -219,7 +265,11 @@ fi
 # Keep the import attached to the dashboard/status file by default; Terminal output is
 # optional and controlled from the dashboard. Both paths use the same importer
 # and preserve the shell-safe handling of camera volume names containing spaces.
-command="$(printf '%q ' "$PYTHON" "$IMPORTER" --source "$camera_dcim")"
+IMPORTER_EJECT_ARGS=()
+if [[ ! -f "$AUTO_EJECT_FILE" ]]; then
+    IMPORTER_EJECT_ARGS+=(--no-eject)
+fi
+command="$(printf '%q ' "$PYTHON" "$IMPORTER" --source "$camera_dcim" "${IMPORTER_EJECT_ARGS[@]}")"
 
 if [[ -f "$TERMINAL_OUTPUT_FILE" ]]; then
     if [[ "$TERMINAL_APP" == "iTerm2" ]]; then
@@ -250,7 +300,7 @@ APPLESCRIPT
             log "Launched $TERMINAL_APP importer for: $camera_dcim"
         else
             log "Failed to launch $TERMINAL_APP importer; falling back to background import."
-            nohup "$PYTHON" "$IMPORTER" --source "$camera_dcim" >> "$HOME/.camera_transfer.log" 2>&1 </dev/null &
+            nohup "$PYTHON" "$IMPORTER" --source "$camera_dcim" "${IMPORTER_EJECT_ARGS[@]}" >> "$HOME/.camera_transfer.log" 2>&1 </dev/null &
             printf '%s\n' "$camera_dcim" > "$STATE_FILE"
         fi
     fi
