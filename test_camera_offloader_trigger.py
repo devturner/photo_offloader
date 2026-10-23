@@ -40,6 +40,15 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.dashboard.write_text("# dashboard test fixture\n")
         self.python.chmod(0o755)
 
+        self.launchctl = self.install / "launchctl"
+        self.launchctl.write_text(
+            "#!/bin/bash\n"
+            + 'if [[ "$1" == "print" ]]; then exit 1; fi\n'
+            + 'if [[ "$1" == "submit" ]]; then shift 4; "$@" >> "$PHOTO_OFFLOADER_IMPORT_LOG" 2>&1 </dev/null & exit 0; fi\n'
+            + "exit 1\n"
+        )
+        self.launchctl.chmod(0o755)
+
         self.pgrep = self.install / "pgrep"
         self.pgrep.write_text("#!/bin/bash\nexit 1\n")
         self.pgrep.chmod(0o755)
@@ -89,6 +98,8 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
                 "PHOTO_OFFLOADER_TRIGGER_LOCK": str(self.lock),
                 "PHOTO_OFFLOADER_TRIGGER_SETTLE_SECONDS": "0",
                 "PHOTO_OFFLOADER_PGREP": str(self.pgrep),
+                "PHOTO_OFFLOADER_LAUNCHCTL": str(self.launchctl),
+                "PHOTO_OFFLOADER_IMPORT_LOG": str(self.root / ".camera_transfer.log"),
                 "PHOTO_OFFLOADER_DISKUTIL": str(self.diskutil),
                 "PHOTO_OFFLOADER_EJECT_STATE": str(self.install / ".eject-state"),
                 "PHOTO_OFFLOADER_IMPORT_STATUS": str(self.install / ".import-status"),
@@ -126,6 +137,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.script_capture.exists())
         self.assertIn("Terminal output disabled", self.log.read_text())
+        self.assertIn("com.user.photooffloader.import", self.log.read_text())
         self.assertEqual(self.state.read_text().strip(), str(self.dcim))
         # Terminal output changes only where output is sent, not whether import runs.
         import time
@@ -137,7 +149,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertIn("--source", args)
         self.assertIn(str(self.dcim), args)
         self.assertIn("/opt/homebrew/bin", self.background_path.read_text())
-        self.assertIn("Started detached background importer supervisor", self.log.read_text())
+        self.assertIn("Submitted importer supervisor to launchd", self.log.read_text())
         import_log = self.root / ".camera_transfer.log"
         deadline = time.monotonic() + 2
         while (
