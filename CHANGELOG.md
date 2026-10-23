@@ -5,6 +5,10 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Fixed a duplicate `fi` in the camera trigger that caused a shell syntax error and stopped trigger processing immediately after build-provenance logging; this also caused the trigger regression tests to fail.
+
+
+### Fixed
 - Stop automatic relaunch loops by preserving handled-card state when a background worker exits without a visible success record; retry is deferred until the card is unmounted and reinserted.
 - Added regression coverage ensuring a handled mount without completion status is not relaunched on every trigger poll.
 
