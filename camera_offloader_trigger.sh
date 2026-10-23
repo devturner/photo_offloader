@@ -142,11 +142,19 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
         exit 0
     fi
 
-    # A background launch is considered handled only after the supervisor records
-    # success. A missing/running/failed status with no live importer means the
-    # detached child disappeared or failed to start: clear stale state and retry.
+    # A recorded failure is terminal for this mount. Do not immediately relaunch
+    # a failing/disconnected source on every poll; the no-DCIM path below clears
+    # state on unmount, allowing a fresh attempt after the card is reconnected.
+    if grep -Fq "failed|$camera_dcim|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
+        log "Previous import failed for this mount; suppressing automatic retry until the card is unmounted: $camera_dcim"
+        exit 0
+    fi
+
+    # A background launch with no status can indicate a worker that disappeared
+    # before recording a result. Keep this recovery path, but never override an
+    # explicit failure record from the supervisor.
     if [[ ! -f "$TERMINAL_OUTPUT_FILE" ]] && ! grep -Fq "success|$camera_dcim|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
-        log "Background import has no successful completion record; clearing stale state for retry: $camera_dcim"
+        log "Background import has no completion record; clearing stale state for retry: $camera_dcim"
         rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
     else
     # Suppress duplicate success/eject messages after a successful eject. A
