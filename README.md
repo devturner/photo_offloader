@@ -360,11 +360,14 @@ It watches `/Volumes`. Do not remove the trigger-level and importer-level locks;
 
 ## 🧹 Uninstallation
 
+Preview the cleanup first, then run uninstall with detailed output:
+
 ```bash
-./uninstall.sh
+./uninstall.sh --dry-run --verbose
+./uninstall.sh --verbose
 ```
 
-This removes the application files, runtime environment, trigger state, LaunchAgent, and logs. Imported media under `~/Pictures/CameraImports` and `~/Pictures/CameraImportsRaw` is intentionally left untouched.
+Use `./uninstall.sh --help` for options. Verbose mode reports which LaunchAgents are unloaded, which installed processes are stopped, and what is removed. The script pauses new automatic imports before cleanup, checks the known trigger, menu-bar, and import-worker jobs, and returns a nonzero status if a known job remains registered. It removes the application files, runtime environment, trigger state, known LaunchAgent plists, and application logs. Imported media under `~/Pictures/CameraImports` and `~/Pictures/CameraImportsRaw` and the persistent catalog under `~/Library/Application Support/PhotoOffloaderData` are intentionally preserved.
 
 ## 📝 Change tracking
 
