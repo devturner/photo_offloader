@@ -133,8 +133,21 @@ for volume in "$VOLUMES_ROOT"/NIKON* "$VOLUMES_ROOT"/SONY* "$VOLUMES_ROOT"/EOS*;
 done
 
 if [[ -z "$camera_dcim" ]]; then
-    rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
-    log "No recognized camera DCIM currently mounted."
+    # A transient /Volumes/DCIM visibility gap must not make a successfully
+    # handled card eligible for another import. Keep successful state across
+    # brief mount churn; failed/incomplete attempts can still be retried after
+    # the source is genuinely removed. This deliberately prioritizes one run
+    # per successful card session over automatic re-import after a clean success.
+    handled_source=""
+    if [[ -f "$STATE_FILE" ]]; then
+        handled_source="$(cat "$STATE_FILE" 2>/dev/null || true)"
+    fi
+    if [[ -n "$handled_source" ]] && grep -Fq "success|$handled_source|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
+        log "No recognized camera DCIM currently mounted; preserving successful handled-state through mount visibility gap: $handled_source"
+    else
+        rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
+        log "No recognized camera DCIM currently mounted; cleared incomplete handled-state."
+    fi
     exit 0
 fi
 
