@@ -124,10 +124,21 @@ if [[ -f "$PAUSE_FILE" ]]; then
 fi
 
 camera_dcim=""
-for volume in "$VOLUMES_ROOT"/NIKON* "$VOLUMES_ROOT"/SONY* "$VOLUMES_ROOT"/EOS*; do
-    [[ -d "$volume" ]] || continue
-    if [[ -d "$volume/DCIM" ]]; then
+# Prefer known camera volume-name prefixes, but also recognize Nikon cards
+# whose volume was renamed (for example, /Volumes/superCamera). The Nikon
+# directory and marker file are camera-specific and avoid treating every drive
+# containing a generic DCIM directory as a camera card.
+for volume in "$VOLUMES_ROOT"/NIKON* "$VOLUMES_ROOT"/SONY* "$VOLUMES_ROOT"/EOS* "$VOLUMES_ROOT"/*; do
+    [[ -d "$volume" && -d "$volume/DCIM" ]] || continue
+    case "${volume##*/}" in
+        NIKON*|SONY*|EOS*)
+            camera_dcim="$volume/DCIM"
+            break
+            ;;
+    esac
+    if [[ -d "$volume/NIKON/Z_8" && -f "$volume/NIKON001.DSC" ]]; then
         camera_dcim="$volume/DCIM"
+        log "Recognized Nikon Z 8 card by card markers on renamed volume: $volume"
         break
     fi
 done
