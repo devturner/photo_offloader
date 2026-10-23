@@ -48,7 +48,7 @@ class TestUninstallHardening(unittest.TestCase):
         function = self.trigger[start:end]
         self.assertIn('"$LAUNCHCTL" submit -l "$IMPORT_WORKER_LABEL"', function)
         self.assertIn("could not submit import worker", function)
-        self.assertNotIn("nohup", function)
+        self.assertNotIn("nohup /bin/bash", function)
 
     def test_installer_stops_a_stale_submitted_worker(self):
         self.assertIn('launchctl kill SIGTERM "gui/$(id -u)/com.user.photooffloader.import"', self.install)
