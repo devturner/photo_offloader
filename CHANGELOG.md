@@ -5,6 +5,11 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Automatic detection now recognizes renamed Nikon Z 8 cards by the card-specific `NIKON/Z_8` directory and `NIKON001.DSC` marker, even when the mounted volume name does not begin with `NIKON`.
+- Added regression coverage for Nikon Z 8 detection on renamed volumes such as `/Volumes/superCamera`.
+
+
+### Fixed
 - Import supervisor now removes its named `launchctl submit` job after writing terminal status, preventing a completed import worker from being relaunched under the stale label.
 - Added regression assertions that worker-job cleanup follows success/failure status persistence and disables traps before launchd cleanup.
 - Installer now waits for the submitted import job and app-owned import processes to stop before replacing installed scripts; it aborts safely if shutdown cannot be verified.
