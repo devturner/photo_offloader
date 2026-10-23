@@ -5,6 +5,11 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Installer now waits for the submitted import job and app-owned import processes to stop before replacing installed scripts; it aborts safely if shutdown cannot be verified.
+- Uninstaller now verifies both launchd registration and installed-script processes have disappeared before removing application files or LaunchAgent plists, retaining files when cleanup is incomplete.
+- Added regression tests for installer shutdown ordering and uninstaller process verification.
+
+### Fixed
 - Fixed a duplicate `fi` in the camera trigger that caused a shell syntax error and stopped trigger processing immediately after build-provenance logging; this also caused the trigger regression tests to fail.
 
 
