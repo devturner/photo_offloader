@@ -50,7 +50,7 @@ trigger_log="$5"
 install_dir="$6"
 supervisor_log="$7"
 status_file="$8"
-supervisor_pid="$"
+supervisor_pid="$$"
 printf "running|%s|%s\\n" "$source_path" "$supervisor_pid" > "$status_file"
 printf "[%s] Background supervisor started (pid %s) for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$supervisor_pid" "$source_path" >> "$trigger_log"
 printf "[%s] Background supervisor started (pid %s) for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$supervisor_pid" "$source_path" >> "$supervisor_log"
@@ -79,7 +79,7 @@ fi
     # no visible importer progress until a terminal is opened.
     printf '%s\n' "$source_path" > "$STATE_FILE"
     nohup /bin/bash -c "$supervisor" photo-offloader-import-supervisor \
-        "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" "$import_log" \
+        "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" "$import_log" "$IMPORT_STATUS_FILE" \
         >> "$import_log" 2>&1 </dev/null &
     local pid=$!
     log "Started detached background importer supervisor (pid $pid) for: $source_path"
