@@ -84,7 +84,7 @@ find_pids() {
   escaped="$(escape_ere "$target")"
   /usr/bin/pgrep -f -- "$escaped" 2>/dev/null | while IFS= read -r pid; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    [[ "$pid" == "$" || "$pid" == "$PPID" ]] && continue
+    [[ "$pid" == "$" + "$" || "$pid" == "$PPID" ]] && continue
     # Confirm the exact target occurs as a full argument, not merely as a substring.
     local command_line
     command_line="$(/bin/ps -p "$pid" -o command= 2>/dev/null || true)"
