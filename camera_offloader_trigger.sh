@@ -181,13 +181,16 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
         exit 0
     fi
 
-    # A background launch with no status can indicate a worker that disappeared
-    # before recording a result. Keep this recovery path, but never override an
-    # explicit failure record from the supervisor.
+    # Once a source has been submitted, do not clear its handled-state merely
+    # because a completion marker is absent. launchd may unregister the worker
+    # before a status write is visible, and clearing state here re-launches the
+    # same mounted card on every poll. Failures and incomplete attempts remain
+    # suppressed until unmount; a real unmount clears state in the no-DCIM path.
     if [[ ! -f "$TERMINAL_OUTPUT_FILE" ]] && ! grep -Fq "success|$camera_dcim|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
-        log "Background import has no completion record; clearing stale state for retry: $camera_dcim"
-        rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
-    else
+        log "No successful completion record for this already-handled mount; suppressing relaunch until unmount: $camera_dcim"
+        exit 0
+    fi
+
     # Suppress duplicate success/eject messages after a successful eject. A
     # failed eject is deliberately retried on the next volume poll.
     if [[ -f "$EJECT_STATE_FILE" ]] && [[ "$(cat "$EJECT_STATE_FILE")" == "$camera_dcim:ejected" ]]; then
