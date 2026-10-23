@@ -927,7 +927,18 @@ class Dashboard:
         elif PAUSE_FILE.exists():
             self.dashboard_state_var.set("AUTOMATIC IMPORT PAUSED")
         else:
-            self.dashboard_state_var.set("READY  •  WAITING FOR CAMERA")
+            mounted_camera = None
+            for pattern in ("NIKON*", "SONY*", "EOS*"):
+                for volume in Path("/Volumes").glob(pattern):
+                    if (volume / "DCIM").is_dir():
+                        mounted_camera = volume
+                        break
+                if mounted_camera is not None:
+                    break
+            if mounted_camera is not None:
+                self.dashboard_state_var.set("CAMERA CARD MOUNTED  •  READY TO BROWSE")
+            else:
+                self.dashboard_state_var.set("READY  •  WAITING FOR CAMERA")
         phase = str(status.get("phase", "") or "")
         source = str(status.get("source", "") or "")
         if state == "copying" and phase != "catalog-update":
