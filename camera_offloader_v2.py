@@ -414,6 +414,56 @@ def save_card_manifest(
         return False
 
 
+def reconcile_card_manifest(
+    dcim_folder: Path, discovered: Dict[str, List[Path]],
+) -> Dict[str, int]:
+    """Compare the live card inventory with the prior manifest without trusting it to skip copies."""
+    now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    payload = load_card_manifest_payload(dcim_folder)
+    manifest = payload.get("files", {})
+    if not isinstance(manifest, dict):
+        manifest = {}
+    prior_paths = set(manifest)
+    current_paths = set()
+    new_files = changed_files = unchanged_files = 0
+    for category_paths in discovered.values():
+        for source in category_paths:
+            try:
+                relative = source.resolve().relative_to(dcim_folder.resolve()).as_posix()
+                fingerprint = file_fingerprint(source)
+            except (OSError, ValueError):
+                continue
+            current_paths.add(relative)
+            previous = manifest.get(relative)
+            if not isinstance(previous, dict):
+                new_files += 1
+                entry = {}
+            elif previous.get("size") != fingerprint.size or previous.get("mtime_ns") != fingerprint.mtime_ns:
+                changed_files += 1
+                entry = dict(previous)
+                # Invalidate stale hashes; a changed file must be hashed and verified again.
+                entry.pop("sha256", None)
+            else:
+                unchanged_files += 1
+                entry = dict(previous)
+            entry.update({"size": fingerprint.size, "mtime_ns": fingerprint.mtime_ns,
+                          "last_seen": now})
+            manifest[relative] = entry
+    counts = {
+        "new_files": new_files,
+        "changed_files": changed_files,
+        "unchanged_manifest_files": unchanged_files,
+        "missing_from_card": len(prior_paths - current_paths),
+    }
+    history = payload.get("history", {})
+    history = dict(history) if isinstance(history, dict) else {}
+    history.update(counts)
+    history["last_seen"] = now
+    # This is an inventory observation, not a completed import.
+    save_card_manifest(dcim_folder, manifest, history)
+    return counts
+
+
 def update_card_scan_history(
     dcim_folder: Path, files: Dict[str, List[Path]], status: str,
     verified_imported: int = 0, pending_or_failed: int = 0,
@@ -1695,6 +1745,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             local_stats = ImportStats(found=total_found, source_bytes=source_bytes)
             logger.info("Scan complete: %d files (%d JPG, %d RAW, %d VIDEO)",
                         total_found, len(files["JPG"]), len(files["RAW"]), len(files["VIDEO"]))
+            # Reconcile the live card inventory with the previous manifest. The
+            # manifest is diagnostic/cache data only; copy decisions still verify destinations.
+            reconciliation = reconcile_card_manifest(dcim_folder, files)
+            logger.info("Card manifest reconciliation: %s", reconciliation)
             # Record discovery immediately, but do not advance successful timestamps
             # until destination copies have been verified.
             update_card_scan_history(dcim_folder, files, "scanning", 0, total_found)
