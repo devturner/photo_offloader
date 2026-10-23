@@ -5,6 +5,7 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Added
+- Added an Auto-Eject On/Off dashboard control; auto-eject is opt-in and defaults off so already-handled cards remain mounted for Finder access unless explicitly enabled.
 - Replaced the Light/Dark dropdown with a compact sun/moon appearance toggle with a sliding active-state thumb and mouse/keyboard support. The selected theme is saved under `ui.theme` in `PhotoOffloaderData/preferences.json` and restored on next launch without overwriting other preferences.
 
 
@@ -13,7 +14,7 @@ All notable changes to Photo Offloader are documented here.
 - Reset copy and Google Photos speed timelines and rolling throughput values when a transfer is no longer active, so the next run starts with a clean chart.
 
 ### Fixed
-- Already-handled camera mounts now wait until the importer is no longer running, then request card ejection once; ejection success/failure is logged, successful ejections suppress repeated poll messages, and failed ejections are retried. Added trigger regression tests for successful/idempotent and failed/retried ejection.
+- Already-handled camera mounts now honor the Auto-Eject setting; with the default-off setting they remain mounted and repeated polling logs are suppressed. When enabled, the trigger waits until the importer is no longer running, then request card ejection once; ejection success/failure is logged, successful ejections suppress repeated poll messages, and failed ejections are retried. Added trigger regression tests for successful/idempotent and failed/retried ejection.
 - Made terminal-free automatic imports run under a detached supervisor, set a predictable launchd-safe PATH for Homebrew media tools, set the importer's working directory, and ensure failed imports clear their handled-card state so they can be retried.
 - Added trigger regression coverage for detached background imports and the launchd-safe PATH.
 
