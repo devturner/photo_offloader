@@ -187,6 +187,38 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
             time.sleep(0.02)
         self.assertTrue(self.background_args.exists(), "stale mount state must not suppress a retry")
 
+    def test_failed_background_import_is_not_retried_until_unmount(self):
+        (self.install / ".terminal-output-enabled").unlink()
+        self.state.write_text(str(self.dcim) + "\n")
+        (self.install / ".import-status").write_text(f"failed|{self.dcim}|1\n")
+
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.background_args.exists(), "a recorded failure must suppress immediate relaunch")
+        self.assertTrue(self.state.exists(), "failed mount state must remain until unmount")
+        self.assertIn("suppressing automatic retry until the card is unmounted", self.log.read_text())
+
+    def test_failed_mount_can_retry_after_unmount_and_remount(self):
+        (self.install / ".terminal-output-enabled").unlink()
+        self.state.write_text(str(self.dcim) + "\n")
+        (self.install / ".import-status").write_text(f"failed|{self.dcim}|1\n")
+        self.dcim.rmdir()
+        self.card.rmdir()
+
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.state.exists(), "unmount should clear handled state")
+
+        self.dcim.mkdir(parents=True)
+        (self.install / ".import-status").unlink()
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        import time
+        deadline = time.monotonic() + 2
+        while not self.background_args.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(self.background_args.exists(), "remounted card should be eligible for a fresh import")
+
     def test_terminal_can_be_enabled_by_dashboard_toggle(self):
         (self.install / ".terminal-output-enabled").touch()
         result = self.run_trigger()
