@@ -22,6 +22,9 @@ OSASCRIPT="${PHOTO_OFFLOADER_OSASCRIPT:-/usr/bin/osascript}"
 TERMINAL_APP="${PHOTO_OFFLOADER_TERMINAL_APP:-iTerm2}"
 TERMINAL_OUTPUT_FILE="${PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE:-$INSTALL_DIR/.terminal-output-enabled}"
 VOLUMES_ROOT="${PHOTO_OFFLOADER_VOLUMES_ROOT:-/Volumes}"
+DISKUTIL="${PHOTO_OFFLOADER_DISKUTIL:-/usr/sbin/diskutil}"
+EJECT_STATE_FILE="${PHOTO_OFFLOADER_EJECT_STATE:-$INSTALL_DIR/.last_camera_eject_attempt}"
+AUTO_EJECT_FILE="${PHOTO_OFFLOADER_AUTO_EJECT_FILE:-$INSTALL_DIR/.auto-eject-enabled}"
 # launchd does not load interactive shell startup files. Keep common Homebrew
 # paths available to ExifTool, ffmpeg, and other optional media helpers.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
@@ -119,7 +122,7 @@ for volume in "$VOLUMES_ROOT"/NIKON* "$VOLUMES_ROOT"/SONY* "$VOLUMES_ROOT"/EOS*;
 done
 
 if [[ -z "$camera_dcim" ]]; then
-    rm -f "$STATE_FILE"
+    rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
     log "No recognized camera DCIM currently mounted."
     exit 0
 fi
@@ -127,7 +130,51 @@ fi
 # The same mounted card can cause several /Volumes events. Do not launch it
 # again until the card disappears and the state file is cleared.
 if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; then
-    log "Camera source already handled for this mount: $camera_dcim"
+    # A state entry is written at launch time. Never eject while the importer is
+    # still active; once it has exited, the completed/no-work mount can be ejected.
+    if "$PGREP" -f "$IMPORTER" >/dev/null 2>&1; then
+        if [[ ! -f "$EJECT_STATE_FILE" ]] || [[ "$(cat "$EJECT_STATE_FILE")" != "$camera_dcim:running" ]]; then
+            log "Camera already handled for this mount; importer is still running, keeping card mounted: $camera_dcim"
+            printf '%s\n' "$camera_dcim:running" > "$EJECT_STATE_FILE"
+        fi
+        exit 0
+    fi
+
+    # Suppress duplicate success/eject messages after a successful eject. A
+    # failed eject is deliberately retried on the next volume poll.
+    if [[ -f "$EJECT_STATE_FILE" ]] && [[ "$(cat "$EJECT_STATE_FILE")" == "$camera_dcim:ejected" ]]; then
+        exit 0
+    fi
+
+    # Only the detached supervisor records this explicit success line. Terminal
+    # launches perform their own success-gated ejection inside the importer.
+    # Auto-eject is opt-in. When disabled, leave the card mounted without
+    # requiring an import-success marker; that marker only gates actual ejection.
+    if [[ ! -f "$AUTO_EJECT_FILE" ]]; then
+        if [[ ! -f "$EJECT_STATE_FILE" ]] || [[ "$(cat "$EJECT_STATE_FILE")" != "$camera_dcim:manual" ]]; then
+            log "Camera source already handled for this mount; auto-eject is disabled, leaving card mounted for Finder access: $camera_dcim"
+            printf '%s\n' "$camera_dcim:manual" > "$EJECT_STATE_FILE"
+        fi
+        exit 0
+    fi
+
+    if ! grep -Fq "Background importer exited successfully for: $camera_dcim" "$LOG"; then
+        if [[ ! -f "$EJECT_STATE_FILE" ]] || [[ "$(cat "$EJECT_STATE_FILE")" != "$camera_dcim:unconfirmed" ]]; then
+            log "Auto-eject is enabled, but no successful completion was recorded; leaving card mounted: $camera_dcim"
+            printf '%s\n' "$camera_dcim:unconfirmed" > "$EJECT_STATE_FILE"
+        fi
+        exit 0
+    fi
+
+    volume_path="${camera_dcim%/DCIM}"
+    log "Camera source already handled for this mount; no importer is running. Requesting safe ejection: $volume_path"
+    if "$DISKUTIL" eject "$volume_path" >> "$LOG" 2>&1; then
+        printf '%s\n' "$camera_dcim:ejected" > "$EJECT_STATE_FILE"
+        log "Card ejected successfully: $volume_path"
+    else
+        log "Card ejection failed; card remains mounted and will be retried: $volume_path"
+        rm -f "$EJECT_STATE_FILE"
+    fi
     exit 0
 fi
 

@@ -84,6 +84,76 @@ class TestCameraOffloader(unittest.TestCase):
         files["VIDEO"].write_bytes(b"video")
         return files
 
+    def test_card_manifest_records_scan_history_and_preserves_file_hashes(self):
+        media = self.media()
+        manifest = {"100NIKON/photo.jpg": {"size": 3, "mtime_ns": media["JPG"].stat().st_mtime_ns,
+                                             "sha256": "verified-hash"}}
+        self.assertTrue(app.save_card_manifest(self.dcim, manifest, {"prior": "kept"}))
+
+        self.assertTrue(app.update_card_scan_history(self.dcim, {"JPG": [media["JPG"]],
+                                                                  "RAW": [media["RAW"]],
+                                                                  "VIDEO": [media["VIDEO"]]},
+                                                     "complete", 3, 0))
+        payload = app.load_card_manifest_payload(self.dcim)
+        self.assertEqual(payload["files"]["100NIKON/photo.jpg"]["sha256"], "verified-hash")
+        history = payload["history"]
+        self.assertEqual(history["last_scan_status"], "complete")
+        self.assertEqual(history["files_discovered"], 3)
+        self.assertEqual(history["files_verified_imported"], 3)
+        self.assertEqual(history["pending_or_failed"], 0)
+        self.assertIn("last_seen", history)
+        self.assertIn("last_scan_completed", history)
+        self.assertIn("last_successful_import", history)
+
+    def test_incomplete_card_scan_does_not_advance_success_timestamps(self):
+        media = self.media()
+        prior = {"last_scan_completed": "old-scan", "last_successful_import": "old-import"}
+        self.assertTrue(app.save_card_manifest(self.dcim, {}, prior))
+        self.assertTrue(app.update_card_scan_history(self.dcim, {"JPG": [media["JPG"]]},
+                                                     "incomplete", 0, 1))
+        history = app.load_card_manifest_payload(self.dcim)["history"]
+        self.assertEqual(history["last_scan_completed"], "old-scan")
+        self.assertEqual(history["last_successful_import"], "old-import")
+        self.assertEqual(history["last_scan_status"], "incomplete")
+        self.assertEqual(history["pending_or_failed"], 1)
+
+    def test_reconcile_card_manifest_detects_new_changed_and_missing_files(self):
+        media = self.media()
+        old_only = "100NIKON/removed.jpg"
+        unchanged = media["JPG"]
+        changed = media["RAW"]
+        manifest = {
+            "100NIKON/photo.jpg": {"size": unchanged.stat().st_size,
+                                   "mtime_ns": unchanged.stat().st_mtime_ns,
+                                   "sha256": "keep-this-hash"},
+            "100NIKON/photo.nef": {"size": 999, "mtime_ns": 1, "sha256": "stale-hash"},
+            old_only: {"size": 1, "mtime_ns": 1, "sha256": "old-hash"},
+        }
+        self.assertTrue(app.save_card_manifest(self.dcim, manifest, {}))
+        counts = app.reconcile_card_manifest(self.dcim, {
+            "JPG": [unchanged], "RAW": [changed], "VIDEO": [media["VIDEO"]],
+        })
+        self.assertEqual(counts, {
+            "new_files": 1, "changed_files": 1,
+            "unchanged_manifest_files": 1, "missing_from_card": 1,
+        })
+        payload = app.load_card_manifest_payload(self.dcim)
+        self.assertEqual(payload["files"]["100NIKON/photo.jpg"]["sha256"], "keep-this-hash")
+        self.assertNotIn("sha256", payload["files"]["100NIKON/photo.nef"])
+        self.assertEqual(payload["history"]["new_files"], 1)
+        self.assertEqual(payload["history"]["missing_from_card"], 1)
+
+    def test_reconcile_card_manifest_does_not_mark_scan_successful(self):
+        media = self.media()
+        self.assertTrue(app.save_card_manifest(self.dcim, {}, {
+            "last_scan_completed": "previous-scan",
+            "last_successful_import": "previous-import",
+        }))
+        app.reconcile_card_manifest(self.dcim, {"JPG": [media["JPG"]]})
+        history = app.load_card_manifest_payload(self.dcim)["history"]
+        self.assertEqual(history["last_scan_completed"], "previous-scan")
+        self.assertEqual(history["last_successful_import"], "previous-import")
+
     def test_raw_media_uses_separate_top_level_archive(self):
         self.assertEqual(app.local_root_for_category("RAW"), app.LOCAL_RAW_DEST_ROOT)
         self.assertEqual(app.local_root_for_category("JPG"), app.LOCAL_DEST_ROOT)

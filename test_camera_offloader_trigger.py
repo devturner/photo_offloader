@@ -41,6 +41,15 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.pgrep.write_text("#!/bin/bash\nexit 1\n")
         self.pgrep.chmod(0o755)
 
+        self.diskutil = self.install / "diskutil"
+        self.eject_capture = self.root / "eject-args.txt"
+        self.diskutil.write_text(
+            "#!/bin/bash\\n"
+            + f"printf '%s\\n' \"$@\" >> {self.eject_capture!s}\\n"
+            + "exit ${PHOTO_OFFLOADER_TEST_EJECT_STATUS:-0}\\n"
+        )
+        self.diskutil.chmod(0o755)
+
         self.osascript = self.install / "osascript"
         self.command_capture = self.root / "osascript-command.txt"
         self.script_capture = self.root / "osascript-script.txt"
@@ -77,6 +86,8 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
                 "PHOTO_OFFLOADER_TRIGGER_LOCK": str(self.lock),
                 "PHOTO_OFFLOADER_TRIGGER_SETTLE_SECONDS": "0",
                 "PHOTO_OFFLOADER_PGREP": str(self.pgrep),
+                "PHOTO_OFFLOADER_DISKUTIL": str(self.diskutil),
+                "PHOTO_OFFLOADER_EJECT_STATE": str(self.install / ".eject-state"),
                 "PHOTO_OFFLOADER_OSASCRIPT": str(self.osascript),
                 "PHOTO_OFFLOADER_VOLUMES_ROOT": str(self.volumes),
                 "PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE": str(self.install / ".terminal-output-enabled"),
@@ -169,6 +180,13 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertEqual(self.state.read_text().strip(), str(self.dcim))
         self.assertIn("already handled for this mount", self.log.read_text())
         self.assertNotEqual(first_command, "")
+
+    def test_auto_eject_is_disabled_by_default_for_already_handled_card(self):
+        self.assertEqual(self.run_trigger().returncode, 0)
+        self.assertEqual(self.run_trigger().returncode, 0)
+        self.assertFalse(self.eject_capture.exists())
+        self.assertIn("auto-eject is disabled", self.log.read_text())
+        self.assertIn("leaving card mounted for Finder access", self.log.read_text())
 
     def test_unmount_clears_state_and_allows_remount(self):
         self.assertEqual(self.run_trigger().returncode, 0)
