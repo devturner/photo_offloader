@@ -21,6 +21,7 @@ INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 STATUS_FILE = Path(os.environ.get("PHOTO_OFFLOADER_STATUS_FILE", str(INSTALL_DIR / "status.json")))
 PAUSE_FILE = Path(os.environ.get("PHOTO_OFFLOADER_PAUSE_FILE", str(INSTALL_DIR / ".paused")))
 TERMINAL_OUTPUT_FILE = INSTALL_DIR / ".terminal-output-enabled"
+AUTO_EJECT_FILE = INSTALL_DIR / ".auto-eject-enabled"
 BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
 IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
 GOOGLE_PHOTOS_SCRIPT = INSTALL_DIR / "google_photos_sync.py"
@@ -185,6 +186,10 @@ class Dashboard:
             quick_actions, text=self.terminal_output_label(), command=self.toggle_terminal_output
         )
         self.terminal_output_button.pack(side="left")
+        self.auto_eject_button = ttk.Button(
+            quick_actions, text=self.auto_eject_label(), command=self.toggle_auto_eject
+        )
+        self.auto_eject_button.pack(side="left", padx=(7, 0))
 
         metrics = ttk.Frame(outer)
         metrics.pack(fill="x", pady=(0, 14))
@@ -510,6 +515,25 @@ class Dashboard:
             self.terminal_output_button.configure(text=self.terminal_output_label())
         except OSError as exc:
             self.message_var.set(f"Could not change terminal output setting: {exc}")
+
+    @staticmethod
+    def auto_eject_label() -> str:
+        return ("Auto-Eject: On" if AUTO_EJECT_FILE.exists()
+                else "Auto-Eject: Off")
+
+    def toggle_auto_eject(self) -> None:
+        """Opt in to ejecting already-handled camera cards; default is off."""
+        try:
+            INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+            if AUTO_EJECT_FILE.exists():
+                AUTO_EJECT_FILE.unlink()
+                self.message_var.set("Auto-eject disabled. Handled camera cards will stay mounted for Finder access.")
+            else:
+                AUTO_EJECT_FILE.touch()
+                self.message_var.set("Auto-eject enabled. Already-handled cards may be ejected automatically.")
+            self.auto_eject_button.configure(text=self.auto_eject_label())
+        except OSError as exc:
+            self.message_var.set(f"Could not change auto-eject setting: {exc}")
 
     def trigger_status_summary(self) -> str:
         try:
