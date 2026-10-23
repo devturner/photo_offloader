@@ -182,7 +182,13 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertNotEqual(first_command, "")
 
     def test_already_handled_card_is_ejected_once_when_importer_is_not_running(self):
+        (self.install / ".terminal-output-enabled").unlink()
         self.assertEqual(self.run_trigger().returncode, 0)
+        import time
+        deadline = time.monotonic() + 2
+        while (not self.log.exists() or "Background importer exited successfully" not in self.log.read_text()) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertIn("Background importer exited successfully", self.log.read_text())
         self.assertFalse(self.eject_capture.exists())
 
         self.assertEqual(self.run_trigger().returncode, 0)
@@ -197,7 +203,13 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertEqual(self.log.read_text().count("Card ejected successfully"), before)
 
     def test_failed_eject_is_logged_and_retried(self):
+        (self.install / ".terminal-output-enabled").unlink()
         self.assertEqual(self.run_trigger().returncode, 0)
+        import time
+        deadline = time.monotonic() + 2
+        while (not self.log.exists() or "Background importer exited successfully" not in self.log.read_text()) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertIn("Background importer exited successfully", self.log.read_text())
         self.assertEqual(self.run_trigger(PHOTO_OFFLOADER_TEST_EJECT_STATUS="1").returncode, 0)
         self.assertIn("Card ejection failed", self.log.read_text())
         self.assertEqual(self.run_trigger().returncode, 0)
