@@ -5,6 +5,11 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Preserve successful handled-card state when the camera DCIM directory is briefly absent, preventing repeated successful imports during mount visibility churn.
+- Added a trigger regression test for a successful import followed by a transient missing-DCIM event.
+
+
+### Fixed
 - Prevented registered launchd import workers from causing the trigger to delete handled-card state and relaunch the same failing source on every poll.
 - Revalidated camera DCIM paths immediately before submission/launch and skip stale paths that disappeared during mount churn.
 - Enforced auto-eject-off at the importer CLI boundary by passing `--no-eject` to automatic imports unless the explicit auto-eject marker is enabled; the supervisor defaults to no-eject when its flag is omitted.
