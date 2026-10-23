@@ -74,12 +74,21 @@ bootout_agent() {
     log DEBUG "LaunchAgent $label is not loaded"
   fi
 }
-# Find only processes whose command line contains an exact installed script path.
+# Match only the exact installed script path as a command-line argument.
+# pgrep -f uses a regex, so escape regex metacharacters in the path first.
+escape_ere() {
+  printf '%s' "$1" | /usr/bin/sed 's/[][(){}.^$*+?|\\]/\\&/g'
+}
 find_pids() {
-  local target="$1"
-  /usr/bin/pgrep -f -- "$target" 2>/dev/null | while IFS= read -r pid; do
+  local target="$1" escaped
+  escaped="$(escape_ere "$target")"
+  /usr/bin/pgrep -f -- "$escaped" 2>/dev/null | while IFS= read -r pid; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
+    [[ "$pid" == "$" || "$pid" == "$PPID" ]] && continue
+    # Confirm the exact target occurs as a full argument, not merely as a substring.
+    local command_line
+    command_line="$(/bin/ps -p "$pid" -o command= 2>/dev/null || true)"
+    [[ " $command_line " == *" $target "* ]] || continue
     printf '%s\n' "$pid"
   done
 }
