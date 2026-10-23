@@ -4,9 +4,9 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
-### Fixed
-- Automatic detection now recognizes renamed Nikon Z 8 cards by the card-specific `NIKON/Z_8` directory and `NIKON001.DSC` marker, even when the mounted volume name does not begin with `NIKON`.
-- Added regression coverage for Nikon Z 8 detection on renamed volumes such as `/Volumes/superCamera`.
+### Changed
+- Automatic import detection now accepts any mounted volume containing a top-level `DCIM` directory, regardless of volume name or camera manufacturer.
+- Added regression coverage for manufacturer-independent DCIM detection.
 
 
 ### Fixed
