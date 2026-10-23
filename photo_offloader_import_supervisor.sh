@@ -3,6 +3,7 @@
 set -u
 python="$1"; importer="$2"; source_path="$3"; state_file="$4"
 trigger_log="$5"; install_dir="$6"; supervisor_log="$7"; status_file="$8"
+no_eject="${9:-1}"
 supervisor_pid="$$"; phase="initializing"
 log_both() {
     local message="[$(/bin/date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -44,7 +45,19 @@ if ! cd "$install_dir"; then
 fi
 phase="python-launch"
 log_both "Launching importer with Python: $python; importer: $importer"
-if "$python" "$importer" --source "$source_path"; then
+if [[ ! -d "$source_path" ]]; then
+    log_both "Source DCIM disappeared before importer launch; refusing stale-path import: $source_path"
+    write_status "failed|$source_path|source-missing"
+    phase="source-missing"
+    exit 0
+fi
+if [[ "$no_eject" == "1" ]]; then
+    log_both "Automatic eject is disabled; passing --no-eject to importer."
+    importer_args=(--source "$source_path" --no-eject)
+else
+    importer_args=(--source "$source_path")
+fi
+if "$python" "$importer" "${importer_args[@]}"; then
     phase="success-status"
     log_both "Background importer exited successfully for: $source_path"
     write_status "success|$source_path|$supervisor_pid"
