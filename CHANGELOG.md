@@ -4,6 +4,12 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- Added explicit background-supervisor start, working-directory failure, and importer exit diagnostics to both the trigger log and importer log, making terminal-free launch failures distinguishable from successful imports.
+
+### Added
+- Added regression coverage requiring the detached supervisor to record its startup in both logs before importer processing.
+
 ### Added
 - Added live card-inventory reconciliation against the existing manifest, reporting new, changed, unchanged, and no-longer-present files. Changed-file hashes are invalidated so they must be re-established; inventory observations do not advance successful import timestamps.
 
