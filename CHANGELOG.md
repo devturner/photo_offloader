@@ -5,6 +5,13 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Run terminal-free camera imports as a separately submitted user-domain launchd job instead of relying on a `nohup` child of the short-lived volume trigger. Submission failures are logged and clear the handled-card state for retry.
+- Hardened uninstall to unload known LaunchAgents, stop installed-script processes, verify known jobs are unloaded before reporting success, and preserve imported media and the persistent catalog.
+
+### Added
+- Added `./uninstall.sh --verbose` diagnostics and a `--dry-run` preview, plus usage help.
+
+### Fixed
 - Replaced the embedded `bash -c` background-import supervisor with an installed standalone supervisor script. It records lifecycle phases, atomically persists status, logs unexpected exits, and clears stale mount state on failure.
 - Corrected the stale-state regression fixture to write an actual newline, so the test exercises the state-file format produced by the trigger.
 
