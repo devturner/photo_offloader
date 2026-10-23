@@ -1,0 +1,1134 @@
+#!/usr/bin/env python3
+"""Small native Tk dashboard for Photo Offloader progress."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import time
+import tkinter as tk
+from collections import deque
+from datetime import datetime
+from pathlib import Path
+from tkinter import ttk
+from typing import Any, Dict
+
+from google_photos_sync import parse_rclone_stats_line
+
+INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
+STATUS_FILE = Path(os.environ.get("PHOTO_OFFLOADER_STATUS_FILE", str(INSTALL_DIR / "status.json")))
+PAUSE_FILE = Path(os.environ.get("PHOTO_OFFLOADER_PAUSE_FILE", str(INSTALL_DIR / ".paused")))
+TERMINAL_OUTPUT_FILE = INSTALL_DIR / ".terminal-output-enabled"
+AUTO_EJECT_FILE = INSTALL_DIR / ".auto-eject-enabled"
+BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
+IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
+GOOGLE_PHOTOS_SCRIPT = INSTALL_DIR / "google_photos_sync.py"
+GOOGLE_PHOTOS_STATUS = INSTALL_DIR / "google_photos_status.json"
+GOOGLE_PHOTOS_LOG = INSTALL_DIR / "google_photos_sync.log"
+PREFERENCES_FILE = Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "preferences.json"
+PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
+USB_VOLUME = Path("/Volumes/Photos")
+LOCAL_ARCHIVES = (Path.home() / "Pictures" / "CameraImports", Path.home() / "Pictures" / "CameraImportsRaw")
+USB_ARCHIVES = (USB_VOLUME / "CameraImports",)
+CATALOG_DB = Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "catalog.sqlite3"
+TRIGGER_LOG = Path.home() / ".camera_transfer_trigger.log"
+IMPORT_LOG = Path.home() / ".camera_transfer.log"
+
+
+def format_bytes(value: float) -> str:
+    amount = max(float(value), 0.0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if amount < 1024 or unit == "TB":
+            return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
+        amount /= 1024
+    return f"{amount:.1f} TB"
+
+
+def parse_display_bytes(value: str) -> float:
+    """Convert rclone's human-readable byte totals into bytes for graph sampling."""
+    match = re.fullmatch(r"\s*([\d.]+)\s*(B|KB|KiB|MB|MiB|GB|GiB|TB|TiB)\s*", value, re.IGNORECASE)
+    if not match:
+        return 0.0
+    amount = float(match.group(1))
+    unit = match.group(2).upper()
+    exponent = {"B": 0, "KB": 1, "KIB": 1, "MB": 2, "MIB": 2,
+                "GB": 3, "GIB": 3, "TB": 4, "TIB": 4}[unit]
+    return amount * (1024 ** exponent)
+
+
+def format_duration(value: float) -> str:
+    seconds = max(int(value or 0), 0)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
+def format_clock(value: float) -> str:
+    seconds = max(int(value or 0), 0)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def read_status() -> Dict[str, Any]:
+    try:
+        with STATUS_FILE.open(encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+class Dashboard:
+    def __init__(self) -> None:
+        self.root = tk.Tk()
+        self.root.title("Photo Offloader")
+        # Leave enough vertical space for the live graph and both action buttons.
+        # The previous 610x600 default clipped the bottom controls on macOS.
+        self.root.geometry("1120x960")
+        self.root.minsize(900, 800)
+        self.preferences = self.load_preferences()
+        self.theme_var = tk.StringVar(
+            value=str(self.preferences.get("ui", {}).get("theme", "light")).lower()
+            if isinstance(self.preferences.get("ui", {}), dict) else "light"
+        )
+        if self.theme_var.get() not in ("light", "dark"):
+            self.theme_var.set("light")
+        self.style = ttk.Style(self.root)
+        try:
+            self.style.theme_use("clam")
+        except tk.TclError:
+            pass
+        self.apply_theme()
+
+        outer = ttk.Frame(self.root, padding=22)
+        outer.pack(fill="both", expand=True)
+
+        header = ttk.Frame(outer)
+        header.pack(fill="x", pady=(0, 14))
+        header_copy = ttk.Frame(header)
+        header_copy.pack(side="left", fill="x", expand=True)
+        ttk.Label(header_copy, text="Photo Offloader", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header_copy, text="PHOTO WORKFLOW  /  LOCAL ARCHIVE  /  BACKUP  /  CLOUD",
+            style="Subtitle.TLabel"
+        ).pack(anchor="w", pady=(3, 0))
+        self.dashboard_state_var = tk.StringVar(value="READY  •  WAITING FOR CAMERA")
+        ttk.Label(header, textvariable=self.dashboard_state_var, style="Status.TLabel").pack(
+            side="right", anchor="center", padx=(12, 0)
+        )
+        theme_picker = ttk.Frame(header)
+        theme_picker.pack(side="right", anchor="center", padx=(0, 12))
+        ttk.Label(theme_picker, text="APPEARANCE", style="Subtitle.TLabel").pack(anchor="w")
+        self.theme_toggle = tk.Canvas(
+            theme_picker, width=88, height=36, bg=self.colors["background"],
+            highlightthickness=1, highlightbackground=self.colors["border"],
+            highlightcolor=self.colors["accent"], takefocus=True, cursor="hand2"
+        )
+        self.theme_toggle.pack(anchor="e", pady=(3, 0))
+        self.theme_toggle.bind("<Button-1>", self.toggle_theme)
+        self.theme_toggle.bind("<space>", self.toggle_theme)
+        self.theme_toggle.bind("<Return>", self.toggle_theme)
+        self.draw_theme_toggle()
+
+        # Shared state and metrics for the independent transfer cards.
+        self.speed_var = tk.StringVar(value="—")
+        self.eta_var = tk.StringVar(value="ETA —")
+        self.copy_title_var = tk.StringVar(value="Import to HD")
+        self.copy_percent_var = tk.DoubleVar(value=0.0)
+        self.copy_progress_var = tk.StringVar(value="Waiting for a camera card")
+        self.copy_elapsed_var = tk.StringVar(value="Elapsed 00:00:00")
+        self.copy_throughput_detail_var = tk.StringVar(value="Average — • Peak —")
+        self.upload_speed_var = tk.StringVar(value="—")
+        self.upload_eta_var = tk.StringVar(value="ETA —")
+        self.upload_progress_var = tk.StringVar(value="Waiting for upload")
+        self.upload_percent_var = tk.DoubleVar(value=0.0)
+        self.upload_elapsed_var = tk.StringVar(value="Elapsed 00:00:00")
+        self.upload_throughput_detail_var = tk.StringVar(value="Average — • Peak —")
+        self.progress_var = tk.StringVar(value="Waiting for a camera card")
+        self.speed_history = deque([0.0] * 60, maxlen=60)
+        self.upload_speed_history = deque([0.0] * 60, maxlen=60)
+        self.last_sample_time = time.monotonic()
+        self.last_transferred_bytes = 0
+        self._copy_run_key = None
+        self._copy_started_at = None
+        self._copy_elapsed_final = 0.0
+        self._upload_started_at = None
+        self._upload_elapsed_final = 0.0
+        self._upload_run_key = None
+        self._upload_last_bytes = 0
+        self._upload_last_sample_time = time.monotonic()
+
+        quick_actions = ttk.Frame(outer, style="Card.TFrame", padding=10)
+        quick_actions.pack(fill="x", pady=(0, 14))
+        ttk.Label(quick_actions, text="QUICK ACTIONS", style="CardTitle.TLabel").pack(
+            side="left", padx=(2, 10)
+        )
+        ttk.Button(quick_actions, text="Copy to USB Drive", command=self.start_usb_backup, style="Primary.TButton").pack(
+            side="left", padx=(0, 7)
+        )
+        ttk.Button(quick_actions, text="Update File Catalog", command=self.start_catalog_update).pack(
+            side="left", padx=(0, 7)
+        )
+        ttk.Button(quick_actions, text="Sync Google Photos", command=self.start_google_photos_sync, style="Primary.TButton").pack(
+            side="left", padx=(0, 7)
+        )
+        ttk.Button(quick_actions, text="Live Debug Log", command=self.toggle_debug_log).pack(
+            side="left", padx=(0, 7)
+        )
+        self.terminal_output_button = ttk.Button(
+            quick_actions, text=self.terminal_output_label(), command=self.toggle_terminal_output
+        )
+        self.terminal_output_button.pack(side="left")
+        self.auto_eject_button = ttk.Button(
+            quick_actions, text=self.auto_eject_label(), command=self.toggle_auto_eject
+        )
+        self.auto_eject_button.pack(side="left", padx=(7, 0))
+
+        metrics = ttk.Frame(outer)
+        metrics.pack(fill="x", pady=(0, 14))
+        speed_card = ttk.Frame(metrics, style="Card.TFrame", padding=15)
+        speed_card.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        speed_header = ttk.Frame(speed_card, style="Card.TFrame")
+        speed_header.pack(fill="x")
+        ttk.Label(speed_header, textvariable=self.copy_title_var, style="CardTitle.TLabel").pack(
+            side="left", anchor="w"
+        )
+        ttk.Label(speed_header, textvariable=self.eta_var, style="CardTitle.TLabel").pack(
+            side="right", anchor="e"
+        )
+        copy_body = ttk.Frame(speed_card, style="Card.TFrame")
+        copy_body.pack(fill="x", pady=(9, 0))
+        copy_metrics = ttk.Frame(copy_body, style="Card.TFrame")
+        copy_metrics.pack(side="left", fill="both", expand=True)
+        ttk.Label(copy_metrics, textvariable=self.speed_var, style="Metric.TLabel").pack(anchor="w")
+        ttk.Label(copy_metrics, textvariable=self.copy_elapsed_var, style="CardTitle.TLabel").pack(
+            anchor="w", pady=(3, 0)
+        )
+        ttk.Label(
+            copy_metrics, textvariable=self.copy_throughput_detail_var, style="CardTitle.TLabel"
+        ).pack(anchor="w", pady=(3, 0))
+        self.copy_progress = ttk.Progressbar(
+            copy_metrics, mode="determinate", maximum=100, variable=self.copy_percent_var
+        )
+        self.copy_progress.pack(fill="x", pady=(10, 4))
+        ttk.Label(
+            copy_metrics, textvariable=self.copy_progress_var, style="CardTitle.TLabel", wraplength=280
+        ).pack(anchor="w")
+        self.graph = tk.Canvas(copy_body, height=100, width=210, bg=self.colors["card"], highlightthickness=0)
+        self.graph.pack(side="right", fill="both", expand=True, padx=(16, 0))
+
+        upload_card = ttk.Frame(metrics, style="Card.TFrame", padding=15)
+        upload_card.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        upload_header = ttk.Frame(upload_card, style="Card.TFrame")
+        upload_header.pack(fill="x")
+        ttk.Label(upload_header, text="GOOGLE PHOTOS", style="CardTitle.TLabel").pack(
+            side="left", anchor="w"
+        )
+        ttk.Label(upload_header, textvariable=self.upload_eta_var, style="CardTitle.TLabel").pack(
+            side="right", anchor="e"
+        )
+        upload_body = ttk.Frame(upload_card, style="Card.TFrame")
+        upload_body.pack(fill="x", pady=(9, 0))
+        upload_metrics = ttk.Frame(upload_body, style="Card.TFrame")
+        upload_metrics.pack(side="left", fill="both", expand=True)
+        ttk.Label(upload_metrics, textvariable=self.upload_speed_var, style="Metric.TLabel").pack(
+            anchor="w"
+        )
+        ttk.Label(upload_metrics, textvariable=self.upload_elapsed_var, style="CardTitle.TLabel").pack(
+            anchor="w", pady=(3, 0)
+        )
+        ttk.Label(
+            upload_metrics, textvariable=self.upload_throughput_detail_var, style="CardTitle.TLabel"
+        ).pack(anchor="w", pady=(3, 0))
+        self.upload_progress = ttk.Progressbar(
+            upload_metrics, mode="determinate", maximum=100, variable=self.upload_percent_var
+        )
+        self.upload_progress.pack(fill="x", pady=(10, 4))
+        ttk.Label(
+            upload_metrics, textvariable=self.upload_progress_var, style="CardTitle.TLabel",
+            wraplength=280
+        ).pack(anchor="w")
+        self.upload_graph = tk.Canvas(
+            upload_body, height=100, width=210, bg=self.colors["card"], highlightthickness=0
+        )
+        self.upload_graph.pack(side="right", fill="both", expand=True, padx=(16, 0))
+        metrics.columnconfigure(0, weight=1, uniform="transfer")
+        metrics.columnconfigure(1, weight=1, uniform="transfer")
+
+        # Current work and overall progress share one clear, full-width surface.
+        detail = ttk.Frame(outer, style="Card.TFrame", padding=15)
+        detail.pack(fill="x", pady=(0, 14))
+        detail_header = ttk.Frame(detail, style="Card.TFrame")
+        detail_header.pack(fill="x")
+        ttk.Label(detail_header, text="CURRENT ACTIVITY", style="CardTitle.TLabel").pack(
+            side="left", anchor="w"
+        )
+        self.source_var = tk.StringVar(value="Source: —")
+        ttk.Label(detail_header, textvariable=self.source_var, style="CardTitle.TLabel").pack(
+            side="right", anchor="e"
+        )
+        self.file_var = tk.StringVar(value="No active import")
+        ttk.Label(detail, textvariable=self.file_var, style="File.TLabel").pack(
+            anchor="w", pady=(6, 8)
+        )
+        self.progress = ttk.Progressbar(detail, mode="determinate", maximum=100, value=0)
+        self.progress.pack(fill="x", pady=(0, 6))
+        ttk.Label(detail, textvariable=self.progress_var, style="Body.TLabel").pack(anchor="w")
+        self.message_var = tk.StringVar(value="")
+        ttk.Label(
+            detail, textvariable=self.message_var, style="Subtitle.TLabel", wraplength=1000
+        ).pack(anchor="w", pady=(5, 0))
+
+        # Keep infrequently used diagnostic data out of the default dashboard.
+        archive_content = self._create_collapsible_section(outer, "Archive & database health")
+        ttk.Label(
+            archive_content, text="ARCHIVE & DATABASE HEALTH", style="CardTitle.TLabel"
+        ).pack(anchor="w", pady=(0, 7))
+        self.local_catalog_var = tk.StringVar(value="Checking local archive catalog…")
+        self.usb_catalog_var = tk.StringVar(value="Checking USB archive catalog…")
+        ttk.Label(
+            archive_content, textvariable=self.local_catalog_var, style="Body.TLabel", wraplength=1000
+        ).pack(anchor="w")
+        ttk.Label(
+            archive_content, textvariable=self.usb_catalog_var, style="Body.TLabel", wraplength=1000
+        ).pack(anchor="w", pady=(5, 0))
+
+        automation_content = self._create_collapsible_section(outer, "Automation & cloud status")
+        self.auto_status_var = tk.StringVar(value="Waiting for trigger activity…")
+        ttk.Label(
+            automation_content, textvariable=self.auto_status_var, style="Body.TLabel", wraplength=1000
+        ).pack(anchor="w")
+        self.google_photos_var = tk.StringVar(value=self.google_photos_summary())
+        ttk.Label(
+            automation_content, textvariable=self.google_photos_var, style="Body.TLabel", wraplength=1000
+        ).pack(anchor="w", pady=(6, 0))
+
+        activity = self._create_collapsible_section(outer, "Recent activity & history")
+        ttk.Label(
+            activity, text="Latest importer and automatic-import log entries",
+            style="CardTitle.TLabel"
+        ).pack(anchor="w", pady=(0, 6))
+        self.activity_text = tk.Text(
+            activity, height=5, wrap="word", state="disabled", bg=self.colors["input"],
+            fg=self.colors["text"], insertbackground=self.colors["text"], relief="flat", borderwidth=1,
+            highlightthickness=1, highlightbackground=self.colors["border"],
+            font=("Menlo", 9), padx=9, pady=7
+        )
+        self.activity_text.pack(fill="x", expand=False)
+        self._activity_last_text = ""
+
+        ttk.Label(
+            outer,
+            text="Catalog refresh reuses cached metadata; it does not hash every file. Source media is never deleted.",
+            style="Subtitle.TLabel", wraplength=1000
+        ).pack(anchor="w", pady=(8, 0))
+
+        self.debug_window = None
+        self.debug_text = None
+        self.debug_refresh_job = None
+
+        self.root.after(500, self.refresh)
+        self.root.mainloop()
+
+    @staticmethod
+    def load_preferences() -> Dict[str, Any]:
+        try:
+            payload = json.loads(PREFERENCES_FILE.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save_preferences(self) -> None:
+        """Merge UI preferences into the shared persistent settings without losing other keys."""
+        PREFERENCES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        current = self.load_preferences()
+        ui = current.get("ui")
+        if not isinstance(ui, dict):
+            ui = {}
+        ui["theme"] = self.theme_var.get()
+        current["ui"] = ui
+        temporary = PREFERENCES_FILE.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(current, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+        temporary.replace(PREFERENCES_FILE)
+        self.preferences = current
+
+    def apply_theme(self) -> None:
+        """Apply the selected light/dark palette to native widgets and charts."""
+        dark = getattr(self, "theme_var", tk.StringVar(value="light")).get() == "dark"
+        self.colors = {
+            "background": "#151922" if dark else "#f3f6fb",
+            "card": "#202633" if dark else "#ffffff",
+            "text": "#e7edf7" if dark else "#172033",
+            "muted": "#a2aec2" if dark else "#64748b",
+            "body": "#d4dceb" if dark else "#334155",
+            "border": "#3a4558" if dark else "#dbe3ef",
+            "input": "#171d28" if dark else "#f8fafc",
+            "accent": "#60a5fa" if dark else "#2563eb",
+            "accent_active": "#3b82f6" if dark else "#1d4ed8",
+            "status_bg": "#263b59" if dark else "#dbeafe",
+            "status_fg": "#bfdbfe" if dark else "#1d4ed8",
+            "button_bg": "#2b3444" if dark else "#ffffff",
+            "button_fg": "#e7edf7" if dark else "#1e293b",
+            "button_active": "#3a465b" if dark else "#eaf0f8",
+            "disabled": "#7f8ba0" if dark else "#94a3b8",
+            "grid": "#3a4558" if dark else "#dbe3ef",
+            "success": "#4ade80" if dark else "#16a34a",
+        }
+        c = self.colors
+        self.root.configure(bg=c["background"])
+        style = self.style
+        style.configure("TFrame", background=c["background"])
+        style.configure("Card.TFrame", background=c["card"])
+        style.configure("Title.TLabel", background=c["background"], foreground=c["text"],
+                        font=("SF Pro Display", 25, "bold"))
+        style.configure("Status.TLabel", background=c["status_bg"], foreground=c["status_fg"],
+                        font=("SF Pro Text", 10, "bold"), padding=(12, 7))
+        style.configure("Subtitle.TLabel", background=c["background"], foreground=c["muted"],
+                        font=("SF Pro Text", 10))
+        style.configure("CardTitle.TLabel", background=c["card"], foreground=c["muted"],
+                        font=("SF Pro Text", 10))
+        style.configure("Metric.TLabel", background=c["card"], foreground=c["text"],
+                        font=("SF Pro Display", 18, "bold"))
+        style.configure("Body.TLabel", background=c["card"], foreground=c["body"],
+                        font=("SF Pro Text", 10))
+        style.configure("File.TLabel", background=c["card"], foreground=c["text"],
+                        font=("SF Pro Text", 11, "bold"))
+        style.configure("Horizontal.TProgressbar", troughcolor=c["border"],
+                        background=c["success"], thickness=9)
+        style.configure("TButton", background=c["button_bg"], foreground=c["button_fg"],
+                        padding=(12, 8), relief="flat", borderwidth=1,
+                        font=("SF Pro Text", 10, "bold"))
+        style.map("TButton", background=[("active", c["button_active"]),
+                                         ("pressed", c["status_bg"]),
+                                         ("disabled", c["card"])],
+                  foreground=[("disabled", c["disabled"])])
+        style.configure("Primary.TButton", background=c["accent"], foreground="#ffffff",
+                        padding=(13, 8), relief="flat", borderwidth=0,
+                        font=("SF Pro Text", 10, "bold"))
+        style.map("Primary.TButton", background=[("active", c["accent_active"]),
+                                                 ("pressed", c["accent_active"])])
+        style.configure("Disclosure.TButton", background=c["background"], foreground=c["body"],
+                        padding=(10, 8), relief="flat", borderwidth=0,
+                        font=("SF Pro Text", 10, "bold"), anchor="w")
+        style.map("Disclosure.TButton", background=[("active", c["button_active"])])
+        style.configure("TCombobox", fieldbackground=c["button_bg"], background=c["button_bg"],
+                        foreground=c["button_fg"], arrowcolor=c["button_fg"])
+        style.map("TCombobox", fieldbackground=[("readonly", c["button_bg"])],
+                  foreground=[("readonly", c["button_fg"])])
+
+        # Canvas and Text widgets do not inherit ttk styles.
+        for name in ("graph", "upload_graph"):
+            canvas = getattr(self, name, None)
+            if canvas is not None:
+                canvas.configure(bg=c["card"])
+        activity_text = getattr(self, "activity_text", None)
+        if activity_text is not None:
+            activity_text.configure(bg=c["input"], fg=c["body"],
+                                    insertbackground=c["text"], highlightbackground=c["border"])
+        if hasattr(self, "theme_toggle"):
+            self.draw_theme_toggle()
+
+        # Redraw both timelines immediately with the new grid and accent colors.
+        if hasattr(self, "speed_history"):
+            self.draw_speed_graph()
+        if hasattr(self, "upload_speed_history"):
+            self.draw_upload_speed_graph()
+
+    def draw_theme_toggle(self) -> None:
+        """Draw a compact sun/moon switch with a sliding active-state thumb."""
+        toggle = getattr(self, "theme_toggle", None)
+        if toggle is None:
+            return
+        toggle.delete("all")
+        dark = self.theme_var.get() == "dark"
+        c = self.colors
+        track = c["border"] if not dark else "#303b4e"
+        toggle.create_oval(2, 4, 86, 32, fill=track, outline=track)
+        toggle.create_rectangle(16, 4, 72, 32, fill=track, outline=track)
+        center_x = 68 if dark else 20
+        toggle.create_oval(center_x - 13, 5, center_x + 13, 31,
+                           fill=c["accent"], outline=c["accent"])
+        toggle.create_text(20, 18, text="☀", font=("SF Pro Text", 15),
+                           fill="#ffffff" if not dark else c["muted"])
+        toggle.create_text(68, 18, text="☾", font=("SF Pro Text", 16),
+                           fill="#ffffff" if dark else c["muted"])
+        toggle.configure(bg=c["background"], highlightbackground=c["border"],
+                         highlightcolor=c["accent"])
+
+    def toggle_theme(self, _event: object = None) -> str:
+        self.theme_var.set("light" if self.theme_var.get() == "dark" else "dark")
+        self.on_theme_selected()
+        return "break"
+
+    def on_theme_selected(self, _event: object = None) -> None:
+        if self.theme_var.get() not in ("light", "dark"):
+            return
+        self.apply_theme()
+        try:
+            self.save_preferences()
+        except OSError as exc:
+            self.message_var.set(f"Theme changed for this session, but settings could not be saved: {exc}")
+
+    def _create_collapsible_section(self, parent: ttk.Frame, title: str) -> ttk.Frame:
+        """Create a compact disclosure row whose details are hidden by default."""
+        section = ttk.Frame(parent, style="TFrame")
+        section.pack(fill="x", pady=(0, 5))
+        content = ttk.Frame(section, style="Card.TFrame", padding=12)
+        expanded = False
+        toggle = ttk.Button(section, text=f"▸  {title}", style="Disclosure.TButton")
+        toggle.pack(fill="x")
+
+        def toggle_section() -> None:
+            nonlocal expanded
+            if expanded:
+                content.pack_forget()
+                toggle.configure(text=f"▸  {title}")
+            else:
+                content.pack(fill="x", pady=(2, 0))
+                toggle.configure(text=f"▾  {title}")
+            expanded = not expanded
+
+        toggle.configure(command=toggle_section)
+        return content
+
+    @staticmethod
+    def terminal_output_label() -> str:
+        return ("Disable Terminal Output" if TERMINAL_OUTPUT_FILE.exists()
+                else "Enable Terminal Output")
+
+    def toggle_terminal_output(self) -> None:
+        try:
+            INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+            if TERMINAL_OUTPUT_FILE.exists():
+                TERMINAL_OUTPUT_FILE.unlink()
+                self.message_var.set("Terminal windows disabled. Imports will run in the background.")
+            else:
+                TERMINAL_OUTPUT_FILE.touch()
+                self.message_var.set("Terminal windows enabled for future automatic imports.")
+            self.terminal_output_button.configure(text=self.terminal_output_label())
+        except OSError as exc:
+            self.message_var.set(f"Could not change terminal output setting: {exc}")
+
+    @staticmethod
+    def auto_eject_label() -> str:
+        return ("Auto-Eject: On" if AUTO_EJECT_FILE.exists()
+                else "Auto-Eject: Off")
+
+    def toggle_auto_eject(self) -> None:
+        """Opt in to ejecting already-handled camera cards; default is off."""
+        try:
+            INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+            if AUTO_EJECT_FILE.exists():
+                AUTO_EJECT_FILE.unlink()
+                self.message_var.set("Auto-eject disabled. Handled camera cards will stay mounted for Finder access.")
+            else:
+                AUTO_EJECT_FILE.touch()
+                self.message_var.set("Auto-eject enabled. Already-handled cards may be ejected automatically.")
+            self.auto_eject_button.configure(text=self.auto_eject_label())
+        except OSError as exc:
+            self.message_var.set(f"Could not change auto-eject setting: {exc}")
+
+    def trigger_status_summary(self) -> str:
+        try:
+            line = next((line for line in reversed(TRIGGER_LOG.read_text(
+                encoding="utf-8", errors="replace").splitlines()) if line.strip()), "")
+            if not line:
+                return "Trigger: no log entries yet. If this remains blank, the launchd trigger may not be running."
+            try:
+                stamp = datetime.strptime(line[1:20], "%Y-%m-%d %H:%M:%S")
+                age = max(int(time.time() - stamp.timestamp()), 0)
+                age_text = f"{format_duration(age)} ago"
+            except (ValueError, OSError):
+                age_text = "time unknown"
+            return f"Trigger log • {age_text} • {line}"
+        except OSError:
+            return "Trigger: log file has not been created yet. Check the Photo Offloader LaunchAgent."
+
+    def toggle_debug_log(self) -> None:
+        if self.debug_window is not None and self.debug_window.winfo_exists():
+            self.debug_window.destroy()
+            self.debug_window = None
+            self.debug_text = None
+            if self.debug_refresh_job is not None:
+                self.root.after_cancel(self.debug_refresh_job)
+                self.debug_refresh_job = None
+            return
+        window = tk.Toplevel(self.root)
+        window.title("Photo Offloader — Live Debug Log")
+        window.geometry("1000x560")
+        window.minsize(700, 350)
+        frame = ttk.Frame(window, padding=8)
+        frame.pack(fill="both", expand=True)
+        text = tk.Text(frame, wrap="none", state="disabled", font=("Menlo", 10))
+        yscroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        xscroll = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
+        text.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        self.debug_window = window
+        self.debug_text = text
+        window.protocol("WM_DELETE_WINDOW", self.toggle_debug_log)
+        self.refresh_debug_log()
+
+    def refresh_debug_log(self) -> None:
+        if self.debug_window is None or not self.debug_window.winfo_exists() or self.debug_text is None:
+            return
+        sections = []
+        for label, path in (
+            ("TRIGGER LOG", TRIGGER_LOG),
+            ("IMPORTER LOG", IMPORT_LOG),
+            ("DASHBOARD LOG", INSTALL_DIR / "dashboard.log"),
+            ("MENUBAR ERROR LOG", INSTALL_DIR / "menubar-error.log"),
+        ):
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-150:]
+                sections.append(f"===== {label}: {path} =====\n" + "\n".join(lines))
+            except OSError as exc:
+                sections.append(f"===== {label}: {path} =====\n(unavailable: {exc})")
+        self.debug_text.configure(state="normal")
+        self.debug_text.delete("1.0", "end")
+        self.debug_text.insert("end", "\n\n".join(sections))
+        self.debug_text.see("end")
+        self.debug_text.configure(state="disabled")
+        self.debug_refresh_job = self.root.after(1000, self.refresh_debug_log)
+
+    def refresh_google_photos_progress(self) -> None:
+        """Read the latest rclone stats line without interfering with the active upload."""
+        try:
+            with GOOGLE_PHOTOS_STATUS.open(encoding="utf-8") as handle:
+                status = json.load(handle)
+        except (OSError, ValueError):
+            status = {}
+        state = str(status.get("state", "unknown"))
+        run_key = str(status.get("run_id") or status.get("started_at") or status.get("last_started") or "")
+        now = time.monotonic()
+        if state == "running":
+            if self._upload_started_at is None or (run_key and run_key != self._upload_run_key):
+                self._upload_started_at = now
+                self._upload_run_key = run_key
+                self._upload_elapsed_final = 0.0
+                self._upload_last_bytes = 0
+                self._upload_last_sample_time = now
+                self.upload_speed_history.clear()
+            elapsed = now - self._upload_started_at
+            self.upload_elapsed_var.set(f"Elapsed {format_clock(elapsed)}")
+        elif state == "complete":
+            if self._upload_started_at is not None:
+                self._upload_elapsed_final = now - self._upload_started_at
+                self._upload_started_at = None
+            self.upload_elapsed_var.set(f"Elapsed {format_clock(self._upload_elapsed_final)}")
+            self.upload_speed_var.set("—")
+            self.upload_eta_var.set("ETA Complete")
+            self.upload_speed_history.clear()
+            self.upload_throughput_detail_var.set("Average — • Peak —")
+            self.upload_percent_var.set(100.0)
+            self.upload_progress_var.set("Upload complete")
+            self.draw_upload_speed_graph()
+            return
+        else:
+            self.upload_speed_history.clear()
+            self.upload_throughput_detail_var.set("Average — • Peak —")
+            self.upload_elapsed_var.set(f"Elapsed {format_clock(self._upload_elapsed_final)}")
+            self.upload_speed_var.set("—")
+            self.upload_eta_var.set("ETA —")
+            self.upload_percent_var.set(0.0)
+            self.upload_progress_var.set("Waiting for upload")
+            self.draw_upload_speed_graph()
+            return
+
+        try:
+            with GOOGLE_PHOTOS_LOG.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(size - 65536, 0))
+                if size > 65536:
+                    handle.readline()
+                lines = handle.read().decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+
+        progress = next(
+            (parsed for line in reversed(lines) if (parsed := parse_rclone_stats_line(line))),
+            None,
+        )
+        if not progress:
+            self.upload_speed_var.set("—")
+            self.upload_eta_var.set("ETA Estimating…")
+            self.upload_progress_var.set("Preparing upload…")
+            return
+
+        percent = float(progress["percent"])
+        self.upload_percent_var.set(min(100.0, max(0.0, percent)))
+        if percent >= 100.0:
+            # rclone can spend time committing uploads after the byte-transfer
+            # stats reach 100%; keep that phase visible instead of implying a hang.
+            self.upload_speed_var.set("—")
+            self.upload_eta_var.set("Finalizing…")
+            self.upload_progress_var.set(
+                "100% transferred • Finalizing Google Photos upload…"
+            )
+            return
+
+        self.upload_speed_var.set(f"{progress['speed']}")
+        self.upload_eta_var.set(f"ETA {progress['eta']}")
+        self.upload_progress_var.set(
+            f"{percent:.0f}% • {progress['transferred']} of {progress['total']} uploaded"
+        )
+        transferred_bytes = parse_display_bytes(str(progress.get("transferred", "0 B")))
+        sample_now = time.monotonic()
+        elapsed = max(sample_now - self._upload_last_sample_time, 0.001)
+        sample_speed = max(transferred_bytes - self._upload_last_bytes, 0) / elapsed
+        self.upload_speed_history.append(sample_speed)
+        active_samples = [sample for sample in self.upload_speed_history if sample > 0]
+        average_recent = sum(active_samples) / len(active_samples) if active_samples else 0.0
+        peak_recent = max(self.upload_speed_history, default=0.0)
+        self.upload_throughput_detail_var.set(
+            f"Average {format_bytes(average_recent)}/s • Peak {format_bytes(peak_recent)}/s (last 60s)"
+            if active_samples else "Average — • Peak —"
+        )
+        self._upload_last_bytes = transferred_bytes
+        self._upload_last_sample_time = sample_now
+        self.draw_upload_speed_graph()
+
+    def google_photos_summary(self) -> str:
+        try:
+            payload = json.loads(GOOGLE_PHOTOS_STATUS.read_text(encoding="utf-8"))
+            state = str(payload.get("state", "unknown")).replace("_", " ").title()
+            message = str(payload.get("message", ""))
+            last_success = payload.get("last_success")
+            suffix = f" • Last success: {last_success}" if last_success else ""
+            return f"Google Photos: {state} • {message}{suffix}"
+        except (OSError, ValueError):
+            # The install-local status file is recreated with each installation.
+            # This non-secret preference lives beside the persistent media catalog.
+            try:
+                preferences = json.loads(PREFERENCES_FILE.read_text(encoding="utf-8"))
+                connection = preferences.get("google_photos", {})
+                if connection.get("configured"):
+                    remote = str(connection.get("remote", "gphotos:"))
+                    checked = connection.get("last_connection_check")
+                    suffix = f" • Last connection check: {checked}" if checked else ""
+                    return (
+                        f"Google Photos: Configured ({remote}) • "
+                        f"Connection details retained by rclone{suffix}"
+                    )
+            except (OSError, ValueError, AttributeError):
+                pass
+            return "Google Photos: Not configured yet • Install rclone and configure a remote named gphotos."
+
+    def start_google_photos_sync(self) -> None:
+        if not GOOGLE_PHOTOS_SCRIPT.is_file():
+            self.message_var.set(f"Google Photos helper is missing: {GOOGLE_PHOTOS_SCRIPT}. Reinstall Photo Offloader.")
+            return
+        try:
+            subprocess.Popen([str(PYTHON), str(GOOGLE_PHOTOS_SCRIPT), "--sync"], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            self.message_var.set("Started Google Photos upload. Status will update here.")
+        except OSError as exc:
+            self.message_var.set(f"Could not start Google Photos upload: {exc}")
+
+    def start_usb_backup(self) -> None:
+        if not USB_VOLUME.is_mount():
+            self.message_var.set("USB backup drive is not mounted at /Volumes/Photos.")
+            return
+        try:
+            subprocess.Popen([str(PYTHON), str(BACKUP_LAUNCHER_SCRIPT)],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            self.message_var.set("Started USB backup. Existing matching files will be skipped.")
+        except OSError as exc:
+            self.message_var.set(f"Could not start USB backup: {exc}")
+
+    def refresh_catalog_status(self, status: Dict[str, Any]) -> None:
+        state = str(status.get("state", "idle"))
+        phase = str(status.get("phase", ""))
+        current_path = str(status.get("current_path", "") or "")
+        catalog_root = str(status.get("catalog_root", "") or "")
+        catalog_running = state == "scanning" and phase == "catalog-update"
+
+        try:
+            if not CATALOG_DB.is_file():
+                local_count = usb_count = 0
+                refreshes = {}
+            else:
+                with sqlite3.connect(f"file:{CATALOG_DB}?mode=ro", uri=True, timeout=0.5) as db:
+                    local_roots = tuple(str(root.resolve()) for root in LOCAL_ARCHIVES)
+                    usb_roots = tuple(str(root.resolve()) for root in USB_ARCHIVES)
+                    local_count = db.execute(
+                        "SELECT COUNT(*) FROM file_locations WHERE root IN (?, ?)", local_roots
+                    ).fetchone()[0]
+                    usb_count = db.execute(
+                        "SELECT COUNT(*) FROM file_locations WHERE root = ?", (usb_roots[0],)
+                    ).fetchone()[0]
+                    try:
+                        refreshes = {row[0]: (row[1], row[2], row[3]) for row in db.execute(
+                            "SELECT root, last_updated, files_scanned, status FROM catalog_refreshes"
+                        )}
+                    except sqlite3.OperationalError:
+                        refreshes = {}
+        except (OSError, sqlite3.Error) as exc:
+            self.local_catalog_var.set(f"Internal SSD database: Status unavailable ({exc})")
+            self.usb_catalog_var.set("Backup USB database: Status unavailable")
+            return
+
+        def line(label: str, roots: tuple[Path, ...], count: int) -> str:
+            keys = tuple(str(root.resolve()) for root in roots)
+            if catalog_running and any(
+                catalog_root == key or current_path == key or current_path.startswith(key + os.sep)
+                for key in keys
+            ):
+                scanned = int(status.get("catalog_scanned", 0) or 0)
+                return f"{label}: Updating • {scanned:,} files scanned • {count:,} indexed so far"
+            infos = [refreshes[key] for key in keys if key in refreshes]
+            if infos:
+                updated = max(info[0] for info in infos)
+                scanned = sum(info[1] for info in infos)
+                refresh_state = "complete" if all(info[2] == "complete" for info in infos) else "in progress"
+                when = datetime.fromtimestamp(updated).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+                return f"{label}: {refresh_state.title()} • Last updated {when} • {scanned:,} files scanned • {count:,} indexed"
+            if count:
+                return f"{label}: Catalog exists • Last refresh time not recorded • {count:,} indexed"
+            if label == "Backup USB" and not USB_VOLUME.is_dir():
+                return f"{label}: Drive not mounted • Previous catalog records are preserved"
+            return f"{label}: Not yet updated"
+
+        self.local_catalog_var.set(line("Internal SSD", LOCAL_ARCHIVES, local_count))
+        self.usb_catalog_var.set(line("Backup USB", USB_ARCHIVES, usb_count))
+
+    def start_catalog_update(self) -> None:
+        try:
+            subprocess.Popen([str(PYTHON), str(IMPORTER_SCRIPT), "--update-catalog"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            self.message_var.set("Started catalog update. Progress will appear here.")
+        except OSError as exc:
+            self.message_var.set(f"Could not update catalog: {exc}")
+
+    def draw_speed_graph(self) -> None:
+        self._draw_graph(self.graph, self.speed_history, "#2563eb")
+
+
+    def draw_upload_speed_graph(self) -> None:
+        self._draw_graph(self.upload_graph, self.upload_speed_history, "#16a34a")
+
+    def _draw_graph(self, canvas: tk.Canvas, history: deque, line_color: str) -> None:
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 150)
+        height = max(canvas.winfo_height(), 82)
+        left, right, top, bottom = 5, width - 5, 8, height - 15
+        for fraction in (0.25, 0.5, 0.75, 1.0):
+            y = bottom - (bottom - top) * fraction
+            canvas.create_line(left, y, right, y, fill=self.colors["grid"], dash=(2, 3))
+        values = list(history)
+        peak = max(values, default=0.0)
+        if peak <= 0:
+            canvas.create_text(left + 3, top + 4, anchor="nw", text="Waiting for data…",
+                               fill="#64748b", font=("SF Pro Text", 9))
+            return
+        points = []
+        for index, value in enumerate(values):
+            x = left + (right - left) * index / max(len(values) - 1, 1)
+            y = bottom - (bottom - top) * min(value / peak, 1.0)
+            points.extend((x, y))
+        if len(points) >= 4:
+            canvas.create_line(*points, fill=line_color, width=2, smooth=True)
+        canvas.create_text(right - 2, top + 2, anchor="ne", text=f"Peak {format_bytes(peak)}/s",
+                           fill=self.colors["muted"], font=("SF Pro Text", 8))
+
+    def catalog_eta(self, status: Dict[str, Any]) -> str:
+        """Estimate remaining catalog time only when a meaningful scan rate exists."""
+        stage = str(status.get("catalog_stage", "") or "")
+        if stage == "Reading metadata batches":
+            # ExifTool runs as a batch with no per-file progress callback.
+            return "Reading metadata…"
+        if stage == "Preparing metadata":
+            return "Preparing…"
+        if stage not in ("Finding files needing metadata", "Indexing files"):
+            return "Estimating…"
+
+        now = time.monotonic()
+        marker = (status.get("run_id"), status.get("catalog_root"), stage)
+        if getattr(self, "_catalog_eta_marker", None) != marker:
+            self._catalog_eta_marker = marker
+            self._catalog_eta_started = now
+            self._catalog_eta_progress = 0
+        elapsed = max(now - getattr(self, "_catalog_eta_started", now), 0.0)
+
+        if stage == "Finding files needing metadata":
+            progress = int(status.get("catalog_discovered", 0) or 0)
+            estimate_total = int(status.get("catalog_estimated_total", 0) or 0)
+        else:
+            progress = int(status.get("catalog_root_scanned", 0) or 0)
+            estimate_total = int(status.get("catalog_root_estimated_total", 0) or 0)
+
+        previous_progress = int(getattr(self, "_catalog_eta_progress", 0) or 0)
+        if progress < previous_progress:
+            self._catalog_eta_started = now
+            elapsed = 0.0
+        self._catalog_eta_progress = progress
+        if progress <= 0 or estimate_total <= progress or elapsed < 2:
+            return "Estimating…"
+        rate = progress / elapsed
+        if rate <= 0:
+            return "Estimating…"
+        remaining = max(estimate_total - progress, 0) / rate
+        return format_duration(remaining)
+
+    def refresh_activity_history(self) -> None:
+        """Display a small, separate tail of the importer and trigger logs."""
+        entries = []
+        for label, path in (("IMPORT", IMPORT_LOG), ("AUTO", TRIGGER_LOG)):
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    size = handle.tell()
+                    handle.seek(max(0, size - 12288))
+                    if size > 12288:
+                        handle.readline()
+                    lines = handle.read().decode("utf-8", errors="replace").splitlines()
+                entries.extend(f"[{label}] {line.strip()}" for line in lines[-4:] if line.strip())
+            except OSError:
+                continue
+        display = "\n".join(entries[-8:]) if entries else (
+            "No recent log entries available yet. Activity will appear here when the importer or trigger runs."
+        )
+        if display == self._activity_last_text:
+            return
+        self._activity_last_text = display
+        self.activity_text.configure(state="normal")
+        self.activity_text.delete("1.0", "end")
+        self.activity_text.insert("1.0", display)
+        self.activity_text.configure(state="disabled")
+        self.activity_text.see("end")
+
+    def refresh(self) -> None:
+        status = read_status()
+        state = str(status.get("state", "idle"))
+        if state == "copying":
+            self.dashboard_state_var.set("TRANSFER IN PROGRESS")
+        elif state == "scanning":
+            self.dashboard_state_var.set("SCANNING / INDEXING")
+        elif state == "failed":
+            self.dashboard_state_var.set("ATTENTION NEEDED")
+        elif state == "canceled":
+            self.dashboard_state_var.set("CANCELED")
+        elif state == "complete":
+            self.dashboard_state_var.set("LAST TRANSFER COMPLETE")
+        elif PAUSE_FILE.exists():
+            self.dashboard_state_var.set("AUTOMATIC IMPORT PAUSED")
+        else:
+            mounted_camera = None
+            for pattern in ("NIKON*", "SONY*", "EOS*"):
+                for volume in Path("/Volumes").glob(pattern):
+                    if (volume / "DCIM").is_dir():
+                        mounted_camera = volume
+                        break
+                if mounted_camera is not None:
+                    break
+            if mounted_camera is not None:
+                self.dashboard_state_var.set("CAMERA CARD MOUNTED  •  READY TO BROWSE")
+            else:
+                self.dashboard_state_var.set("READY  •  WAITING FOR CAMERA")
+        phase = str(status.get("phase", "") or "")
+        source = str(status.get("source", "") or "")
+        if state == "copying" and phase != "catalog-update":
+            if "USB" in str(status.get("operation", "")).upper() or "backup" in str(status.get("message", "")).lower() or "/Volumes/Photos" in str(status.get("destination", "")):
+                self.copy_title_var.set("Backing up to USB")
+            else:
+                self.copy_title_var.set("Import to HD")
+        elif state == "scanning" and phase == "copy-decision":
+            self.copy_title_var.set("Preparing copy")
+        elif state == "scanning" and phase == "catalog-update":
+            self.copy_title_var.set("Updating file catalog")
+        else:
+            self.copy_title_var.set("Copy")
+        run_key = str(status.get("run_id") or status.get("started_at") or source)
+        now = time.monotonic()
+        active_copy = state in ("copying", "scanning") and phase != "catalog-update"
+        if active_copy:
+            if self._copy_started_at is None or (run_key and run_key != self._copy_run_key):
+                self._copy_started_at = now
+                self._copy_run_key = run_key
+                self._copy_elapsed_final = 0.0
+                self.speed_history.clear()
+            self.copy_elapsed_var.set(f"Elapsed {format_clock(now - self._copy_started_at)}")
+        else:
+            if self._copy_started_at is not None:
+                self._copy_elapsed_final = now - self._copy_started_at
+                self._copy_started_at = None
+            self.copy_elapsed_var.set(f"Elapsed {format_clock(self._copy_elapsed_final)}")
+        done = int(status.get("bytes_done", 0) or 0)
+        total = int(status.get("bytes_total", 0) or 0)
+        average_speed = float(status.get("transfer_speed_bps", 0) or 0)
+        transferred = int(status.get("bytes_transferred", 0) or 0)
+        now = time.monotonic()
+        sample_elapsed = max(now - self.last_sample_time, 0.001)
+        if transferred >= self.last_transferred_bytes:
+            speed = (transferred - self.last_transferred_bytes) / sample_elapsed
+        else:
+            # A new copy stage resets its byte counter; don't draw a false spike.
+            speed = 0.0
+        self.last_sample_time = now
+        self.last_transferred_bytes = transferred
+        eta = float(status.get("eta_seconds", 0) or 0)
+        if active_copy:
+            self.speed_history.append(max(speed, 0.0))
+        else:
+            # A finished/idle transfer starts with a clean timeline next time.
+            self.speed_history.clear()
+        active_samples = [sample for sample in self.speed_history if sample > 0]
+        average_recent = sum(active_samples) / len(active_samples) if active_samples else 0.0
+        peak_recent = max(self.speed_history, default=0.0)
+        self.copy_throughput_detail_var.set(
+            f"Average {format_bytes(average_recent)}/s • Peak {format_bytes(peak_recent)}/s (last 60s)"
+            if active_samples else "Average — • Peak —"
+        )
+        self.draw_speed_graph()
+
+        display_speed = speed if speed > 0 else average_speed if state == "copying" else 0
+        decision_phase = state == "scanning" and status.get("phase") == "copy-decision"
+        if decision_phase:
+            checked = int(status.get("decision_files_checked", 0) or 0)
+            decision_total = int(status.get("decision_files_total", 0) or 0)
+            self.speed_var.set(f"{checked / max(now - getattr(self, '_decision_started', now), 1):.1f} files/s"
+                               if checked else "Checking files…")
+            if not getattr(self, "_decision_started", 0) or checked < getattr(self, "_decision_last_checked", 0):
+                self._decision_started = now
+                self._decision_last_checked = checked
+            elapsed_decision = max(now - getattr(self, "_decision_started", now), 0.1)
+            if checked > 0 and decision_total > checked:
+                self.eta_var.set(format_duration((decision_total - checked) / (checked / elapsed_decision)))
+            elif decision_total and checked >= decision_total:
+                self.eta_var.set("Starting copy…")
+            else:
+                self.eta_var.set("Estimating…")
+            self._decision_last_checked = checked
+        else:
+            self.speed_var.set(f"{format_bytes(display_speed)}/s" if display_speed > 0 else "—")
+        if decision_phase:
+            pass
+        elif state == "copying" and total > done and speed > 0:
+            self.eta_var.set(format_duration(eta))
+        elif state == "complete":
+            self.eta_var.set("Complete")
+        elif state == "failed":
+            self.eta_var.set("Stopped")
+        elif state == "canceled":
+            self.eta_var.set("Canceled")
+        elif state == "scanning" and status.get("phase") == "catalog-update":
+            self.eta_var.set(self.catalog_eta(status))
+        else:
+            self.eta_var.set("Estimating…" if state == "scanning" else "—")
+
+        catalog_running = state == "scanning" and status.get("phase") == "catalog-update"
+        if decision_phase:
+            if getattr(self, "_catalog_progress_animating", False):
+                self.progress.stop()
+                self._catalog_progress_animating = False
+            self.progress.configure(mode="determinate")
+            decision_total = int(status.get("decision_files_total", 0) or 0)
+            decision_checked = int(status.get("decision_files_checked", 0) or 0)
+            self.progress.configure(value=min(100.0, decision_checked / decision_total * 100.0)
+                                    if decision_total else 0.0)
+        elif catalog_running:
+            # Catalog scans have no reliable total byte count. Use an indeterminate
+            # bar instead of snapping a determinate bar back to zero between roots.
+            self.progress.configure(mode="indeterminate")
+            if not getattr(self, "_catalog_progress_animating", False):
+                self.progress.start(12)
+                self._catalog_progress_animating = True
+        else:
+            if getattr(self, "_catalog_progress_animating", False):
+                self.progress.stop()
+                self._catalog_progress_animating = False
+            self.progress.configure(mode="determinate")
+            percent = min(100.0, (done / total * 100.0) if total else 0.0)
+            self.progress.configure(value=percent)
+        self.copy_percent_var.set(min(100.0, (done / total * 100.0) if total else (100.0 if state == "complete" else 0.0)))
+        self.copy_progress_var.set(
+            f"{format_bytes(done)} of {format_bytes(total)} • {self.copy_percent_var.get():.0f}%"
+            if total else ("Copy complete" if state == "complete" else "Waiting for transfer")
+        )
+        if decision_phase:
+            self.progress_var.set(
+                f"Checking existing files  •  {int(status.get('decision_files_checked', 0) or 0)} "
+                f"of {int(status.get('decision_files_total', 0) or 0)}"
+            )
+        elif state == "copying":
+            self.progress_var.set(f"{format_bytes(done)} of {format_bytes(total)} processed  •  {percent:.0f}%")
+        elif state == "complete":
+            self.progress_var.set(f"Import complete  •  {format_bytes(done)} processed")
+        elif state == "failed":
+            self.progress_var.set("Import stopped — see the Photo Offloader log")
+        elif state == "scanning":
+            if status.get("phase") == "catalog-update":
+                root_index = int(status.get("catalog_root_index", 1) or 1)
+                roots_total = int(status.get("catalog_roots_total", 1) or 1)
+                scanned = int(status.get("catalog_total_scanned", status.get("catalog_scanned", 0)) or 0)
+                root = str(status.get("catalog_root", "") or "")
+                location = "Internal SSD" if "CameraImports" in root and "/Volumes/" not in root else "Backup USB"
+                stage = str(status.get("catalog_stage", "Indexing files") or "Indexing files")
+                if stage == "Finding files needing metadata":
+                    detail = f"checking files • {int(status.get('catalog_discovered', 0) or 0):,} found"
+                elif stage == "Reading metadata batches":
+                    detail = f"reading metadata for {int(status.get('catalog_candidates', 0) or 0):,} new/changed files"
+                else:
+                    detail = f"{scanned:,} files scanned"
+                self.progress_var.set(
+                    f"Updating database • {location} ({root_index} of {roots_total}) • {stage}: {detail}"
+                )
+            else:
+                self.progress_var.set(str(status.get("message", "") or "Scanning source and checking destination space…"))
+        elif state == "canceled":
+            self.progress_var.set("Import canceled")
+        elif PAUSE_FILE.exists():
+            self.progress_var.set("Automatic imports are paused")
+        else:
+            self.progress_var.set("Waiting for a camera card")
+
+        self.refresh_catalog_status(status)
+        self.auto_status_var.set(self.trigger_status_summary())
+        self.google_photos_var.set(self.google_photos_summary())
+        self.refresh_google_photos_progress()
+        self.refresh_activity_history()
+
+        current_file = str(status.get("current_file", "") or "")
+        self.file_var.set(current_file if current_file else "No active import")
+        self.source_var.set(f"Source: {status.get('source', '—') or '—'}")
+        message = str(status.get("message", "") or "")
+        # The progress line already presents catalog scan progress; don't repeat it.
+        self.message_var.set("" if state == "scanning" and status.get("phase") == "catalog-update"
+                             else message)
+        self.root.after(1000, self.refresh)
+
+
+def log_build_provenance() -> None:
+    try:
+        info = json.loads((INSTALL_DIR / "build_info.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        info = {"version": "unknown", "git_commit": "unknown", "git_branch": "unknown"}
+    print(
+        "Photo Offloader dashboard startup: "
+        f"version={info.get('version', 'unknown')} "
+        f"git_commit={info.get('git_commit', 'unknown')} "
+        f"git_branch={info.get('git_branch', 'unknown')} "
+        f"git_tag={info.get('git_tag', 'unknown')} "
+        f"git_dirty={info.get('git_dirty', 'unknown')} "
+        f"build_time_utc={info.get('build_time_utc', 'unknown')}",
+        flush=True,
+    )
+
+
+if __name__ == "__main__":
+    log_build_provenance()
+    Dashboard()

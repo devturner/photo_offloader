@@ -5,7 +5,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import camera_offloader_v2 as app
-from camera_offloader_v2 import DestinationResult, DestinationSnapshot, FileFingerprint, ImportStats, VolumeIdentity
+from camera_offloader_v2 import (
+    DestinationResult,
+    DestinationSnapshot,
+    FileFingerprint,
+    ImportStats,
+    VolumeIdentity,
+)
 
 
 class TestHardeningRegressions(unittest.TestCase):

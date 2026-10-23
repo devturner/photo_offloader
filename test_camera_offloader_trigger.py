@@ -23,13 +23,44 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
 
         self.python = self.install / "python3"
         self.importer = self.install / "camera_offloader_v2.py"
-        self.python.write_text("#!/bin/bash\nexit 0\n")
+        self.background_args = self.root / "background-import-args.txt"
+        self.background_path = self.root / "background-import-path.txt"
+        self.python.write_text(
+            "#!/bin/bash\n"
+            + "if [[ \"$1\" == \"$PHOTO_OFFLOADER_IMPORTER\" ]]; then "
+            + f"printf '%s\\n' \"$@\" > {self.background_args}; "
+            + f"printf '%s\\n' \"$PATH\" > {self.background_path}; sleep 0.2; fi\n"
+            + "exit 0\n"
+        )
         self.importer.write_text("#!/bin/bash\nexit 0\n")
+        self.supervisor = self.install / "photo_offloader_import_supervisor.sh"
+        self.supervisor.write_text(Path(__file__).with_name("photo_offloader_import_supervisor.sh").read_text())
+        self.supervisor.chmod(0o755)
+        self.dashboard = self.install / "photo_offloader_ui.py"
+        self.dashboard.write_text("# dashboard test fixture\n")
         self.python.chmod(0o755)
+
+        self.launchctl = self.install / "launchctl"
+        self.launchctl.write_text(
+            "#!/bin/bash\n"
+            + 'if [[ "$1" == "print" ]]; then [[ "${PHOTO_OFFLOADER_TEST_WORKER_REGISTERED:-0}" == "1" ]]; exit $?; fi\n'
+            + 'if [[ "$1" == "submit" ]]; then shift 4; "$@" >> "$PHOTO_OFFLOADER_IMPORT_LOG" 2>&1 </dev/null & exit 0; fi\n'
+            + "exit 1\n"
+        )
+        self.launchctl.chmod(0o755)
 
         self.pgrep = self.install / "pgrep"
         self.pgrep.write_text("#!/bin/bash\nexit 1\n")
         self.pgrep.chmod(0o755)
+
+        self.diskutil = self.install / "diskutil"
+        self.eject_capture = self.root / "eject-args.txt"
+        self.diskutil.write_text(
+            "#!/bin/bash\\n"
+            + f"printf '%s\\n' \"$@\" >> {self.eject_capture!s}\\n"
+            + "exit ${PHOTO_OFFLOADER_TEST_EJECT_STATUS:-0}\\n"
+        )
+        self.diskutil.chmod(0o755)
 
         self.osascript = self.install / "osascript"
         self.command_capture = self.root / "osascript-command.txt"
@@ -45,6 +76,9 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.log = self.root / "trigger.log"
         self.state = self.root / "state"
         self.lock = self.root / "trigger.lock"
+        # Preserve terminal-mode expectations for legacy trigger tests; tests
+        # for the new default explicitly remove this opt-in marker.
+        (self.install / ".terminal-output-enabled").touch()
         self.script = Path(__file__).with_name("camera_offloader_trigger.sh")
 
     def tearDown(self):
@@ -54,16 +88,24 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         env = os.environ.copy()
         env.update(
             {
+                "HOME": str(self.root),
                 "PHOTO_OFFLOADER_INSTALL_DIR": str(self.install),
                 "PHOTO_OFFLOADER_PYTHON": str(self.python),
                 "PHOTO_OFFLOADER_IMPORTER": str(self.importer),
+                "PHOTO_OFFLOADER_DASHBOARD": str(self.dashboard),
                 "PHOTO_OFFLOADER_TRIGGER_LOG": str(self.log),
                 "PHOTO_OFFLOADER_TRIGGER_STATE": str(self.state),
                 "PHOTO_OFFLOADER_TRIGGER_LOCK": str(self.lock),
                 "PHOTO_OFFLOADER_TRIGGER_SETTLE_SECONDS": "0",
                 "PHOTO_OFFLOADER_PGREP": str(self.pgrep),
+                "PHOTO_OFFLOADER_LAUNCHCTL": str(self.launchctl),
+                "PHOTO_OFFLOADER_IMPORT_LOG": str(self.root / ".camera_transfer.log"),
+                "PHOTO_OFFLOADER_DISKUTIL": str(self.diskutil),
+                "PHOTO_OFFLOADER_EJECT_STATE": str(self.install / ".eject-state"),
+                "PHOTO_OFFLOADER_IMPORT_STATUS": str(self.install / ".import-status"),
                 "PHOTO_OFFLOADER_OSASCRIPT": str(self.osascript),
                 "PHOTO_OFFLOADER_VOLUMES_ROOT": str(self.volumes),
+                "PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE": str(self.install / ".terminal-output-enabled"),
             }
         )
         env.update(extra)
@@ -75,19 +117,143 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
             check=False,
         )
 
-    def test_default_terminal_is_iterm2(self):
+    def test_paused_service_does_not_start_an_import(self):
+        pause_file = self.install / ".paused"
+        pause_file.touch()
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.command_capture.exists())
+        self.assertFalse(self.state.exists())
+        self.assertIn("Automatic import is paused", self.log.read_text())
+
+    def test_import_start_requests_dashboard_open(self):
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Opened progress dashboard", self.log.read_text())
+
+    def test_default_import_runs_without_opening_terminal(self):
+        (self.install / ".terminal-output-enabled").unlink()
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.script_capture.exists())
+        self.assertIn("Terminal output disabled", self.log.read_text())
+        self.assertIn("com.user.photooffloader.import", self.log.read_text())
+        self.assertEqual(self.state.read_text().strip(), str(self.dcim))
+        # Terminal output changes only where output is sent, not whether import runs.
+        import time
+        deadline = time.monotonic() + 2
+        while not self.background_args.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(self.background_args.exists(), "background importer was not launched")
+        args = self.background_args.read_text()
+        self.assertIn("--source", args)
+        self.assertIn(str(self.dcim), args)
+        self.assertIn("--no-eject", args, "auto-eject disabled must be enforced inside the importer")
+        self.assertIn("/opt/homebrew/bin", self.background_path.read_text())
+        self.assertIn("Submitted importer supervisor to launchd", self.log.read_text())
+        import_log = self.root / ".camera_transfer.log"
+        deadline = time.monotonic() + 2
+        while (
+            (not import_log.exists() or "Background supervisor started" not in import_log.read_text())
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        self.assertTrue(import_log.exists(), "background importer log was not created")
+        self.assertIn(
+            "Background supervisor started",
+            import_log.read_text(),
+            "supervisor must leave a diagnostic before starting the importer",
+        )
+        self.assertIn(
+            "Background supervisor started",
+            self.log.read_text(),
+            "supervisor start must also be recorded in the trigger log",
+        )
+        deadline = time.monotonic() + 2
+        status_file = self.install / ".import-status"
+        while (not status_file.exists() or not status_file.read_text().startswith("success|")) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(status_file.exists(), "supervisor must persist import completion status")
+        self.assertTrue(status_file.read_text().startswith("success|"), status_file.read_text())
+
+    def test_stale_background_state_without_success_is_suppressed_until_unmount(self):
+        (self.install / ".terminal-output-enabled").unlink()
+        self.state.write_text(str(self.dcim) + "\n")
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.state.exists(), "an already-handled mount must not be reset without completion status")
+        self.assertFalse(self.background_args.exists(), "missing completion status must not trigger a relaunch loop")
+        self.assertIn("suppressing relaunch until unmount", self.log.read_text())
+
+    def test_registered_worker_does_not_clear_handled_state_or_relaunch(self):
+        self.state.write_text(str(self.dcim) + "\n")
+        result = self.run_trigger(PHOTO_OFFLOADER_TEST_WORKER_REGISTERED="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.state.exists(), "registered worker must not cause handled-state to be deleted")
+        self.assertFalse(self.command_capture.exists(), "registered worker must suppress a duplicate launch")
+        self.assertIn("preserving handled state", self.log.read_text())
+
+    def test_failed_background_import_is_not_retried_until_unmount(self):
+        (self.install / ".terminal-output-enabled").unlink()
+        self.state.write_text(str(self.dcim) + "\n")
+        (self.install / ".import-status").write_text(f"failed|{self.dcim}|1\n")
+
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.background_args.exists(), "a recorded failure must suppress immediate relaunch")
+        self.assertTrue(self.state.exists(), "failed mount state must remain until unmount")
+        self.assertIn("suppressing automatic retry until the card is unmounted", self.log.read_text())
+
+    def test_failed_mount_can_retry_after_unmount_and_remount(self):
+        (self.install / ".terminal-output-enabled").unlink()
+        self.state.write_text(str(self.dcim) + "\n")
+        (self.install / ".import-status").write_text(f"failed|{self.dcim}|1\n")
+        self.dcim.rmdir()
+        self.card.rmdir()
+
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.state.exists(), "unmount should clear handled state")
+
+        self.dcim.mkdir(parents=True)
+        (self.install / ".import-status").unlink()
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        import time
+        deadline = time.monotonic() + 2
+        while not self.background_args.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(self.background_args.exists(), "remounted card should be eligible for a fresh import")
+
+    def test_terminal_can_be_enabled_by_dashboard_toggle(self):
+        (self.install / ".terminal-output-enabled").touch()
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0, result.stderr)
         script = self.script_capture.read_text()
         self.assertIn('tell application "iTerm2"', script)
         self.assertIn("create window with default profile command", script)
 
-    def test_terminal_app_can_be_overridden(self):
+    def test_terminal_app_can_be_overridden_when_enabled(self):
+        (self.install / ".terminal-output-enabled").touch()
         result = self.run_trigger(PHOTO_OFFLOADER_TERMINAL_APP="Terminal")
         self.assertEqual(result.returncode, 0, result.stderr)
         script = self.script_capture.read_text()
         self.assertIn("tell application (item 2 of argv)", script)
         self.assertNotIn('tell application "iTerm2"', script)
+
+    def test_successful_import_state_survives_transient_missing_dcim(self):
+        # A completed card must not be re-imported if launchd observes a brief
+        # /Volumes visibility gap while the card remains part of this session.
+        self.state.write_text(str(self.dcim) + "\n")
+        (self.install / ".import-status").write_text(f"success|{self.dcim}|123\n")
+        self.dcim.rmdir()
+        self.card.rmdir()
+
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.state.exists(), "successful handled-state must survive transient DCIM absence")
+        self.assertEqual(self.state.read_text().strip(), str(self.dcim))
+        self.assertIn("preserving successful handled-state through mount visibility gap", self.log.read_text())
 
     def test_photos_volume_alone_is_ignored(self):
         self.dcim.rmdir()
@@ -95,7 +261,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0)
         self.assertFalse(self.state.exists())
-        self.assertIn("no recognized camera DCIM", self.log.read_text())
+        self.assertIn("No recognized camera DCIM currently mounted", self.log.read_text())
 
     def test_camera_volume_with_spaces_is_launched_without_path_corruption(self):
         result = self.run_trigger()
@@ -118,6 +284,13 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertEqual(self.state.read_text().strip(), str(self.dcim))
         self.assertIn("already handled for this mount", self.log.read_text())
         self.assertNotEqual(first_command, "")
+
+    def test_auto_eject_is_disabled_by_default_for_already_handled_card(self):
+        self.assertEqual(self.run_trigger().returncode, 0)
+        self.assertEqual(self.run_trigger().returncode, 0)
+        self.assertFalse(self.eject_capture.exists())
+        self.assertIn("auto-eject is disabled", self.log.read_text())
+        self.assertIn("leaving card mounted for Finder access", self.log.read_text())
 
     def test_unmount_clears_state_and_allows_remount(self):
         self.assertEqual(self.run_trigger().returncode, 0)

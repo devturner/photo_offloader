@@ -8,7 +8,13 @@ The importer follows:
 
 > **Discover → Lock → Snapshot → Scan → Capacity Check → Copy → Verify → Report → Eject**
 
-Files are never deleted from the camera card and existing destination files are never overwritten.
+Files are never deleted from the camera card and existing destination files are never overwritten. A local SQLite catalog tracks known file locations, filesystem fingerprints, cached camera/date metadata, verified hashes, and per-file Google Photos upload records tied to the exact file fingerprint. It avoids repeatedly decoding unchanged RAW/video metadata and re-hashing unchanged local/USB file pairs. The filesystem is still checked for newly added or changed files; the catalog is an optimization, not the source of truth.
+
+## Build provenance in logs
+
+Every importer session writes a `Run provenance` entry to `~/.camera_transfer.log` with a unique run ID, app version, full Git commit, branch, tag, dirty-checkout flag, build timestamp, Python version/executable, script path, and command-line arguments. The installer writes `build_info.json` next to the installed scripts so logs still identify the source revision after the code has been copied out of the repository. Direct source-checkout runs fall back to Git metadata. The volume trigger logs version/commit/branch to `~/.camera_transfer_trigger.log`, and the menu-bar app and dashboard log startup provenance to their respective stdout logs.
+
+The installed `build_info.json` records the revision and checkout state at install time. Re-run `./install.sh` after updating the checkout to refresh this metadata; `git_dirty=true` means the installation source contained uncommitted changes.
 
 ## ✨ Features
 
@@ -24,9 +30,25 @@ The automatic LaunchAgent watches `/Volumes`, but the trigger only launches when
 
 The importer also accepts a volume or `DCIM` path through `--source`.
 
+### 🖥️ Menu-bar dashboard and pause control
+
+The installer launches a native macOS menu-bar item and opens the dashboard window at the end of installation. When a camera import starts, the dashboard is opened automatically (or reused if already running). Select **Open Dashboard** from the menu-bar item at any time to view the current source, file being processed, copy progress and speed, a rolling copy-speed graph, and estimated time remaining. The dashboard has separate Copy and Google Photos Upload cards, each with its own progress percentage, elapsed timer, current speed, rolling throughput graph, and ETA. The Copy card title identifies whether media is being imported to the internal HD or backed up to USB. Use **Copy to USB Drive** in the menu bar or dashboard to run a USB-only sync without a camera card. Both controls use a shared launch lock, so repeated clicks cannot start overlapping USB backup requests. A 15-second debounce also suppresses duplicate requests if a very fast backup finishes before a second click. The importer acquires its session lock before changing dashboard status; duplicate launches are ignored cleanly and do not overwrite the active session's progress.
+
+Use **Pause Automatic Imports** before inserting a card when you do not want automatic copying to start. Pausing prevents new automatic import sessions; it does not interrupt a copy already in progress. Choose **Resume Automatic Imports** to re-enable the service and immediately re-check any camera card that is already mounted.
+
+The menu-bar controller uses `rumps`; the dashboard uses Python's `tkinter` UI. The menu-bar dependency is declared in `requirements-ui.txt` and installed by `install.sh`.
+
+Some Homebrew Python installations package Tk support separately. If the installer reports that `tkinter` is missing, install the matching formula, for example `brew install python-tk@3.14` for Python 3.14, then rerun `./install.sh`.
+
+### ☁️ Google Photos upload via rclone
+- Optional one-way upload of JPG/JPEG photos and supported video formats to a dedicated Google Photos album named `Photo Offloader`. Successful uploads are recorded per file in the SQLite catalog with timestamp, remote/album, and the uploaded file fingerprint. Changed files no longer show as uploaded until synced again.
+- Upload starts automatically after a successful camera import and can be retried manually with **Sync Google Photos** in the dashboard. Live upload percentage, transfer speed, and ETA appear in the Google Photos Upload card while rclone is running. When transfers reach 100% but rclone is still committing uploads, the card explicitly shows “Finalizing…”; the sync log records a clear success message after rclone exits successfully and per-file catalog updates finish.
+- RAW files are excluded by extension and remain in `~/Pictures/CameraImportsRaw`; the USB archive remains consolidated at `/Volumes/Photos/CameraImports`.
+- Requires rclone and a Google Photos remote named `gphotos`; see setup steps below. The OAuth token stays in rclone's own config. After a successful remote/album connection check, Photo Offloader saves only the remote name and last-check timestamp in `~/Library/Application Support/PhotoOffloaderData/preferences.json`, outside the replaceable install directory, so the dashboard can remember the setup after reinstalling. No credentials or tokens are copied into this preferences file. Cloud failures never invalidate a completed local/USB import.
+
 ### iTerm2 output
 
-The automatic camera trigger opens the importer in **iTerm2** by default. To use another terminal application, set `PHOTO_OFFLOADER_TERMINAL_APP` in the LaunchAgent environment before installing/loading the trigger.
+The automatic camera trigger opens the importer in **iTerm2** by default. Disabling Terminal output runs the same importer in the background and writes output to `~/.camera_transfer.log`; if that background importer exits unsuccessfully, trigger state is cleared so a later volume poll can retry the card. To use another terminal application, set `PHOTO_OFFLOADER_TERMINAL_APP` in the LaunchAgent environment before installing/loading the trigger.
 
 For example, to use the macOS Terminal app instead:
 
@@ -57,21 +79,27 @@ The state is cleared when no recognized camera volume is mounted, allowing the s
 
 ### 💾 Local + external backup
 
-Local storage defaults to:
+Local storage uses two top-level roots:
 
 ```text
-~/Pictures/CameraImports/
+~/Pictures/CameraImports/       # JPG/HEIC, videos, and other non-RAW media
+~/Pictures/CameraImportsRaw/    # RAW media (NEF, ARW, CR2/CR3, DNG, RAF, ORF, RW2)
 ```
 
-When `/Volumes/Photos` is mounted when an import begins, a second copy is written to:
+A camera import now runs in two stages:
 
-```text
-/Volumes/Photos/CameraImports/
+1. **Card → Mac SSD:** non-RAW media is copied to `~/Pictures/CameraImports/`; RAW media is copied to `~/Pictures/CameraImportsRaw/`. Each file is verified using the existing safe-copy rules.
+2. **Mac SSD → USB:** if `/Volumes/Photos` is mounted, Photo Offloader backs up files from both local roots into the single `/Volumes/Photos/CameraImports/` tree, preserving the existing date/camera and `Photos`/`Raws`/`Movies` subfolders. Existing files are SHA-256 checked; matching files are skipped, and mismatching files are reported as conflicts rather than overwritten.
+
+Once the local SSD stage has succeeded, the camera card can be ejected while the USB backup continues. A USB backup failure therefore does not invalidate the verified local import; rerun the USB-only sync after reconnecting the drive.
+
+Use `--no-usb` to skip USB backup during a camera import. USB backup can also be run independently at any time with the drive mounted, even when no camera card is connected:
+
+```bash
+python3 camera_offloader_v2.py --backup-usb
 ```
 
-The USB destination is snapshotted at the beginning of the session. If the expected USB volume disappears or is replaced during the import, the session fails and the camera card is not automatically ejected.
-
-Use `--no-usb` when a second backup is intentionally not required.
+The USB-only mode scans the local archive, verifies existing same-name files by SHA-256, copies missing files, and never overwrites a differing existing file.
 
 ### 🛡️ Collision safety
 
@@ -83,6 +111,12 @@ For an existing same-name file:
 2. Contents are SHA-256 compared.
 3. If it matches, the file is skipped.
 4. If it differs, a conflict name such as `DSC_1234__conflict-1.NEF` is used.
+
+### ⚡ Fast repeat imports
+
+Photo Offloader keeps verified SHA-256 hashes in the Mac SQLite catalog and, when the card is writable, an optional hidden sidecar manifest at `.photo-offloader/manifest-v1.json` on the card. On later insertions, the manifest is matched by card-relative path, size, and modification time; the destination hash is reused only when its catalog fingerprint is still valid. When both hashes are available, the decision can be made without reading the large RAW file contents again.
+
+The card manifest is a cache, not a source of truth. It is written atomically, never contains the media itself, and is optional: read-only cards, unsupported filesystems, missing manifests, and stale entries fall back to content hashing. Directory enumeration still runs on insertion so newly added files are discovered. During the decision phase, the dashboard reports files checked, checks per second, and an estimated time remaining.
 
 ### 🔐 Copy verification
 
@@ -106,6 +140,10 @@ Before copying, the importer calculates the total source bytes and checks every 
 
 The default safety buffer is 100 MiB and can be changed with `MIN_FREE_SPACE_BUFFER_BYTES` in the Python configuration.
 
+### Migrating existing RAW files
+
+To move RAW files already stored under `CameraImports` into the sibling `CameraImportsRaw` tree, use `bash move_raw_to_separate_folder.sh` for a dry run. The script preserves relative paths and never overwrites an existing destination. Review the preview first, then run `bash move_raw_to_separate_folder.sh --apply` to perform the move. It does not delete or modify JPGs or other non-RAW files.
+
 ### 📁 Archive layout
 
 Files are organized into `YYYY-MM` folders while preserving native camera subfolders:
@@ -114,10 +152,19 @@ Files are organized into `YYYY-MM` folders while preserving native camera subfol
 CameraImports/
 └── YYYY-MM/
     ├── 100NIKON/
-    │   ├── DSC_0001.NEF
-    │   └── DSC_0002.JPG
+    │   ├── Photos/
+    │   │   └── DSC_0002.JPG
+    │   └── Movies/
+    │       └── DSC_0004.MOV
     └── 101NIKON/
-        └── DSC_0003.JPG
+        └── Photos/
+            └── DSC_0003.JPG
+
+CameraImportsRaw/
+└── YYYY-MM/
+    └── 100NIKON/
+        └── Raws/
+            └── DSC_0001.NEF
 ```
 
 EXIF capture date is preferred for the month folder, followed by filesystem birth time and modification time.
@@ -161,11 +208,23 @@ Persistent logs are written to:
 ~/.camera_transfer.log
 ```
 
+The SQLite file catalog is stored at:
+
+```text
+~/Library/Application Support/PhotoOffloaderData/catalog.sqlite3
+```
+
+The catalog is updated automatically as files are scanned and copied. Use **Update File Catalog** in the menu bar or dashboard, or run `python3 camera_offloader_v2.py --update-catalog`, to explicitly initialize or refresh it. The dashboard's **Database Status** section shows separate internal-SSD and backup-USB catalog counts, last successful refresh times, and whether a refresh is currently running. A USB drive that is not mounted is clearly marked and its previous catalog records are preserved. This scans the Mac archive and the USB archive if the USB volume is mounted, updates file locations and cached capture-month/camera metadata, and removes stale entries for roots it successfully scans. It does not hash every file; verified hashes are preserved for unchanged files and generated by copy/verification workflows as needed. If the USB volume is not mounted, its existing catalog entries are preserved.
+
+The database is stored separately from the install directory, so it survives normal application upgrades and `./uninstall.sh`. The first run after this update automatically migrates an existing database from the former `~/Library/Application Support/PhotoOffloader/catalog.sqlite3` location. If the database is missing or unreadable, the importer falls back to normal filesystem and metadata checks; it never relies on catalog data to overwrite files.
+
 Trigger activity is written to:
 
 ```text
 ~/.camera_transfer_trigger.log
 ```
+
+Dashboard startup errors are written to `~/Library/Application Support/PhotoOffloader/dashboard.log`; menu-bar app output is written to `~/Library/Application Support/PhotoOffloader/menubar.log` and errors to `~/Library/Application Support/PhotoOffloader/menubar-error.log`.
 
 ### 🔔 macOS notifications
 
@@ -173,13 +232,7 @@ The importer uses native `osascript` notifications for successful, incomplete, c
 
 ### ⏏️ Safe ejection
 
-The card is automatically ejected only when:
-
-- all required destinations succeeded;
-- the expected USB backup volume is still present and matches its recorded identity; and
-- `--no-eject` was not specified.
-
-If an import fails, the card remains mounted for investigation or retry.
+The card is automatically ejected after the complete local SSD stage succeeds, provided `--no-eject` was not specified. If the local stage fails, the card remains mounted for investigation or retry. The USB stage checks the expected volume identity before copying; USB failures are reported separately and can be retried with `--backup-usb`.
 
 ## 📋 Requirements
 
@@ -188,6 +241,7 @@ If an import fails, the card remains mounted for investigation or retry.
 - `diskutil` and `osascript` (provided by macOS)
 - `alive-progress`
 - `Pillow`
+- `rumps` for the native menu-bar controller (installed by the app installer)
 - Optional: `exiftool` for camera Make/Model metadata in video files
 
 Development/testing also uses Ruff.
@@ -203,7 +257,7 @@ chmod +x install.sh uninstall.sh
 
 The installer:
 
-1. installs the importer and trigger under `~/Library/Application Support/PhotoOffloader`;
+1. installs the importer, trigger, dashboard, and menu-bar controller under `~/Library/Application Support/PhotoOffloader`;
 2. creates the runtime virtual environment;
 3. installs runtime dependencies;
 4. creates and validates `com.user.photooffloader.plist`;
@@ -232,14 +286,20 @@ Run Ruff:
 python -m ruff check camera_offloader_v2.py test_camera_offloader.py test_hardening_regressions.py test_camera_offloader_trigger.py
 ```
 
-The test suite includes filesystem-level copy tests, hardening regressions, lock behavior, USB identity checks, video camera metadata detection, and trigger tests covering volume names with spaces and repeated `/Volumes` events.
+The test suite includes filesystem-level copy tests, catalog caching/invalidation, hardening regressions, lock behavior, USB identity checks, video camera metadata detection, and trigger tests covering volume names with spaces and repeated `/Volumes` events.
 
 ## ⚙️ Manual operation
 
-Import a specific camera volume:
+Import a specific camera volume (copy to the Mac SSD, then sync missing files to USB if mounted):
 
 ```bash
 python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8"
+```
+
+Sync the Mac archive to USB without a camera card:
+
+```bash
+python3 camera_offloader_v2.py --backup-usb
 ```
 
 Import without the USB destination:
@@ -259,6 +319,16 @@ Enable SHA-256 verification:
 ```bash
 python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8" --sha256
 ```
+
+## ☁️ Google Photos setup (optional)
+1. Install rclone (for example, `brew install rclone`).
+2. Follow [rclone’s Google Photos setup guide](https://rclone.org/googlephotos/) and create a remote named `gphotos`. In 2026, configure your own Google OAuth client ID/secret; the shared rclone client ID is being retired. Enable the Photos Library API as described by rclone.
+3. Run `rclone config` and complete browser authentication. Photo Offloader does not store Google credentials itself; rclone stores its token in its own config.
+4. Use **Sync Google Photos** in the dashboard to test the upload. The first run creates/uses the `Photo Offloader` album. After each successful camera import, the app launches the same upload in the background.
+
+Uploads are original-quality and count against your Google account storage. This is a one-way upload only: it does not delete items from Google Photos or import your existing library, and RAW extensions are excluded. The Google Photos API has limitations; rclone can only download items it uploaded, and its existence checks are not a full content-hash comparison. See [rclone’s documented limitations](https://rclone.org/googlephotos/).
+
+Set `PHOTO_OFFLOADER_GPHOTOS_REMOTE` to change the remote name or `PHOTO_OFFLOADER_GPHOTOS_ALBUM` to change the album name. Defaults are `gphotos` and `Photo Offloader`.
 
 ## 🔧 Configuration
 
@@ -292,11 +362,14 @@ It watches `/Volumes`. Do not remove the trigger-level and importer-level locks;
 
 ## 🧹 Uninstallation
 
+Preview the cleanup first, then run uninstall with detailed output:
+
 ```bash
-./uninstall.sh
+./uninstall.sh --dry-run --verbose
+./uninstall.sh --verbose
 ```
 
-This removes the application files, runtime environment, trigger state, LaunchAgent, and logs. Imported media under `~/Pictures/CameraImports` is intentionally left untouched.
+Use `./uninstall.sh --help` for options. Verbose mode reports which LaunchAgents are unloaded, which installed processes are stopped, and what is removed. The script pauses new automatic imports before cleanup, checks the known trigger, menu-bar, and import-worker jobs, and returns a nonzero status if a known job remains registered. It removes the application files, runtime environment, trigger state, known LaunchAgent plists, and application logs. Imported media under `~/Pictures/CameraImports` and `~/Pictures/CameraImportsRaw` and the persistent catalog under `~/Library/Application Support/PhotoOffloaderData` are intentionally preserved.
 
 ## 📝 Change tracking
 
