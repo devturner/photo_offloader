@@ -5,6 +5,9 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Added
+- Extended the existing card-side manifest with last-seen, scan status, discovered/verified/pending counts, and successful scan/import timestamps. Failed or incomplete runs do not advance successful timestamps; manifest write failures remain non-fatal for read-only cards.
+
+### Added
 - Added an Auto-Eject On/Off dashboard control; auto-eject is opt-in and defaults off so already-handled cards remain mounted for Finder access unless explicitly enabled.
 - Replaced the Light/Dark dropdown with a compact sun/moon appearance toggle with a sliding active-state thumb and mouse/keyboard support. The selected theme is saved under `ui.theme` in `PhotoOffloaderData/preferences.json` and restored on next launch without overwriting other preferences.
 
