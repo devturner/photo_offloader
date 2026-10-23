@@ -367,28 +367,39 @@ def card_manifest_path(dcim_folder: Path) -> Path:
     return dcim_folder.resolve().parent / CARD_MANIFEST_DIR / CARD_MANIFEST_NAME
 
 
-def load_card_manifest(dcim_folder: Path) -> Dict[str, dict]:
-    """Read a card-side hash cache; corrupt or unavailable manifests are ignored."""
-    path = card_manifest_path(dcim_folder)
+def load_card_manifest_payload(dcim_folder: Path) -> Dict[str, object]:
+    """Read the complete card-side manifest, tolerating absent/corrupt/read-only media."""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if payload.get("schema") == 1 and isinstance(payload.get("files"), dict):
-            return payload["files"]
+        payload = json.loads(card_manifest_path(dcim_folder).read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and payload.get("schema") == 1 and isinstance(payload.get("files"), dict):
+            return payload
     except (OSError, ValueError, AttributeError):
         pass
-    return {}
+    return {"schema": 1, "files": {}, "history": {}}
 
 
-def save_card_manifest(dcim_folder: Path, files: Dict[str, dict]) -> bool:
-    """Atomically persist optional card metadata without making import depend on writes."""
+def load_card_manifest(dcim_folder: Path) -> Dict[str, dict]:
+    """Read per-file fingerprints and hashes from the card-side manifest."""
+    payload = load_card_manifest_payload(dcim_folder)
+    files = payload.get("files", {})
+    return files if isinstance(files, dict) else {}
+
+
+def save_card_manifest(
+    dcim_folder: Path, files: Dict[str, dict], history: Optional[Dict[str, object]] = None,
+) -> bool:
+    """Atomically persist card metadata; inability to write never blocks import."""
     path = card_manifest_path(dcim_folder)
     temp_path: Optional[Path] = None
     try:
+        previous = load_card_manifest_payload(dcim_folder)
+        metadata = history if history is not None else previous.get("history", {})
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, temp_name = tempfile.mkstemp(prefix=".manifest-", suffix=".tmp", dir=path.parent)
         temp_path = Path(temp_name)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"schema": 1, "files": files}, handle, separators=(",", ":"), sort_keys=True)
+            json.dump({"schema": 1, "files": files, "history": metadata},
+                      handle, separators=(",", ":"), sort_keys=True)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
@@ -401,6 +412,28 @@ def save_card_manifest(dcim_folder: Path, files: Dict[str, dict]) -> bool:
             except OSError:
                 pass
         return False
+
+
+def update_card_scan_history(
+    dcim_folder: Path, files: Dict[str, List[Path]], status: str,
+    verified_imported: int = 0, pending_or_failed: int = 0,
+) -> bool:
+    """Record scan/import reconciliation metadata without claiming failed scans succeeded."""
+    now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    previous = load_card_manifest_payload(dcim_folder)
+    history = previous.get("history", {})
+    if not isinstance(history, dict):
+        history = {}
+    history = dict(history)
+    history["last_seen"] = now
+    history["last_scan_status"] = status
+    history["files_discovered"] = sum(len(items) for items in files.values())
+    history["files_verified_imported"] = int(verified_imported)
+    history["pending_or_failed"] = int(pending_or_failed)
+    if status == "complete":
+        history["last_scan_completed"] = now
+        history["last_successful_import"] = now
+    return save_card_manifest(dcim_folder, load_card_manifest(dcim_folder), history)
 
 
 def card_manifest_entry(
@@ -1662,6 +1695,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             local_stats = ImportStats(found=total_found, source_bytes=source_bytes)
             logger.info("Scan complete: %d files (%d JPG, %d RAW, %d VIDEO)",
                         total_found, len(files["JPG"]), len(files["RAW"]), len(files["VIDEO"]))
+            # Record discovery immediately, but do not advance successful timestamps
+            # until destination copies have been verified.
+            update_card_scan_history(dcim_folder, files, "scanning", 0, total_found)
 
             usb_expected = not args.no_usb and usb_is_mounted()
             usb_identity = get_volume_identity(USB_DEST_VOLUME) if usb_expected else None
@@ -1692,10 +1728,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 update_status(state="failed", phase="card-to-ssd",
                               message=f"Local SSD import failed: {local_stats.failed} failure(s)",
                               current_file="", current_path="")
+                update_card_scan_history(dcim_folder, files, "incomplete",
+                                         local_stats.verified_copies, local_stats.failed)
                 logger.error("Local SSD import failed; card was not ejected and USB backup was not started.")
                 notify("Photo Import Incomplete", "Local SSD copy failed. Card remains mounted; USB backup was not started.")
                 return 1
 
+            update_card_scan_history(dcim_folder, files, "complete",
+                                     local_stats.verified_copies, 0)
             # The card is safe to release as soon as the complete local archive is verified.
             eject_attempted = False
             eject_success = False
