@@ -5,6 +5,10 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Prevented failed camera imports from being relaunched on every trigger poll. The failed status and handled-card state are preserved until the DCIM folder disappears on unmount, allowing a fresh attempt after remount.
+- Added regression tests for failure-loop suppression and retry eligibility after unmount/remount.
+
+### Fixed
 - Run terminal-free camera imports as a separately submitted user-domain launchd job instead of relying on a `nohup` child of the short-lived volume trigger. Submission failures are logged and clear the handled-card state for retry.
 - Hardened uninstall to unload known LaunchAgents, stop installed-script processes, verify known jobs are unloaded before reporting success, and preserve imported media and the persistent catalog.
 
