@@ -48,7 +48,7 @@ state_file="$4"
 trigger_log="$5"
 install_dir="$6"
 supervisor_log="$7"
-supervisor_pid="$"
+supervisor_pid="$$"
 printf "[%s] Background supervisor started (pid %s) for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$supervisor_pid" "$source_path" >> "$trigger_log"
 printf "[%s] Background supervisor started (pid %s) for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$supervisor_pid" "$source_path" >> "$supervisor_log"
 if ! cd "$install_dir"; then
