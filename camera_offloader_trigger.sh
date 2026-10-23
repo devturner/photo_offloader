@@ -227,7 +227,6 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
         rm -f "$EJECT_STATE_FILE"
     fi
     exit 0
-    fi
 fi
 
 # The importer has its own advisory lock. Avoid opening extra Terminal windows
