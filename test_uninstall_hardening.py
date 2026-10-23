@@ -50,8 +50,23 @@ class TestUninstallHardening(unittest.TestCase):
         self.assertIn("could not submit import worker", function)
         self.assertNotIn("nohup /bin/bash", function)
 
-    def test_installer_stops_a_stale_submitted_worker(self):
-        self.assertIn('launchctl kill SIGTERM "gui/$(id -u)/com.user.photooffloader.import"', self.install)
+    def test_installer_waits_for_worker_shutdown_before_replacing_files(self):
+        self.assertIn('SHUTDOWN_WAIT_SECONDS="${PHOTO_OFFLOADER_SHUTDOWN_WAIT_SECONDS:-10}"', self.install)
+        self.assertIn('launchctl kill SIGTERM "$DOMAIN/$IMPORT_LABEL"', self.install)
+        self.assertIn('launchctl bootout "$DOMAIN/$IMPORT_LABEL"', self.install)
+        self.assertIn("import_process_running", self.install)
+        self.assertIn("shutdown could not be verified", self.install)
+        shutdown_check = self.install.index('if [[ "$shutdown_verified" -ne 1 ]]')
+        first_copy = self.install.index('cp "$SCRIPT_DIR/$SCRIPT_NAME" "$SCRIPT_PATH"')
+        self.assertLess(shutdown_check, first_copy)
+
+    def test_uninstaller_verifies_no_installed_processes_before_removal(self):
+        verify = self.script.index("# Verify both launchd registration and exact installed-script processes")
+        remove = self.script.index('rm -rf "$INSTALL_DIR"')
+        self.assertLess(verify, remove)
+        self.assertIn('pids="$(find_pids "$target" || true)"', self.script)
+        self.assertIn("Shutdown could not be verified", self.script)
+        self.assertIn("Application files and LaunchAgent plists were NOT removed", self.script)
 
 
 if __name__ == "__main__":
