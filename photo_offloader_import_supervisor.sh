@@ -4,6 +4,7 @@ set -u
 python="$1"; importer="$2"; source_path="$3"; state_file="$4"
 trigger_log="$5"; install_dir="$6"; supervisor_log="$7"; status_file="$8"
 no_eject="${9:-1}"
+IMPORT_WORKER_LABEL="${PHOTO_OFFLOADER_IMPORT_WORKER_LABEL:-com.user.photooffloader.import}"
 supervisor_pid="$$"; phase="initializing"
 log_both() {
     local message="[$(/bin/date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -23,12 +24,22 @@ clear_state() {
 }
 finish() {
     local result=$?
-    trap - EXIT
+    # Disable traps before launchd cleanup; removing a submitted job may signal
+    # this process and must not overwrite a recorded success as a failure.
+    trap - EXIT HUP INT TERM
     if [[ "$result" -ne 0 ]]; then
         log_both "Supervisor exited unexpectedly with status $result during phase '$phase' for: $source_path"
         write_status "failed|$source_path|$result"
         # Preserve handled state after failure to prevent tight poll/relaunch loops.
         # The trigger clears it when the source DCIM disappears on unmount.
+    fi
+
+    # launchctl submit registers a named job; remove it on every terminal path
+    # after persisting status so the completed supervisor cannot be relaunched.
+    if /bin/launchctl remove "$IMPORT_WORKER_LABEL" >> "$supervisor_log" 2>&1; then
+        log_both "Removed completed launchd import job: $IMPORT_WORKER_LABEL"
+    else
+        log_both "WARNING: could not remove submitted launchd import job: $IMPORT_WORKER_LABEL"
     fi
     exit "$result"
 }
