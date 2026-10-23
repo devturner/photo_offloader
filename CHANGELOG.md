@@ -5,6 +5,12 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Background imports now persist a source-specific running/success/failure status. The trigger retries a stale background launch when its state exists but no live importer or successful completion is recorded, and auto-eject continues to require an explicit successful import status.
+
+### Added
+- Added regression coverage for persisted supervisor completion status and retrying stale handled-state after a background launch disappears.
+
+### Fixed
 - Added explicit background-supervisor start, working-directory failure, and importer exit diagnostics to both the trigger log and importer log, making terminal-free launch failures distinguishable from successful imports.
 
 ### Added
