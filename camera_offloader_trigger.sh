@@ -24,6 +24,7 @@ TERMINAL_OUTPUT_FILE="${PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE:-$INSTALL_DIR/.term
 VOLUMES_ROOT="${PHOTO_OFFLOADER_VOLUMES_ROOT:-/Volumes}"
 DISKUTIL="${PHOTO_OFFLOADER_DISKUTIL:-/usr/sbin/diskutil}"
 EJECT_STATE_FILE="${PHOTO_OFFLOADER_EJECT_STATE:-$INSTALL_DIR/.last_camera_eject_attempt}"
+IMPORT_STATUS_FILE="${PHOTO_OFFLOADER_IMPORT_STATUS:-$INSTALL_DIR/.last_camera_import_status}"
 AUTO_EJECT_FILE="${PHOTO_OFFLOADER_AUTO_EJECT_FILE:-$INSTALL_DIR/.auto-eject-enabled}"
 # launchd does not load interactive shell startup files. Keep common Homebrew
 # paths available to ExifTool, ffmpeg, and other optional media helpers.
@@ -48,7 +49,9 @@ state_file="$4"
 trigger_log="$5"
 install_dir="$6"
 supervisor_log="$7"
-supervisor_pid="$$"
+status_file="$8"
+supervisor_pid="$"
+printf "running|%s|%s\\n" "$source_path" "$supervisor_pid" > "$status_file"
 printf "[%s] Background supervisor started (pid %s) for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$supervisor_pid" "$source_path" >> "$trigger_log"
 printf "[%s] Background supervisor started (pid %s) for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$supervisor_pid" "$source_path" >> "$supervisor_log"
 if ! cd "$install_dir"; then
@@ -58,10 +61,12 @@ fi
 if "$python" "$importer" --source "$source_path"; then
     printf "[%s] Background importer exited successfully for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$source_path" >> "$trigger_log"
     printf "[%s] Background importer exited successfully for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$source_path" >> "$supervisor_log"
+    printf "success|%s|%s\\n" "$source_path" "$supervisor_pid" > "$status_file"
 else
     result=$?
     printf "[%s] Background importer failed with status %s for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$result" "$source_path" >> "$trigger_log"
     printf "[%s] Background importer failed with status %s for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$result" "$source_path" >> "$supervisor_log"
+    printf "failed|%s|%s\\n" "$source_path" "$result" > "$status_file"
     if [[ -f "$state_file" ]] && [[ "$(cat "$state_file")" == "$source_path" ]]; then
         rm -f "$state_file"
         printf "[%s] Cleared trigger state so this card can be retried.\\n" "$(date "+%Y-%m-%d %H:%M:%S")" >> "$trigger_log"
@@ -149,6 +154,13 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
         exit 0
     fi
 
+    # A background launch is considered handled only after the supervisor records
+    # success. A missing/running/failed status with no live importer means the
+    # detached child disappeared or failed to start: clear stale state and retry.
+    if [[ ! -f "$TERMINAL_OUTPUT_FILE" ]] && ! grep -Fq "success|$camera_dcim|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
+        log "Background import has no successful completion record; clearing stale state for retry: $camera_dcim"
+        rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
+    else
     # Suppress duplicate success/eject messages after a successful eject. A
     # failed eject is deliberately retried on the next volume poll.
     if [[ -f "$EJECT_STATE_FILE" ]] && [[ "$(cat "$EJECT_STATE_FILE")" == "$camera_dcim:ejected" ]]; then
@@ -167,7 +179,7 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
         exit 0
     fi
 
-    if ! grep -Fq "Background importer exited successfully for: $camera_dcim" "$LOG"; then
+    if ! grep -Fq "success|$camera_dcim|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
         if [[ ! -f "$EJECT_STATE_FILE" ]] || [[ "$(cat "$EJECT_STATE_FILE")" != "$camera_dcim:unconfirmed" ]]; then
             log "Auto-eject is enabled, but no successful completion was recorded; leaving card mounted: $camera_dcim"
             printf '%s\n' "$camera_dcim:unconfirmed" > "$EJECT_STATE_FILE"
@@ -185,6 +197,7 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
         rm -f "$EJECT_STATE_FILE"
     fi
     exit 0
+    fi
 fi
 
 # The importer has its own advisory lock. Avoid opening extra Terminal windows
