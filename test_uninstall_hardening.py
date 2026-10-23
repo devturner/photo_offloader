@@ -60,6 +60,17 @@ class TestUninstallHardening(unittest.TestCase):
         first_copy = self.install.index('cp "$SCRIPT_DIR/$SCRIPT_NAME" "$SCRIPT_PATH"')
         self.assertLess(shutdown_check, first_copy)
 
+    def test_supervisor_removes_submitted_launchd_job_after_terminal_status(self):
+        supervisor = (self.root / "photo_offloader_import_supervisor.sh").read_text(encoding="utf-8")
+        self.assertIn('IMPORT_WORKER_LABEL="${PHOTO_OFFLOADER_IMPORT_WORKER_LABEL:-com.user.photooffloader.import}"', supervisor)
+        self.assertIn('LAUNCHCTL="${PHOTO_OFFLOADER_LAUNCHCTL:-/bin/launchctl}"', supervisor)
+        self.assertIn('"$LAUNCHCTL" remove "$IMPORT_WORKER_LABEL"', supervisor)
+        self.assertIn('trap - EXIT HUP INT TERM', supervisor)
+        self.assertLess(supervisor.index('write_status "success|$source_path|$supervisor_pid"'),
+                        supervisor.index('"$LAUNCHCTL" remove "$IMPORT_WORKER_LABEL"'))
+        self.assertLess(supervisor.index('write_status "failed|$source_path|$result"'),
+                        supervisor.index('"$LAUNCHCTL" remove "$IMPORT_WORKER_LABEL"'))
+
     def test_uninstaller_verifies_no_installed_processes_before_removal(self):
         verify = self.script.index("# Verify both launchd registration and exact installed-script processes")
         remove = self.script.index('rm -rf "$INSTALL_DIR"')
