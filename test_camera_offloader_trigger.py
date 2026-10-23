@@ -134,6 +134,24 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertIn(str(self.dcim), args)
         self.assertIn("/opt/homebrew/bin", self.background_path.read_text())
         self.assertIn("Started detached background importer supervisor", self.log.read_text())
+        import_log = self.root / ".camera_transfer.log"
+        deadline = time.monotonic() + 2
+        while (
+            (not import_log.exists() or "Background supervisor started" not in import_log.read_text())
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        self.assertTrue(import_log.exists(), "background importer log was not created")
+        self.assertIn(
+            "Background supervisor started",
+            import_log.read_text(),
+            "supervisor must leave a diagnostic before starting the importer",
+        )
+        self.assertIn(
+            "Background supervisor started",
+            self.log.read_text(),
+            "supervisor start must also be recorded in the trigger log",
+        )
 
     def test_terminal_can_be_enabled_by_dashboard_toggle(self):
         (self.install / ".terminal-output-enabled").touch()
