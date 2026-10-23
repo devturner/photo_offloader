@@ -43,7 +43,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.launchctl = self.install / "launchctl"
         self.launchctl.write_text(
             "#!/bin/bash\n"
-            + 'if [[ "$1" == "print" ]]; then exit 1; fi\n'
+            + 'if [[ "$1" == "print" ]]; then [[ "${PHOTO_OFFLOADER_TEST_WORKER_REGISTERED:-0}" == "1" ]]; exit $?; fi\n'
             + 'if [[ "$1" == "submit" ]]; then shift 4; "$@" >> "$PHOTO_OFFLOADER_IMPORT_LOG" 2>&1 </dev/null & exit 0; fi\n'
             + "exit 1\n"
         )
@@ -148,6 +148,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         args = self.background_args.read_text()
         self.assertIn("--source", args)
         self.assertIn(str(self.dcim), args)
+        self.assertIn("--no-eject", args, "auto-eject disabled must be enforced inside the importer")
         self.assertIn("/opt/homebrew/bin", self.background_path.read_text())
         self.assertIn("Submitted importer supervisor to launchd", self.log.read_text())
         import_log = self.root / ".camera_transfer.log"
@@ -186,6 +187,14 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         while not self.background_args.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertTrue(self.background_args.exists(), "stale mount state must not suppress a retry")
+
+    def test_registered_worker_does_not_clear_handled_state_or_relaunch(self):
+        self.state.write_text(str(self.dcim) + "\n")
+        result = self.run_trigger(PHOTO_OFFLOADER_TEST_WORKER_REGISTERED="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.state.exists(), "registered worker must not cause handled-state to be deleted")
+        self.assertFalse(self.command_capture.exists(), "registered worker must suppress a duplicate launch")
+        self.assertIn("preserving handled state", self.log.read_text())
 
     def test_failed_background_import_is_not_retried_until_unmount(self):
         (self.install / ".terminal-output-enabled").unlink()
