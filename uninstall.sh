@@ -162,8 +162,8 @@ stop_matching_processes "$INSTALL_DIR/camera_offloader_v2.py" "Python importer"
 stop_matching_processes "$INSTALL_DIR/photo_offloader_ui.py" "dashboard"
 stop_matching_processes "$INSTALL_DIR/photo_offloader_menubar.py" "menu-bar app"
 
-# Verify launchd state before deleting anything. If a job survives bootout,
-# retain the installation files so the remaining job cannot reference deleted code.
+# Verify both launchd registration and exact installed-script processes before
+# deleting anything. A successful signal/bootout call alone is not proof of exit.
 if [[ "$DRY_RUN" -eq 0 ]]; then
   remaining=0
   for label in "$LABEL" "$UI_LABEL" "$IMPORT_LABEL"; do
@@ -174,12 +174,26 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
       log DEBUG "Verified unloaded: $label"
     fi
   done
+  for target in \
+    "$INSTALL_DIR/camera_offloader_trigger.sh" \
+    "$INSTALL_DIR/photo_offloader_import_supervisor.sh" \
+    "$INSTALL_DIR/camera_offloader_v2.py" \
+    "$INSTALL_DIR/photo_offloader_ui.py" \
+    "$INSTALL_DIR/photo_offloader_menubar.py"; do
+    pids="$(find_pids "$target" || true)"
+    if [[ -n "$pids" ]]; then
+      log WARN "Cleanup incomplete: process(es) still reference $target: $(printf '%s' "$pids" | tr '\\n' ' ')"
+      remaining=1
+    else
+      log DEBUG "Verified stopped: $target"
+    fi
+  done
   if [[ "$remaining" -ne 0 ]]; then
-    echo "WARNING: One or more launchd jobs remain. Application files were NOT removed; review the verbose output before retrying." >&2
+    echo "WARNING: Shutdown could not be verified. Application files and LaunchAgent plists were NOT removed; review the verbose output before retrying." >&2
     exit 1
   fi
 else
-  log INFO "DRY RUN: launchd registration checks are intentionally not treated as failures because no jobs were unloaded"
+  log INFO "DRY RUN: launchd/process checks are intentionally not treated as failures because no jobs were stopped"
 fi
 
 if [[ "$DRY_RUN" -eq 0 ]]; then
