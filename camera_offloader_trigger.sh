@@ -23,7 +23,10 @@ TERMINAL_APP="${PHOTO_OFFLOADER_TERMINAL_APP:-iTerm2}"
 TERMINAL_OUTPUT_FILE="${PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE:-$INSTALL_DIR/.terminal-output-enabled}"
 VOLUMES_ROOT="${PHOTO_OFFLOADER_VOLUMES_ROOT:-/Volumes}"
 DISKUTIL="${PHOTO_OFFLOADER_DISKUTIL:-/usr/sbin/diskutil}"
+LAUNCHCTL="${PHOTO_OFFLOADER_LAUNCHCTL:-/bin/launchctl}"
+IMPORT_WORKER_LABEL="com.user.photooffloader.import"
 EJECT_STATE_FILE="${PHOTO_OFFLOADER_EJECT_STATE:-$INSTALL_DIR/.last_camera_eject_attempt}"
+IMPORT_STATUS_FILE="${PHOTO_OFFLOADER_IMPORT_STATUS:-$INSTALL_DIR/.last_camera_import_status}"
 AUTO_EJECT_FILE="${PHOTO_OFFLOADER_AUTO_EJECT_FILE:-$INSTALL_DIR/.auto-eject-enabled}"
 # launchd does not load interactive shell startup files. Keep common Homebrew
 # paths available to ExifTool, ffmpeg, and other optional media helpers.
@@ -40,35 +43,34 @@ log() {
 start_background_import() {
     local source_path="$1"
     local import_log="$HOME/.camera_transfer.log"
-    local supervisor='
-python="$1"
-importer="$2"
-source_path="$3"
-state_file="$4"
-trigger_log="$5"
-install_dir="$6"
-cd "$install_dir" || exit 125
-if "$python" "$importer" --source "$source_path"; then
-    printf "[%s] Background importer exited successfully for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$source_path" >> "$trigger_log"
-else
-    result=$?
-    printf "[%s] Background importer failed with status %s for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$result" "$source_path" >> "$trigger_log"
-    if [[ -f "$state_file" ]] && [[ "$(cat "$state_file")" == "$source_path" ]]; then
-        rm -f "$state_file"
-        printf "[%s] Cleared trigger state so this card can be retried.\\n" "$(date "+%Y-%m-%d %H:%M:%S")" >> "$trigger_log"
-    fi
-fi
-'
-    # launchd jobs may be short-lived. Detach the supervisor and importer from
-    # that job explicitly, with a predictable Homebrew/system PATH and working
-    # directory; otherwise a successful card-detection log can be followed by
-    # no visible importer progress until a terminal is opened.
+    local supervisor_script="${PHOTO_OFFLOADER_SUPERVISOR:-$INSTALL_DIR/photo_offloader_import_supervisor.sh}"
+
     printf '%s\n' "$source_path" > "$STATE_FILE"
-    nohup /bin/bash -c "$supervisor" photo-offloader-import-supervisor \
-        "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" \
-        >> "$import_log" 2>&1 </dev/null &
-    local pid=$!
-    log "Started detached background importer supervisor (pid $pid) for: $source_path"
+    if [[ ! -f "$supervisor_script" ]]; then
+        log "Background supervisor script is missing: $supervisor_script"
+        rm -f "$STATE_FILE"
+        return 1
+    fi
+
+    # A child of a short-lived LaunchAgent can be terminated by launchd even
+    # when nohup is used. Submit the worker as its own user-domain launchd job.
+    # The unique label also prevents duplicate workers for a single user session.
+    local domain="gui/$(id -u)"
+    if "$LAUNCHCTL" print "$domain/$IMPORT_WORKER_LABEL" >/dev/null 2>&1; then
+        log "Import worker job is already registered; not submitting a duplicate: $IMPORT_WORKER_LABEL"
+        rm -f "$STATE_FILE"
+        return 1
+    fi
+    if "$LAUNCHCTL" submit -l "$IMPORT_WORKER_LABEL" -- /bin/bash "$supervisor_script" \
+        "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" "$import_log" "$IMPORT_STATUS_FILE" \
+        >> "$import_log" 2>&1; then
+        log "Submitted importer supervisor to launchd as $IMPORT_WORKER_LABEL for: $source_path"
+    else
+        local result=$?
+        log "ERROR: launchctl could not submit import worker (status $result) for: $source_path"
+        rm -f "$STATE_FILE"
+        return "$result"
+    fi
 }
 
 if [[ ! -x "$PYTHON" || ! -f "$IMPORTER" ]]; then
@@ -140,6 +142,13 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
         exit 0
     fi
 
+    # A background launch is considered handled only after the supervisor records
+    # success. A missing/running/failed status with no live importer means the
+    # detached child disappeared or failed to start: clear stale state and retry.
+    if [[ ! -f "$TERMINAL_OUTPUT_FILE" ]] && ! grep -Fq "success|$camera_dcim|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
+        log "Background import has no successful completion record; clearing stale state for retry: $camera_dcim"
+        rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
+    else
     # Suppress duplicate success/eject messages after a successful eject. A
     # failed eject is deliberately retried on the next volume poll.
     if [[ -f "$EJECT_STATE_FILE" ]] && [[ "$(cat "$EJECT_STATE_FILE")" == "$camera_dcim:ejected" ]]; then
@@ -158,7 +167,7 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
         exit 0
     fi
 
-    if ! grep -Fq "Background importer exited successfully for: $camera_dcim" "$LOG"; then
+    if ! grep -Fq "success|$camera_dcim|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
         if [[ ! -f "$EJECT_STATE_FILE" ]] || [[ "$(cat "$EJECT_STATE_FILE")" != "$camera_dcim:unconfirmed" ]]; then
             log "Auto-eject is enabled, but no successful completion was recorded; leaving card mounted: $camera_dcim"
             printf '%s\n' "$camera_dcim:unconfirmed" > "$EJECT_STATE_FILE"
@@ -176,6 +185,7 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
         rm -f "$EJECT_STATE_FILE"
     fi
     exit 0
+    fi
 fi
 
 # The importer has its own advisory lock. Avoid opening extra Terminal windows

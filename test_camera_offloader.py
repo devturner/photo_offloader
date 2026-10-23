@@ -302,6 +302,15 @@ class TestCameraOffloader(unittest.TestCase):
         media.write_bytes(b"photo bytes")
         with (
             patch.object(app, "usb_is_mounted", return_value=False),
+            # Provide deterministic batch metadata so this test covers the
+            # fast catalog path without depending on a locally installed ExifTool.
+            patch.object(
+                app, "get_exiftool_metadata_batch",
+                side_effect=lambda paths, tags: {
+                    str(path.resolve()): {"Make": "NIKON", "Model": "Z 8"}
+                    for path in paths
+                },
+            ),
             patch.object(
                 app, "get_month_folder",
                 side_effect=lambda p: (

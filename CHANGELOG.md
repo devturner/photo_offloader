@@ -4,6 +4,32 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- Run terminal-free camera imports as a separately submitted user-domain launchd job instead of relying on a `nohup` child of the short-lived volume trigger. Submission failures are logged and clear the handled-card state for retry.
+- Hardened uninstall to unload known LaunchAgents, stop installed-script processes, verify known jobs are unloaded before reporting success, and preserve imported media and the persistent catalog.
+
+### Added
+- Added `./uninstall.sh --verbose` diagnostics and a `--dry-run` preview, plus usage help.
+
+### Fixed
+- Replaced the embedded `bash -c` background-import supervisor with an installed standalone supervisor script. It records lifecycle phases, atomically persists status, logs unexpected exits, and clears stale mount state on failure.
+- Corrected the stale-state regression fixture to write an actual newline, so the test exercises the state-file format produced by the trigger.
+
+### Added
+- Added supervisor lifecycle regression coverage through the installed-script path.
+
+### Fixed
+- Background imports now persist a source-specific running/success/failure status. The trigger retries a stale background launch when its state exists but no live importer or successful completion is recorded, and auto-eject continues to require an explicit successful import status.
+
+### Added
+- Added regression coverage for persisted supervisor completion status and retrying stale handled-state after a background launch disappears.
+
+### Fixed
+- Added explicit background-supervisor start, working-directory failure, and importer exit diagnostics to both the trigger log and importer log, making terminal-free launch failures distinguishable from successful imports.
+
+### Added
+- Added regression coverage requiring the detached supervisor to record its startup in both logs before importer processing.
+
 ### Added
 - Added live card-inventory reconciliation against the existing manifest, reporting new, changed, unchanged, and no-longer-present files. Changed-file hashes are invalidated so they must be re-established; inventory observations do not advance successful import timestamps.
 

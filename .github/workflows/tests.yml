@@ -32,7 +32,7 @@ jobs:
         run: python -m ruff check camera_offloader_v2.py google_photos_sync.py photo_offloader_ui.py photo_offloader_menubar.py test_camera_offloader.py test_google_photos_sync.py
 
       - name: Validate shell scripts
-        run: bash -n install.sh uninstall.sh camera_offloader_trigger.sh
+        run: bash -n install.sh uninstall.sh camera_offloader_trigger.sh photo_offloader_import_supervisor.sh
 
       - name: Compile Python modules
         run: python -m compileall -q camera_offloader_v2.py google_photos_sync.py photo_offloader_ui.py photo_offloader_menubar.py

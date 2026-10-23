@@ -33,9 +33,21 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
             + "exit 0\n"
         )
         self.importer.write_text("#!/bin/bash\nexit 0\n")
+        self.supervisor = self.install / "photo_offloader_import_supervisor.sh"
+        self.supervisor.write_text(Path(__file__).with_name("photo_offloader_import_supervisor.sh").read_text())
+        self.supervisor.chmod(0o755)
         self.dashboard = self.install / "photo_offloader_ui.py"
         self.dashboard.write_text("# dashboard test fixture\n")
         self.python.chmod(0o755)
+
+        self.launchctl = self.install / "launchctl"
+        self.launchctl.write_text(
+            "#!/bin/bash\n"
+            + 'if [[ "$1" == "print" ]]; then exit 1; fi\n'
+            + 'if [[ "$1" == "submit" ]]; then shift 4; "$@" >> "$PHOTO_OFFLOADER_IMPORT_LOG" 2>&1 </dev/null & exit 0; fi\n'
+            + "exit 1\n"
+        )
+        self.launchctl.chmod(0o755)
 
         self.pgrep = self.install / "pgrep"
         self.pgrep.write_text("#!/bin/bash\nexit 1\n")
@@ -86,8 +98,11 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
                 "PHOTO_OFFLOADER_TRIGGER_LOCK": str(self.lock),
                 "PHOTO_OFFLOADER_TRIGGER_SETTLE_SECONDS": "0",
                 "PHOTO_OFFLOADER_PGREP": str(self.pgrep),
+                "PHOTO_OFFLOADER_LAUNCHCTL": str(self.launchctl),
+                "PHOTO_OFFLOADER_IMPORT_LOG": str(self.root / ".camera_transfer.log"),
                 "PHOTO_OFFLOADER_DISKUTIL": str(self.diskutil),
                 "PHOTO_OFFLOADER_EJECT_STATE": str(self.install / ".eject-state"),
+                "PHOTO_OFFLOADER_IMPORT_STATUS": str(self.install / ".import-status"),
                 "PHOTO_OFFLOADER_OSASCRIPT": str(self.osascript),
                 "PHOTO_OFFLOADER_VOLUMES_ROOT": str(self.volumes),
                 "PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE": str(self.install / ".terminal-output-enabled"),
@@ -122,6 +137,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.script_capture.exists())
         self.assertIn("Terminal output disabled", self.log.read_text())
+        self.assertIn("com.user.photooffloader.import", self.log.read_text())
         self.assertEqual(self.state.read_text().strip(), str(self.dcim))
         # Terminal output changes only where output is sent, not whether import runs.
         import time
@@ -133,7 +149,43 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertIn("--source", args)
         self.assertIn(str(self.dcim), args)
         self.assertIn("/opt/homebrew/bin", self.background_path.read_text())
-        self.assertIn("Started detached background importer supervisor", self.log.read_text())
+        self.assertIn("Submitted importer supervisor to launchd", self.log.read_text())
+        import_log = self.root / ".camera_transfer.log"
+        deadline = time.monotonic() + 2
+        while (
+            (not import_log.exists() or "Background supervisor started" not in import_log.read_text())
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        self.assertTrue(import_log.exists(), "background importer log was not created")
+        self.assertIn(
+            "Background supervisor started",
+            import_log.read_text(),
+            "supervisor must leave a diagnostic before starting the importer",
+        )
+        self.assertIn(
+            "Background supervisor started",
+            self.log.read_text(),
+            "supervisor start must also be recorded in the trigger log",
+        )
+        deadline = time.monotonic() + 2
+        status_file = self.install / ".import-status"
+        while (not status_file.exists() or not status_file.read_text().startswith("success|")) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(status_file.exists(), "supervisor must persist import completion status")
+        self.assertTrue(status_file.read_text().startswith("success|"), status_file.read_text())
+
+    def test_stale_background_state_without_success_is_retried(self):
+        (self.install / ".terminal-output-enabled").unlink()
+        self.state.write_text(str(self.dcim) + "\n")
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("clearing stale state for retry", self.log.read_text())
+        import time
+        deadline = time.monotonic() + 2
+        while not self.background_args.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(self.background_args.exists(), "stale mount state must not suppress a retry")
 
     def test_terminal_can_be_enabled_by_dashboard_toggle(self):
         (self.install / ".terminal-output-enabled").touch()
