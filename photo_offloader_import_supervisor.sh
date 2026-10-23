@@ -26,7 +26,8 @@ finish() {
     if [[ "$result" -ne 0 ]]; then
         log_both "Supervisor exited unexpectedly with status $result during phase '$phase' for: $source_path"
         write_status "failed|$source_path|$result"
-        clear_state
+        # Preserve handled state after failure to prevent tight poll/relaunch loops.
+        # The trigger clears it when the source DCIM disappears on unmount.
     fi
     exit "$result"
 }
@@ -54,6 +55,7 @@ else
     phase="failed-status"
     log_both "Background importer failed with status $result for: $source_path"
     write_status "failed|$source_path|$result"
-    clear_state
+    # Keep the failed source marked as handled until unmount/remount. Clearing it
+    # here would make the periodic trigger immediately launch the same failure again.
     exit "$result"
 fi
