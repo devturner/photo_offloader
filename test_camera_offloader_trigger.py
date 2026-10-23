@@ -247,8 +247,8 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
     def test_successful_import_state_survives_transient_missing_dcim(self):
         # A completed card must not be re-imported if launchd observes a brief
         # /Volumes visibility gap while the card remains part of this session.
-        self.state.write_text(str(self.dcim) + "\\n")
-        (self.install / ".import-status").write_text(f"success|{self.dcim}|123\\n")
+        self.state.write_text(str(self.dcim) + "\n")
+        (self.install / ".import-status").write_text(f"success|{self.dcim}|123\n")
         self.dcim.rmdir()
         self.card.rmdir()
 
