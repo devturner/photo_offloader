@@ -146,7 +146,7 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
     fi
 
     volume_path="${camera_dcim%/DCIM}"
-    log "Camera already handled; no importer is running. Requesting safe ejection: $volume_path"
+    log "Camera source already handled for this mount; no importer is running. Requesting safe ejection: $volume_path"
     if "$DISKUTIL" eject "$volume_path" >> "$LOG" 2>&1; then
         printf '%s\n' "$camera_dcim:ejected" > "$EJECT_STATE_FILE"
         log "Card ejected successfully: $volume_path"
