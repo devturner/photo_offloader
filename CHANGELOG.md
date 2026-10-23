@@ -5,6 +5,11 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Stop automatic relaunch loops by preserving handled-card state when a background worker exits without a visible success record; retry is deferred until the card is unmounted and reinserted.
+- Added regression coverage ensuring a handled mount without completion status is not relaunched on every trigger poll.
+
+
+### Fixed
 - Preserve successful handled-card state when the camera DCIM directory is briefly absent, preventing repeated successful imports during mount visibility churn.
 - Added a trigger regression test for a successful import followed by a transient missing-DCIM event.
 
