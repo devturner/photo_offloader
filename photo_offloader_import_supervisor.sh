@@ -5,6 +5,7 @@ python="$1"; importer="$2"; source_path="$3"; state_file="$4"
 trigger_log="$5"; install_dir="$6"; supervisor_log="$7"; status_file="$8"
 no_eject="${9:-1}"
 IMPORT_WORKER_LABEL="${PHOTO_OFFLOADER_IMPORT_WORKER_LABEL:-com.user.photooffloader.import}"
+LAUNCHCTL="${PHOTO_OFFLOADER_LAUNCHCTL:-/bin/launchctl}"
 supervisor_pid="$$"; phase="initializing"
 log_both() {
     local message="[$(/bin/date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -36,7 +37,7 @@ finish() {
 
     # launchctl submit registers a named job; remove it on every terminal path
     # after persisting status so the completed supervisor cannot be relaunched.
-    if /bin/launchctl remove "$IMPORT_WORKER_LABEL" >> "$supervisor_log" 2>&1; then
+    if $LAUNCHCTL remove "$IMPORT_WORKER_LABEL" >> "$supervisor_log" 2>&1; then
         log_both "Removed completed launchd import job: $IMPORT_WORKER_LABEL"
     else
         log_both "WARNING: could not remove submitted launchd import job: $IMPORT_WORKER_LABEL"
