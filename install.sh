@@ -21,7 +21,7 @@ echo "==========================================="
 
 mkdir -p "$INSTALL_DIR" "$HOME/Library/LaunchAgents"
 
-for file in "$SCRIPT_NAME" "$TRIGGER_NAME" "$UI_NAME" "$MENUBAR_NAME" "photo_offloader_backup_launcher.py" "google_photos_sync.py" "VERSION" "requirements.txt" "requirements-ui.txt"; do
+for file in "$SCRIPT_NAME" "$TRIGGER_NAME" "photo_offloader_import_supervisor.sh" "$UI_NAME" "$MENUBAR_NAME" "photo_offloader_backup_launcher.py" "google_photos_sync.py" "VERSION" "requirements.txt" "requirements-ui.txt"; do
   if [[ ! -f "$SCRIPT_DIR/$file" ]]; then
     echo "Error: $file not found in $SCRIPT_DIR."
     exit 1
@@ -30,6 +30,7 @@ done
 
 cp "$SCRIPT_DIR/$SCRIPT_NAME" "$SCRIPT_PATH"
 cp "$SCRIPT_DIR/$TRIGGER_NAME" "$TRIGGER_PATH"
+cp "$SCRIPT_DIR/photo_offloader_import_supervisor.sh" "$INSTALL_DIR/photo_offloader_import_supervisor.sh"
 cp "$SCRIPT_DIR/$UI_NAME" "$INSTALL_DIR/$UI_NAME"
 cp "$SCRIPT_DIR/$MENUBAR_NAME" "$INSTALL_DIR/$MENUBAR_NAME"
 cp "$SCRIPT_DIR/photo_offloader_backup_launcher.py" "$INSTALL_DIR/photo_offloader_backup_launcher.py"
@@ -37,7 +38,7 @@ cp "$SCRIPT_DIR/google_photos_sync.py" "$INSTALL_DIR/google_photos_sync.py"
 cp "$SCRIPT_DIR/VERSION" "$INSTALL_DIR/VERSION"
 cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
 cp "$SCRIPT_DIR/requirements-ui.txt" "$INSTALL_DIR/requirements-ui.txt"
-chmod +x "$SCRIPT_PATH" "$TRIGGER_PATH" "$INSTALL_DIR/$UI_NAME" "$INSTALL_DIR/$MENUBAR_NAME" "$INSTALL_DIR/photo_offloader_backup_launcher.py" "$INSTALL_DIR/google_photos_sync.py"
+chmod +x "$SCRIPT_PATH" "$TRIGGER_PATH" "$INSTALL_DIR/photo_offloader_import_supervisor.sh" "$INSTALL_DIR/$UI_NAME" "$INSTALL_DIR/$MENUBAR_NAME" "$INSTALL_DIR/photo_offloader_backup_launcher.py" "$INSTALL_DIR/google_photos_sync.py"
 
 # Capture provenance at install time so installed logs identify the exact source
 # revision, even though the installed Application Support directory is not a git checkout.

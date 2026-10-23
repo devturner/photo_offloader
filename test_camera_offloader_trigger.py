@@ -33,6 +33,9 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
             + "exit 0\n"
         )
         self.importer.write_text("#!/bin/bash\nexit 0\n")
+        self.supervisor = self.install / "photo_offloader_import_supervisor.sh"
+        self.supervisor.write_text(Path(__file__).with_name("photo_offloader_import_supervisor.sh").read_text())
+        self.supervisor.chmod(0o755)
         self.dashboard = self.install / "photo_offloader_ui.py"
         self.dashboard.write_text("# dashboard test fixture\n")
         self.python.chmod(0o755)
@@ -162,7 +165,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
 
     def test_stale_background_state_without_success_is_retried(self):
         (self.install / ".terminal-output-enabled").unlink()
-        self.state.write_text(str(self.dcim) + "\\n")
+        self.state.write_text(str(self.dcim) + "\n")
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("clearing stale state for retry", self.log.read_text())

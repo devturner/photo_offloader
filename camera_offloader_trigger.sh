@@ -41,44 +41,18 @@ log() {
 start_background_import() {
     local source_path="$1"
     local import_log="$HOME/.camera_transfer.log"
-    local supervisor='
-python="$1"
-importer="$2"
-source_path="$3"
-state_file="$4"
-trigger_log="$5"
-install_dir="$6"
-supervisor_log="$7"
-status_file="$8"
-supervisor_pid="$$"
-printf "running|%s|%s\\n" "$source_path" "$supervisor_pid" > "$status_file"
-printf "[%s] Background supervisor started (pid %s) for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$supervisor_pid" "$source_path" >> "$trigger_log"
-printf "[%s] Background supervisor started (pid %s) for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$supervisor_pid" "$source_path" >> "$supervisor_log"
-if ! cd "$install_dir"; then
-    printf "[%s] Background supervisor could not enter install directory: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$install_dir" >> "$trigger_log"
-    exit 125
-fi
-if "$python" "$importer" --source "$source_path"; then
-    printf "[%s] Background importer exited successfully for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$source_path" >> "$trigger_log"
-    printf "[%s] Background importer exited successfully for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$source_path" >> "$supervisor_log"
-    printf "success|%s|%s\\n" "$source_path" "$supervisor_pid" > "$status_file"
-else
-    result=$?
-    printf "[%s] Background importer failed with status %s for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$result" "$source_path" >> "$trigger_log"
-    printf "[%s] Background importer failed with status %s for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$result" "$source_path" >> "$supervisor_log"
-    printf "failed|%s|%s\\n" "$source_path" "$result" > "$status_file"
-    if [[ -f "$state_file" ]] && [[ "$(cat "$state_file")" == "$source_path" ]]; then
-        rm -f "$state_file"
-        printf "[%s] Cleared trigger state so this card can be retried.\\n" "$(date "+%Y-%m-%d %H:%M:%S")" >> "$trigger_log"
-    fi
-fi
-'
-    # launchd jobs may be short-lived. Detach the supervisor and importer from
-    # that job explicitly, with a predictable Homebrew/system PATH and working
-    # directory; otherwise a successful card-detection log can be followed by
-    # no visible importer progress until a terminal is opened.
+    local supervisor_script="${PHOTO_OFFLOADER_SUPERVISOR:-$INSTALL_DIR/photo_offloader_import_supervisor.sh}"
+
     printf '%s\n' "$source_path" > "$STATE_FILE"
-    nohup /bin/bash -c "$supervisor" photo-offloader-import-supervisor \
+    if [[ ! -f "$supervisor_script" ]]; then
+        log "Background supervisor script is missing: $supervisor_script"
+        rm -f "$STATE_FILE"
+        return 1
+    fi
+
+    # Use a standalone script rather than a nested bash -c payload, so the
+    # detached process has deterministic arguments and explicit failure logging.
+    nohup /bin/bash "$supervisor_script" \
         "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" "$import_log" "$IMPORT_STATUS_FILE" \
         >> "$import_log" 2>&1 </dev/null &
     local pid=$!
