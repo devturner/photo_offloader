@@ -302,6 +302,9 @@ class TestCameraOffloader(unittest.TestCase):
         media.write_bytes(b"photo bytes")
         with (
             patch.object(app, "usb_is_mounted", return_value=False),
+            # Keep this test independent of whether ExifTool happens to be
+            # installed: exercise the established per-file fallback below.
+            patch.object(app, "get_exiftool_metadata_batch", return_value={}),
             patch.object(
                 app, "get_month_folder",
                 side_effect=lambda p: (
