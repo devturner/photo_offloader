@@ -42,6 +42,14 @@ class TestUninstallHardening(unittest.TestCase):
         self.assertIn("Persistent media catalog preserved", self.script)
         self.assertIn("Imported media under ~/Pictures/CameraImports", self.script)
 
+    def test_trigger_recognizes_any_mounted_volume_with_dcim(self):
+        self.assertIn('for volume in "$VOLUMES_ROOT"/*; do', self.trigger)
+        self.assertIn('[[ -d "$volume" && -d "$volume/DCIM" ]] || continue', self.trigger)
+        self.assertIn('Recognized mounted volume with DCIM directory', self.trigger)
+        self.assertNotIn('NIKON/Z_8', self.trigger)
+        self.assertNotIn('NIKON001.DSC', self.trigger)
+        self.assertNotIn('NIKON*|SONY*|EOS*', self.trigger)
+
     def test_background_import_uses_launchd_submit_not_nohup(self):
         start = self.trigger.index("start_background_import()")
         end = self.trigger.index("\n}\n", start)
@@ -66,10 +74,15 @@ class TestUninstallHardening(unittest.TestCase):
         self.assertIn('LAUNCHCTL="${PHOTO_OFFLOADER_LAUNCHCTL:-/bin/launchctl}"', supervisor)
         self.assertIn('"$LAUNCHCTL" remove "$IMPORT_WORKER_LABEL"', supervisor)
         self.assertIn('trap - EXIT HUP INT TERM', supervisor)
-        self.assertLess(supervisor.index('write_status "success|$source_path|$supervisor_pid"'),
-                        supervisor.index('"$LAUNCHCTL" remove "$IMPORT_WORKER_LABEL"'))
-        self.assertLess(supervisor.index('write_status "failed|$source_path|$result"'),
-                        supervisor.index('"$LAUNCHCTL" remove "$IMPORT_WORKER_LABEL"'))
+        finish_start = supervisor.index("finish() {")
+        finish_end = supervisor.index("\n}\ntrap finish EXIT", finish_start)
+        finish = supervisor[finish_start:finish_end]
+        self.assertLess(finish.index('write_status "failed|$source_path|$result"'),
+                        finish.index('"$LAUNCHCTL" remove "$IMPORT_WORKER_LABEL"'))
+        self.assertIn('write_status "success|$source_path|$supervisor_pid"', supervisor)
+        self.assertIn('write_status "failed|$source_path|$result"', supervisor)
+        self.assertIn('write_status "failed|$source_path|source-missing"', supervisor)
+        self.assertIn('trap - EXIT HUP INT TERM', finish)
 
     def test_uninstaller_verifies_no_installed_processes_before_removal(self):
         verify = self.script.index("# Verify both launchd registration and exact installed-script processes")

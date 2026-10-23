@@ -1,7 +1,7 @@
 #!/bin/bash
 # launchd trigger for Photo Offloader.
-# Watches /Volumes indirectly via launchd and launches an import only when a
-# recognized camera DCIM directory is mounted. Paths are kept as shell words so
+# Watches /Volumes indirectly via launchd and launches an import when a mounted
+# volume contains a top-level DCIM directory. Paths are kept as shell words so
 # volume names such as "NIKON Z 8" are never split or re-quoted through nested
 # shells.
 
@@ -124,12 +124,13 @@ if [[ -f "$PAUSE_FILE" ]]; then
 fi
 
 camera_dcim=""
-for volume in "$VOLUMES_ROOT"/NIKON* "$VOLUMES_ROOT"/SONY* "$VOLUMES_ROOT"/EOS*; do
-    [[ -d "$volume" ]] || continue
-    if [[ -d "$volume/DCIM" ]]; then
-        camera_dcim="$volume/DCIM"
-        break
-    fi
+# Any mounted volume with a top-level DCIM directory is eligible.
+# Volume names and camera-brand markers are intentionally ignored.
+for volume in "$VOLUMES_ROOT"/*; do
+    [[ -d "$volume" && -d "$volume/DCIM" ]] || continue
+    camera_dcim="$volume/DCIM"
+    log "Recognized mounted volume with DCIM directory: $camera_dcim"
+    break
 done
 
 if [[ -z "$camera_dcim" ]]; then

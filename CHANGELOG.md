@@ -4,6 +4,11 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Changed
+- Automatic import detection now accepts any mounted volume containing a top-level `DCIM` directory, regardless of volume name or camera manufacturer.
+- Added regression coverage for manufacturer-independent DCIM detection.
+
+
 ### Fixed
 - Import supervisor now removes its named `launchctl submit` job after writing terminal status, preventing a completed import worker from being relaunched under the stale label.
 - Added regression assertions that worker-job cleanup follows success/failure status persistence and disables traps before launchd cleanup.
