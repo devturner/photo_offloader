@@ -148,7 +148,10 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
     # Only the detached supervisor records this explicit success line. Terminal
     # launches perform their own success-gated ejection inside the importer.
     if ! grep -Fq "Background importer exited successfully for: $camera_dcim" "$LOG"; then
-        log "Camera source already handled for this mount, but no successful completion was recorded; leaving card mounted."
+        if [[ ! -f "$EJECT_STATE_FILE" ]] || [[ "$(cat "$EJECT_STATE_FILE")" != "$camera_dcim:unconfirmed" ]]; then
+            log "Camera source already handled for this mount, but no successful completion was recorded; leaving card mounted."
+            printf '%s\\n' "$camera_dcim:unconfirmed" > "$EJECT_STATE_FILE"
+        fi
         exit 0
     fi
 
