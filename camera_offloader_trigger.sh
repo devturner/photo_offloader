@@ -47,12 +47,21 @@ source_path="$3"
 state_file="$4"
 trigger_log="$5"
 install_dir="$6"
-cd "$install_dir" || exit 125
+supervisor_log="$7"
+supervisor_pid="$"
+printf "[%s] Background supervisor started (pid %s) for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$supervisor_pid" "$source_path" >> "$trigger_log"
+printf "[%s] Background supervisor started (pid %s) for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$supervisor_pid" "$source_path" >> "$supervisor_log"
+if ! cd "$install_dir"; then
+    printf "[%s] Background supervisor could not enter install directory: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$install_dir" >> "$trigger_log"
+    exit 125
+fi
 if "$python" "$importer" --source "$source_path"; then
     printf "[%s] Background importer exited successfully for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$source_path" >> "$trigger_log"
+    printf "[%s] Background importer exited successfully for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$source_path" >> "$supervisor_log"
 else
     result=$?
     printf "[%s] Background importer failed with status %s for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$result" "$source_path" >> "$trigger_log"
+    printf "[%s] Background importer failed with status %s for: %s\\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$result" "$source_path" >> "$supervisor_log"
     if [[ -f "$state_file" ]] && [[ "$(cat "$state_file")" == "$source_path" ]]; then
         rm -f "$state_file"
         printf "[%s] Cleared trigger state so this card can be retried.\\n" "$(date "+%Y-%m-%d %H:%M:%S")" >> "$trigger_log"
@@ -65,7 +74,7 @@ fi
     # no visible importer progress until a terminal is opened.
     printf '%s\n' "$source_path" > "$STATE_FILE"
     nohup /bin/bash -c "$supervisor" photo-offloader-import-supervisor \
-        "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" \
+        "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" "$import_log" \
         >> "$import_log" 2>&1 </dev/null &
     local pid=$!
     log "Started detached background importer supervisor (pid $pid) for: $source_path"
