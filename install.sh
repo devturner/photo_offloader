@@ -19,6 +19,10 @@ echo "==========================================="
 echo " Installing Photo Offloader v2.4"
 echo "==========================================="
 
+# Stop a worker submitted by an older trigger before replacing installed scripts.
+# Do not fail a fresh install if no such job is registered.
+launchctl kill SIGTERM "gui/$(id -u)/com.user.photooffloader.import" 2>/dev/null || true
+
 mkdir -p "$INSTALL_DIR" "$HOME/Library/LaunchAgents"
 
 for file in "$SCRIPT_NAME" "$TRIGGER_NAME" "photo_offloader_import_supervisor.sh" "$UI_NAME" "$MENUBAR_NAME" "photo_offloader_backup_launcher.py" "google_photos_sync.py" "VERSION" "requirements.txt" "requirements-ui.txt"; do
