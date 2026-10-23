@@ -24,6 +24,7 @@ TERMINAL_OUTPUT_FILE="${PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE:-$INSTALL_DIR/.term
 VOLUMES_ROOT="${PHOTO_OFFLOADER_VOLUMES_ROOT:-/Volumes}"
 DISKUTIL="${PHOTO_OFFLOADER_DISKUTIL:-/usr/sbin/diskutil}"
 EJECT_STATE_FILE="${PHOTO_OFFLOADER_EJECT_STATE:-$INSTALL_DIR/.last_camera_eject_attempt}"
+AUTO_EJECT_FILE="${PHOTO_OFFLOADER_AUTO_EJECT_FILE:-$INSTALL_DIR/.auto-eject-enabled}"
 # launchd does not load interactive shell startup files. Keep common Homebrew
 # paths available to ExifTool, ffmpeg, and other optional media helpers.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
@@ -151,6 +152,14 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
         if [[ ! -f "$EJECT_STATE_FILE" ]] || [[ "$(cat "$EJECT_STATE_FILE")" != "$camera_dcim:unconfirmed" ]]; then
             log "Camera source already handled for this mount, but no successful completion was recorded; leaving card mounted."
             printf '%s\\n' "$camera_dcim:unconfirmed" > "$EJECT_STATE_FILE"
+        fi
+        exit 0
+    fi
+
+    if [[ ! -f "$AUTO_EJECT_FILE" ]]; then
+        if [[ ! -f "$EJECT_STATE_FILE" ]] || [[ "$(cat "$EJECT_STATE_FILE")" != "$camera_dcim:manual" ]]; then
+            log "Camera source already handled for this mount; auto-eject is disabled, leaving card mounted for Finder access: $camera_dcim"
+            printf '%s\n' "$camera_dcim:manual" > "$EJECT_STATE_FILE"
         fi
         exit 0
     fi
