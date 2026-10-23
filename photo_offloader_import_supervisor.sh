@@ -37,7 +37,7 @@ finish() {
 
     # launchctl submit registers a named job; remove it on every terminal path
     # after persisting status so the completed supervisor cannot be relaunched.
-    if $LAUNCHCTL remove "$IMPORT_WORKER_LABEL" >> "$supervisor_log" 2>&1; then
+    if "$LAUNCHCTL" remove "$IMPORT_WORKER_LABEL" >> "$supervisor_log" 2>&1; then
         log_both "Removed completed launchd import job: $IMPORT_WORKER_LABEL"
     else
         log_both "WARNING: could not remove submitted launchd import job: $IMPORT_WORKER_LABEL"
