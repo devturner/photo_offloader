@@ -5,6 +5,9 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Added
+- Added live card-inventory reconciliation against the existing manifest, reporting new, changed, unchanged, and no-longer-present files. Changed-file hashes are invalidated so they must be re-established; inventory observations do not advance successful import timestamps.
+
+### Added
 - Extended the existing card-side manifest with last-seen, scan status, discovered/verified/pending counts, and successful scan/import timestamps. Failed or incomplete runs do not advance successful timestamps; manifest write failures remain non-fatal for read-only cards.
 
 ### Added
