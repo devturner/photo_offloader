@@ -42,11 +42,13 @@ class TestUninstallHardening(unittest.TestCase):
         self.assertIn("Persistent media catalog preserved", self.script)
         self.assertIn("Imported media under ~/Pictures/CameraImports", self.script)
 
-    def test_trigger_recognizes_renamed_nikon_z8_card_by_markers(self):
-        # A renamed card such as /Volumes/superCamera may not match NIKON*.
-        self.assertIn('"$VOLUMES_ROOT"/*', self.trigger)
-        self.assertIn('[[ -d "$volume/NIKON/Z_8" && -f "$volume/NIKON001.DSC" ]]', self.trigger)
-        self.assertIn('Recognized Nikon Z 8 card by card markers on renamed volume', self.trigger)
+    def test_trigger_recognizes_any_mounted_volume_with_dcim(self):
+        self.assertIn('for volume in "$VOLUMES_ROOT"/*; do', self.trigger)
+        self.assertIn('[[ -d "$volume" && -d "$volume/DCIM" ]] || continue', self.trigger)
+        self.assertIn('Recognized mounted volume with DCIM directory', self.trigger)
+        self.assertNotIn('NIKON/Z_8', self.trigger)
+        self.assertNotIn('NIKON001.DSC', self.trigger)
+        self.assertNotIn('NIKON*|SONY*|EOS*', self.trigger)
 
     def test_background_import_uses_launchd_submit_not_nohup(self):
         start = self.trigger.index("start_background_import()")
