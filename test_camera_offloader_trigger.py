@@ -181,40 +181,12 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertIn("already handled for this mount", self.log.read_text())
         self.assertNotEqual(first_command, "")
 
-    def test_already_handled_card_is_ejected_once_when_importer_is_not_running(self):
-        (self.install / ".terminal-output-enabled").unlink()
+    def test_auto_eject_is_disabled_by_default_for_already_handled_card(self):
         self.assertEqual(self.run_trigger().returncode, 0)
-        import time
-        deadline = time.monotonic() + 2
-        while (not self.log.exists() or "Background importer exited successfully" not in self.log.read_text()) and time.monotonic() < deadline:
-            time.sleep(0.02)
-        self.assertIn("Background importer exited successfully", self.log.read_text())
+        self.assertEqual(self.run_trigger().returncode, 0)
         self.assertFalse(self.eject_capture.exists())
-
-        self.assertEqual(self.run_trigger().returncode, 0)
-        self.assertEqual(self.eject_capture.read_text().splitlines(), ["eject", str(self.card)])
-        log = self.log.read_text()
-        self.assertIn("Requesting safe ejection", log)
-        self.assertIn("Card ejected successfully", log)
-
-        before = log.count("Card ejected successfully")
-        self.assertEqual(self.run_trigger().returncode, 0)
-        self.assertEqual(self.eject_capture.read_text().splitlines(), ["eject", str(self.card)])
-        self.assertEqual(self.log.read_text().count("Card ejected successfully"), before)
-
-    def test_failed_eject_is_logged_and_retried(self):
-        (self.install / ".terminal-output-enabled").unlink()
-        self.assertEqual(self.run_trigger().returncode, 0)
-        import time
-        deadline = time.monotonic() + 2
-        while (not self.log.exists() or "Background importer exited successfully" not in self.log.read_text()) and time.monotonic() < deadline:
-            time.sleep(0.02)
-        self.assertIn("Background importer exited successfully", self.log.read_text())
-        self.assertEqual(self.run_trigger(PHOTO_OFFLOADER_TEST_EJECT_STATUS="1").returncode, 0)
-        self.assertIn("Card ejection failed", self.log.read_text())
-        self.assertEqual(self.run_trigger().returncode, 0)
-        self.assertEqual(self.eject_capture.read_text().splitlines().count("eject"), 2)
-        self.assertIn("Card ejected successfully", self.log.read_text())
+        self.assertIn("auto-eject is disabled", self.log.read_text())
+        self.assertIn("leaving card mounted for Finder access", self.log.read_text())
 
     def test_unmount_clears_state_and_allows_remount(self):
         self.assertEqual(self.run_trigger().returncode, 0)
