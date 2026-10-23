@@ -176,17 +176,14 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertTrue(status_file.exists(), "supervisor must persist import completion status")
         self.assertTrue(status_file.read_text().startswith("success|"), status_file.read_text())
 
-    def test_stale_background_state_without_success_is_retried(self):
+    def test_stale_background_state_without_success_is_suppressed_until_unmount(self):
         (self.install / ".terminal-output-enabled").unlink()
         self.state.write_text(str(self.dcim) + "\n")
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("clearing stale state for retry", self.log.read_text())
-        import time
-        deadline = time.monotonic() + 2
-        while not self.background_args.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        self.assertTrue(self.background_args.exists(), "stale mount state must not suppress a retry")
+        self.assertTrue(self.state.exists(), "an already-handled mount must not be reset without completion status")
+        self.assertFalse(self.background_args.exists(), "missing completion status must not trigger a relaunch loop")
+        self.assertIn("suppressing relaunch until unmount", self.log.read_text())
 
     def test_registered_worker_does_not_clear_handled_state_or_relaunch(self):
         self.state.write_text(str(self.dcim) + "\n")
