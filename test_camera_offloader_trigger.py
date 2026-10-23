@@ -88,6 +88,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
                 "PHOTO_OFFLOADER_PGREP": str(self.pgrep),
                 "PHOTO_OFFLOADER_DISKUTIL": str(self.diskutil),
                 "PHOTO_OFFLOADER_EJECT_STATE": str(self.install / ".eject-state"),
+                "PHOTO_OFFLOADER_IMPORT_STATUS": str(self.install / ".import-status"),
                 "PHOTO_OFFLOADER_OSASCRIPT": str(self.osascript),
                 "PHOTO_OFFLOADER_VOLUMES_ROOT": str(self.volumes),
                 "PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE": str(self.install / ".terminal-output-enabled"),
@@ -152,6 +153,24 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
             self.log.read_text(),
             "supervisor start must also be recorded in the trigger log",
         )
+        deadline = time.monotonic() + 2
+        status_file = self.install / ".import-status"
+        while (not status_file.exists() or not status_file.read_text().startswith("success|")) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(status_file.exists(), "supervisor must persist import completion status")
+        self.assertTrue(status_file.read_text().startswith("success|"), status_file.read_text())
+
+    def test_stale_background_state_without_success_is_retried(self):
+        (self.install / ".terminal-output-enabled").unlink()
+        self.state.write_text(str(self.dcim) + "\\n")
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("clearing stale state for retry", self.log.read_text())
+        import time
+        deadline = time.monotonic() + 2
+        while not self.background_args.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(self.background_args.exists(), "stale mount state must not suppress a retry")
 
     def test_terminal_can_be_enabled_by_dashboard_toggle(self):
         (self.install / ".terminal-output-enabled").touch()
