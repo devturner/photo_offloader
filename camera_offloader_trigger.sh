@@ -148,18 +148,20 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
 
     # Only the detached supervisor records this explicit success line. Terminal
     # launches perform their own success-gated ejection inside the importer.
-    if ! grep -Fq "Background importer exited successfully for: $camera_dcim" "$LOG"; then
-        if [[ ! -f "$EJECT_STATE_FILE" ]] || [[ "$(cat "$EJECT_STATE_FILE")" != "$camera_dcim:unconfirmed" ]]; then
-            log "Camera source already handled for this mount, but no successful completion was recorded; leaving card mounted."
-            printf '%s\\n' "$camera_dcim:unconfirmed" > "$EJECT_STATE_FILE"
-        fi
-        exit 0
-    fi
-
+    # Auto-eject is opt-in. When disabled, leave the card mounted without
+    # requiring an import-success marker; that marker only gates actual ejection.
     if [[ ! -f "$AUTO_EJECT_FILE" ]]; then
         if [[ ! -f "$EJECT_STATE_FILE" ]] || [[ "$(cat "$EJECT_STATE_FILE")" != "$camera_dcim:manual" ]]; then
             log "Camera source already handled for this mount; auto-eject is disabled, leaving card mounted for Finder access: $camera_dcim"
             printf '%s\n' "$camera_dcim:manual" > "$EJECT_STATE_FILE"
+        fi
+        exit 0
+    fi
+
+    if ! grep -Fq "Background importer exited successfully for: $camera_dcim" "$LOG"; then
+        if [[ ! -f "$EJECT_STATE_FILE" ]] || [[ "$(cat "$EJECT_STATE_FILE")" != "$camera_dcim:unconfirmed" ]]; then
+            log "Auto-eject is enabled, but no successful completion was recorded; leaving card mounted: $camera_dcim"
+            printf '%s\n' "$camera_dcim:unconfirmed" > "$EJECT_STATE_FILE"
         fi
         exit 0
     fi
