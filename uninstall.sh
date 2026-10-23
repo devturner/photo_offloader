@@ -154,14 +154,25 @@ stop_matching_processes "$INSTALL_DIR/camera_offloader_v2.py" "Python importer"
 stop_matching_processes "$INSTALL_DIR/photo_offloader_ui.py" "dashboard"
 stop_matching_processes "$INSTALL_DIR/photo_offloader_menubar.py" "menu-bar app"
 
-# Confirm the registered jobs are gone before removing their plist files.
-for label in "$LABEL" "$UI_LABEL" "$IMPORT_LABEL"; do
-  if exists_in_launchd "$label"; then
-    log WARN "LaunchAgent still appears registered: $label"
-  else
-    log DEBUG "Verified unloaded: $label"
+# Verify launchd state before deleting anything. If a job survives bootout,
+# retain the installation files so the remaining job cannot reference deleted code.
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  remaining=0
+  for label in "$LABEL" "$UI_LABEL" "$IMPORT_LABEL"; do
+    if exists_in_launchd "$label"; then
+      log WARN "Cleanup incomplete: $label is still registered"
+      remaining=1
+    else
+      log DEBUG "Verified unloaded: $label"
+    fi
+  done
+  if [[ "$remaining" -ne 0 ]]; then
+    echo "WARNING: One or more launchd jobs remain. Application files were NOT removed; review the verbose output before retrying." >&2
+    exit 1
   fi
-done
+else
+  log INFO "DRY RUN: launchd registration checks are intentionally not treated as failures because no jobs were unloaded"
+fi
 
 if [[ "$DRY_RUN" -eq 0 ]]; then
   log INFO "Removing LaunchAgent plist files"
@@ -172,24 +183,9 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   fi
   log INFO "Removing application log files"
   rm -f "$HOME/.camera_transfer.log" "$HOME/.camera_transfer_trigger.log"
-else
-  log INFO "DRY RUN: would remove known Photo Offloader plists, $INSTALL_DIR, and application logs"
-fi
-
-if [[ "$DRY_RUN" -eq 0 ]]; then
-  remaining=0
-  for label in "$LABEL" "$UI_LABEL" "$IMPORT_LABEL"; do
-    if exists_in_launchd "$label"; then
-      log WARN "Cleanup incomplete: $label is still registered"
-      remaining=1
-    fi
-  done
-  if [[ "$remaining" -ne 0 ]]; then
-    echo "WARNING: Some launchd jobs remain. Review the verbose output before reinstalling." >&2
-    exit 1
-  fi
   echo "Application scripts, known LaunchAgents, state, and logs removed."
 else
+  log INFO "DRY RUN: would remove known Photo Offloader plists, $INSTALL_DIR, and application logs"
   echo "Dry run complete; nothing was changed."
 fi
 echo "Persistent media catalog preserved: $DATA_DIR/catalog.sqlite3"
