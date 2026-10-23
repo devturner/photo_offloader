@@ -244,6 +244,20 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertIn("tell application (item 2 of argv)", script)
         self.assertNotIn('tell application "iTerm2"', script)
 
+    def test_successful_import_state_survives_transient_missing_dcim(self):
+        # A completed card must not be re-imported if launchd observes a brief
+        # /Volumes visibility gap while the card remains part of this session.
+        self.state.write_text(str(self.dcim) + "\\n")
+        (self.install / ".import-status").write_text(f"success|{self.dcim}|123\\n")
+        self.dcim.rmdir()
+        self.card.rmdir()
+
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.state.exists(), "successful handled-state must survive transient DCIM absence")
+        self.assertEqual(self.state.read_text().strip(), str(self.dcim))
+        self.assertIn("preserving successful handled-state through mount visibility gap", self.log.read_text())
+
     def test_photos_volume_alone_is_ignored(self):
         self.dcim.rmdir()
         self.card.rmdir()
