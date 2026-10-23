@@ -23,6 +23,8 @@ TERMINAL_APP="${PHOTO_OFFLOADER_TERMINAL_APP:-iTerm2}"
 TERMINAL_OUTPUT_FILE="${PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE:-$INSTALL_DIR/.terminal-output-enabled}"
 VOLUMES_ROOT="${PHOTO_OFFLOADER_VOLUMES_ROOT:-/Volumes}"
 DISKUTIL="${PHOTO_OFFLOADER_DISKUTIL:-/usr/sbin/diskutil}"
+LAUNCHCTL="${PHOTO_OFFLOADER_LAUNCHCTL:-/bin/launchctl}"
+IMPORT_WORKER_LABEL="com.user.photooffloader.import"
 EJECT_STATE_FILE="${PHOTO_OFFLOADER_EJECT_STATE:-$INSTALL_DIR/.last_camera_eject_attempt}"
 IMPORT_STATUS_FILE="${PHOTO_OFFLOADER_IMPORT_STATUS:-$INSTALL_DIR/.last_camera_import_status}"
 AUTO_EJECT_FILE="${PHOTO_OFFLOADER_AUTO_EJECT_FILE:-$INSTALL_DIR/.auto-eject-enabled}"
@@ -50,13 +52,25 @@ start_background_import() {
         return 1
     fi
 
-    # Use a standalone script rather than a nested bash -c payload, so the
-    # detached process has deterministic arguments and explicit failure logging.
-    nohup /bin/bash "$supervisor_script" \
+    # A child of a short-lived LaunchAgent can be terminated by launchd even
+    # when nohup is used. Submit the worker as its own user-domain launchd job.
+    # The unique label also prevents duplicate workers for a single user session.
+    local domain="gui/$(id -u)"
+    if "$LAUNCHCTL" print "$domain/$IMPORT_WORKER_LABEL" >/dev/null 2>&1; then
+        log "Import worker job is already registered; not submitting a duplicate: $IMPORT_WORKER_LABEL"
+        rm -f "$STATE_FILE"
+        return 1
+    fi
+    if "$LAUNCHCTL" submit -l "$IMPORT_WORKER_LABEL" -- /bin/bash "$supervisor_script" \
         "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" "$import_log" "$IMPORT_STATUS_FILE" \
-        >> "$import_log" 2>&1 </dev/null &
-    local pid=$!
-    log "Started detached background importer supervisor (pid $pid) for: $source_path"
+        >> "$import_log" 2>&1; then
+        log "Submitted importer supervisor to launchd as $IMPORT_WORKER_LABEL for: $source_path"
+    else
+        local result=$?
+        log "ERROR: launchctl could not submit import worker (status $result) for: $source_path"
+        rm -f "$STATE_FILE"
+        return "$result"
+    fi
 }
 
 if [[ ! -x "$PYTHON" || ! -f "$IMPORTER" ]]; then
