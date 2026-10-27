@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import os
+import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -56,9 +58,16 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.diskutil = self.install / "diskutil"
         self.eject_capture = self.root / "eject-args.txt"
         self.diskutil.write_text(
-            "#!/bin/bash\\n"
-            + f"printf '%s\\n' \"$@\" >> {self.eject_capture!s}\\n"
-            + "exit ${PHOTO_OFFLOADER_TEST_EJECT_STATUS:-0}\\n"
+            "#!/bin/bash\n"
+            'if [[ "$1" == "info" ]]; then\n'
+            '  volume="${@: -1}"\n'
+            '  uuid="$(cat "$volume/.test-volume-uuid" 2>/dev/null || true)"\n'
+            '  [[ -n "$uuid" ]] || exit 1\n'
+            "  printf '<plist><dict><key>VolumeUUID</key><string>%s</string></dict></plist>\\n' \"$uuid\"\n"
+            "  exit 0\n"
+            "fi\n"
+            f"printf '%s\\n' \"$@\" >> {self.eject_capture!s}\n"
+            "exit ${PHOTO_OFFLOADER_TEST_EJECT_STATUS:-0}\n"
         )
         self.diskutil.chmod(0o755)
 
@@ -254,6 +263,93 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertTrue(self.state.exists(), "successful handled-state must survive transient DCIM absence")
         self.assertEqual(self.state.read_text().strip(), str(self.dcim))
         self.assertIn("preserving successful handled-state through mount visibility gap", self.log.read_text())
+
+    # ------------------------------------------------------------------ helpers
+    def wait_for(self, predicate, timeout=6.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.05)
+        return predicate()
+
+    def set_card_uuid(self, uuid):
+        (self.card / ".test-volume-uuid").write_text(uuid + "\n")
+
+    def import_status_text(self):
+        status = self.install / ".import-status"
+        return status.read_text() if status.exists() else ""
+
+    def insert_card_in_background_mode(self, uuid):
+        """Insert a card and let the stub worker finish with a success record."""
+        self.dcim.mkdir(parents=True, exist_ok=True)
+        self.set_card_uuid(uuid)
+        self.background_args.unlink(missing_ok=True)
+        self.assertEqual(self.run_trigger().returncode, 0)
+        self.assertTrue(self.wait_for(self.background_args.exists), "import was not launched")
+        self.assertTrue(self.wait_for(lambda: self.import_status_text().startswith("success|")))
+
+    # ------------------------------------------- card identity (review finding 1)
+    def test_second_card_with_same_volume_name_is_imported(self):
+        # Cards from the same camera body share a volume name ("NIKON Z 8",
+        # "EOS_DIGITAL"). A different physical card must never be mistaken for
+        # the card that was already imported.
+        (self.install / ".terminal-output-enabled").unlink()
+        self.insert_card_in_background_mode("AAAA-AAAA")
+
+        shutil.rmtree(self.card)  # card A removed
+        self.assertEqual(self.run_trigger().returncode, 0)
+
+        self.background_args.unlink(missing_ok=True)
+        self.dcim.mkdir(parents=True)  # card B, same volume name
+        self.set_card_uuid("BBBB-BBBB")
+        self.assertEqual(self.run_trigger().returncode, 0)
+        self.assertTrue(self.wait_for(self.background_args.exists),
+                        "a different card with the same volume name was never imported")
+        self.assertIn("different card", self.log.read_text().lower())
+
+    def test_same_card_after_visibility_gap_is_not_imported_again(self):
+        # Preserves the existing mount-churn protection: the *same* card
+        # (same volume UUID) reappearing must not trigger a second import.
+        (self.install / ".terminal-output-enabled").unlink()
+        self.insert_card_in_background_mode("AAAA-AAAA")
+
+        uuid_file = self.card / ".test-volume-uuid"
+        shutil.rmtree(self.card)
+        self.assertEqual(self.run_trigger().returncode, 0)
+
+        self.background_args.unlink(missing_ok=True)
+        self.dcim.mkdir(parents=True)
+        uuid_file.write_text("AAAA-AAAA\n")
+        self.assertEqual(self.run_trigger().returncode, 0)
+        time.sleep(0.5)
+        self.assertFalse(self.background_args.exists(), "same card must not be re-imported")
+
+    # ---------------------------------------------------- log growth (user report)
+    def test_trigger_log_is_size_capped(self):
+        self.log.write_text("x" * 5000 + "\n")
+        result = self.run_trigger(PHOTO_OFFLOADER_LOG_MAX_BYTES="1000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rotated = Path(str(self.log) + ".1")
+        self.assertTrue(rotated.exists(), "oversized trigger log was not rotated")
+        self.assertLess(self.log.stat().st_size, 1000)
+
+    def test_trigger_log_keeps_a_bounded_number_of_generations(self):
+        for _ in range(6):
+            self.log.write_text("y" * 3000 + "\n")
+            self.run_trigger(PHOTO_OFFLOADER_LOG_MAX_BYTES="1000")
+        generations = sorted(p.name for p in self.root.glob("trigger.log*"))
+        self.assertLessEqual(len(generations), 3, generations)
+
+    def test_idle_polling_does_not_grow_the_log(self):
+        # StartInterval=30 means this runs ~2,880 times a day with no card.
+        shutil.rmtree(self.card)
+        self.run_trigger()
+        size = self.log.stat().st_size if self.log.exists() else 0
+        for _ in range(3):
+            self.assertEqual(self.run_trigger().returncode, 0)
+        after = self.log.stat().st_size if self.log.exists() else 0
+        self.assertEqual(after, size, "idle polls must not append to the trigger log")
 
     def test_photos_volume_alone_is_ignored(self):
         self.dcim.rmdir()
