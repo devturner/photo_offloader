@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 import errno
+import logging
+import logging.handlers
+import os
+import pathlib
 import plistlib
 import sqlite3
 import stat
@@ -806,6 +810,176 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(stats.destination_copies, 0)
         self.assertEqual(stats.failed, 1)
         self.assertEqual((existing / "photo.jpg").read_bytes(), b"USB version")
+
+    # ---------------------------------------- card coverage (review finding 2)
+    def test_scan_finds_video_stored_outside_dcim(self):
+        # Sony XAVC/AVCHD video lives in PRIVATE/, not DCIM/.
+        clip = self.card / "PRIVATE" / "M4ROOT" / "CLIP" / "C0001.MP4"
+        clip.parent.mkdir(parents=True)
+        clip.write_bytes(b"video")
+        found = app.find_media_files(self.dcim)
+        self.assertIn(clip, found["VIDEO"])
+
+    def test_scan_recognizes_additional_camera_formats(self):
+        folder = self.dcim / "100MSDCF"
+        folder.mkdir()
+        for name in ("a.HIF", "b.X3F", "c.CRW", "d.MXF", "e.PEF", "f.SRW"):
+            (folder / name).write_bytes(b"x")
+        found = app.find_media_files(self.dcim)
+        self.assertEqual([p.name for p in found["JPG"]], ["a.HIF"])
+        self.assertEqual([p.name for p in found["RAW"]], ["b.X3F", "c.CRW", "e.PEF", "f.SRW"])
+        self.assertEqual([p.name for p in found["VIDEO"]], ["d.MXF"])
+
+    def test_unrecognized_files_are_collected_not_silently_dropped(self):
+        folder = self.dcim / "100NIKON"
+        folder.mkdir()
+        sidecar = folder / "C0001M01.XML"
+        sidecar.write_bytes(b"<xml/>")
+        (folder / ".hidden.xml").write_bytes(b"x")
+        (folder / "._AppleDouble.jpg").write_bytes(b"x")
+        found = app.find_media_files(self.dcim)
+        self.assertEqual(found["OTHER"], [sidecar])
+
+    def test_unrecognized_files_skip_expensive_metadata_lookups(self):
+        sidecar = self.dcim / "notes.xml"
+        sidecar.write_bytes(b"<xml/>")
+        with patch.object(app, "get_exiftool_metadata", side_effect=AssertionError("no exiftool")):
+            self.assertIsNone(app.get_exif_datetime(sidecar))
+            self.assertEqual(app.get_camera_model(sidecar), "Unknown-Camera")
+
+    @patch("camera_offloader_v2.launch_google_photos_sync")
+    @patch("camera_offloader_v2.notify")
+    @patch("camera_offloader_v2.eject_volume")
+    def test_full_import_copies_private_video_and_unrecognized_files(self, eject, notify, launch):
+        self.media()
+        sidecar = self.dcim / "100NIKON" / "CLIP0001.XML"
+        sidecar.write_bytes(b"<xml/>")
+        private_clip = self.card / "PRIVATE" / "M4ROOT" / "CLIP" / "C0001.MP4"
+        private_clip.parent.mkdir(parents=True)
+        private_clip.write_bytes(b"private-video")
+
+        with patch("camera_offloader_v2.time.sleep"):
+            code = app.main(["--source", str(self.card), "--no-usb", "--no-eject"])
+
+        self.assertEqual(code, 0)
+        imported = {p.name: p.parent.name for p in self.local.rglob("*") if p.is_file()}
+        self.assertEqual(imported.get("C0001.MP4"), "Movies")
+        self.assertEqual(imported.get("CLIP0001.XML"), "Other")
+        self.assertIn("unrecognized", self.log.read_text().lower())
+        history = app.load_card_manifest_payload(self.dcim)["history"]
+        self.assertEqual(history["files_discovered"], 5)  # jpg, nef, mp4, xml, private mp4
+
+    # --------------------------------------- efficiency (read each card file once)
+    def test_card_to_ssd_copy_reads_the_source_only_once(self):
+        self.media()
+        source = self.dcim / "100NIKON" / "photo.jpg"
+        opened = []
+        real_open = pathlib.Path.open
+
+        def spy(path_self, *args, **kwargs):
+            if path_self == source:
+                opened.append(args[0] if args else kwargs.get("mode", "r"))
+            return real_open(path_self, *args, **kwargs)
+
+        with patch.object(pathlib.Path, "open", spy):
+            result = app.copy_one_to_destination(source, self.dcim, self.local)
+        self.assertEqual(result.status, "copied")
+        self.assertEqual(len(opened), 1, f"card file was read {len(opened)} times")
+
+    def test_usb_backup_reads_each_local_source_only_once(self):
+        archive = self.local / "2026-10" / "NIKON-Z-8" / "Photos"
+        archive.mkdir(parents=True)
+        source = archive / "photo.jpg"
+        source.write_bytes(b"local-photo")
+        opened = []
+        real_open = pathlib.Path.open
+
+        def spy(path_self, *args, **kwargs):
+            if path_self == source:
+                opened.append(1)
+            return real_open(path_self, *args, **kwargs)
+
+        with patch.object(app, "usb_is_mounted", return_value=True), \
+                patch.object(app, "get_volume_identity", return_value=None), \
+                patch.object(pathlib.Path, "open", spy):
+            stats = app.copy_local_archive_to_usb()
+        self.assertEqual((stats.destination_copies, stats.failed), (1, 0))
+        self.assertEqual(len(opened), 1, f"local file was read {len(opened)} times")
+
+    def test_destination_verification_bypasses_the_page_cache_when_supported(self):
+        if not hasattr(app.fcntl, "F_NOCACHE"):
+            self.skipTest("F_NOCACHE is macOS-only")
+        target = self.root / "verify.bin"
+        target.write_bytes(b"data")
+        with patch.object(app.fcntl, "fcntl") as fcntl_call:
+            app.sha256_file(target, nocache=True)
+        self.assertTrue(any(c.args[1] == app.fcntl.F_NOCACHE for c in fcntl_call.call_args_list))
+
+    def test_progress_status_writes_are_throttled_during_chunk_copies(self):
+        writes = []
+        real_replace = os.replace
+
+        def counting_replace(src, dst):
+            writes.append(dst)
+            return real_replace(src, dst)
+
+        app.update_status(state="copying", bytes_total=10_000_000)
+        with patch("camera_offloader_v2.os.replace", counting_replace):
+            for _ in range(2000):
+                app.add_progress_bytes(1024, transferred=True)
+        self.assertLessEqual(len(writes), 5, f"{len(writes)} status.json rewrites for 2000 chunks")
+        self.assertEqual(app._PROGRESS["bytes_done"], 2000 * 1024)  # counters stay exact
+
+    def test_catalog_uses_write_ahead_logging(self):
+        with app.catalog_db() as db:
+            mode = db.execute("PRAGMA journal_mode").fetchone()[0]
+        self.assertEqual(mode.lower(), "wal")
+
+    def test_batch_upload_marking_uses_one_connection(self):
+        paths = []
+        for index in range(25):
+            path = self.local / f"p{index}.jpg"
+            path.write_bytes(b"x" * (index + 1))
+            paths.append(path)
+        opened = []
+        real_connect = app.sqlite3.connect
+
+        def counting_connect(*args, **kwargs):
+            opened.append(args)
+            return real_connect(*args, **kwargs)
+
+        app.catalog_connection().close()  # schema/WAL setup is a one-time cost
+        with patch.object(app.sqlite3, "connect", counting_connect):
+            app.mark_google_photos_uploaded_many(paths, "gphotos", "Album")
+        self.assertEqual(len(opened), 1)
+        self.assertTrue(all(app.google_photos_upload_record(p) for p in paths))
+
+    # -------------------------------------------- log growth (user report)
+    def test_importer_log_file_is_size_capped(self):
+        app.configure_logging()
+        handlers = [h for h in app.logger.handlers if isinstance(h, logging.FileHandler)]
+        self.assertTrue(handlers)
+        self.assertIsInstance(handlers[0], logging.handlers.RotatingFileHandler)
+        self.assertGreater(handlers[0].maxBytes, 0)
+        self.assertGreaterEqual(handlers[0].backupCount, 1)
+
+    def test_rotate_log_file_keeps_bounded_generations(self):
+        log = self.root / "sync.log"
+        for generation in range(5):
+            log.write_text(f"generation-{generation}\n" + "x" * 2000)
+            app.rotate_log_file(log, max_bytes=1000, backups=2)
+        self.assertFalse(log.exists() and log.stat().st_size > 1000)
+        self.assertTrue((self.root / "sync.log.1").exists())
+        self.assertTrue((self.root / "sync.log.2").exists())
+        self.assertFalse((self.root / "sync.log.3").exists())
+        self.assertIn("generation-4", (self.root / "sync.log.1").read_text())
+
+    def test_rotate_log_file_leaves_small_files_alone(self):
+        log = self.root / "small.log"
+        log.write_text("tiny\n")
+        app.rotate_log_file(log, max_bytes=1000, backups=2)
+        self.assertEqual(log.read_text(), "tiny\n")
+        self.assertFalse((self.root / "small.log.1").exists())
 
 
 if __name__ == "__main__":
