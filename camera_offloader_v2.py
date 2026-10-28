@@ -18,10 +18,12 @@ import glob
 import hashlib
 import json
 import logging
+import logging.handlers
 import os
 import plistlib
 import re
 import shutil
+import signal
 import sqlite3
 import stat
 import subprocess
@@ -31,7 +33,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
@@ -83,7 +85,7 @@ _PROGRESS_STARTED: Optional[float] = None
 
 def update_status(**updates: object) -> None:
     """Atomically publish importer progress for the menu-bar dashboard."""
-    global _PROGRESS_STARTED
+    global _PROGRESS_STARTED, _LAST_STATUS_WRITE
     if _PROGRESS_STARTED is None:
         _PROGRESS_STARTED = time.monotonic()
     _PROGRESS.update(updates)
@@ -107,6 +109,7 @@ def update_status(**updates: object) -> None:
         temp = STATUS_FILE_PATH.with_suffix(".tmp")
         temp.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
         os.replace(temp, STATUS_FILE_PATH)
+        _LAST_STATUS_WRITE = time.monotonic()
     except OSError as exc:
         logger.debug("Could not publish dashboard status: %s", exc)
 
@@ -115,17 +118,65 @@ def add_progress_bytes(amount: int, transferred: bool = False) -> None:
     _PROGRESS["bytes_done"] = int(_PROGRESS.get("bytes_done", 0)) + amount
     if transferred:
         _PROGRESS["bytes_transferred"] = int(_PROGRESS.get("bytes_transferred", 0)) + amount
-    update_status()
+    # Counters stay exact on every chunk; the on-disk status file (read by the
+    # dashboard about once a second) is rewritten at most a few times a second.
+    if time.monotonic() - _LAST_STATUS_WRITE >= STATUS_MIN_INTERVAL_SECONDS:
+        update_status()
 
-MEDIA_EXTENSIONS = {
-    ".jpg": "JPG", ".jpeg": "JPG", ".heic": "JPG", ".heif": "JPG",
-    ".nef": "RAW", ".arw": "RAW", ".cr2": "RAW", ".cr3": "RAW",
-    ".dng": "RAW", ".raf": "RAW", ".orf": "RAW", ".rw2": "RAW",
-    ".mov": "VIDEO", ".mp4": "VIDEO", ".avi": "VIDEO",
-    ".mts": "VIDEO", ".m2ts": "VIDEO",
+PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".heic", ".heif", ".hif"}
+RAW_EXTENSIONS = {
+    ".3fr", ".arq", ".arw", ".cr2", ".cr3", ".crw", ".dcr", ".dng", ".erf",
+    ".fff", ".gpr", ".iiq", ".k25", ".kdc", ".mef", ".mos", ".mrw", ".nef",
+    ".nrw", ".orf", ".pef", ".raf", ".raw", ".rw2", ".rwl", ".sr2", ".srf",
+    ".srw", ".x3f",
 }
+VIDEO_EXTENSIONS = {
+    ".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts", ".mxf", ".mkv", ".3gp",
+    ".crm", ".braw",
+}
+MEDIA_EXTENSIONS = {
+    **{ext: "JPG" for ext in PHOTO_EXTENSIONS},
+    **{ext: "RAW" for ext in RAW_EXTENSIONS},
+    **{ext: "VIDEO" for ext in VIDEO_EXTENSIONS},
+}
+# Camera cards keep media in more than DCIM: Sony/Canon/Panasonic video lives
+# under PRIVATE (M4ROOT, AVCHD, PANA_GRP) and some older bodies use MP_ROOT.
+CARD_SCAN_FOLDERS = ("DCIM", "PRIVATE", "MP_ROOT")
+# Files that are never worth copying even though they are not hidden.
+IGNORED_CARD_FILENAMES = {"thumbs.db", "desktop.ini"}
+MEDIA_CATEGORIES = ("JPG", "RAW", "VIDEO", "OTHER")
+
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
+COPY_CHUNK_BYTES = 4 * 1024 * 1024
+STATUS_MIN_INTERVAL_SECONDS = 0.25
+_LAST_STATUS_WRITE = 0.0
 
 logger = logging.getLogger("camera_offloader")
+
+
+def rotate_log_file(path: Path, max_bytes: int = LOG_MAX_BYTES, backups: int = LOG_BACKUP_COUNT) -> bool:
+    """Rotate ``path`` to ``path.1`` (shifting older copies) once it exceeds ``max_bytes``.
+
+    Used for logs written by other programs (rclone, shell scripts) that cannot
+    rotate themselves. Returns True when a rotation happened.
+    """
+    try:
+        if max_bytes <= 0 or backups < 1 or path.stat().st_size <= max_bytes:
+            return False
+    except OSError:
+        return False
+    try:
+        path.with_name(f"{path.name}.{backups}").unlink(missing_ok=True)
+        for index in range(backups - 1, 0, -1):
+            older = path.with_name(f"{path.name}.{index}")
+            if older.exists():
+                os.replace(older, path.with_name(f"{path.name}.{index + 1}"))
+        os.replace(path, path.with_name(f"{path.name}.1"))
+    except OSError as exc:
+        logger.debug("Could not rotate %s: %s", path, exc)
+        return False
+    return True
 
 
 @dataclass
@@ -196,7 +247,16 @@ def catalog_connection() -> sqlite3.Connection:
             return sqlite3.connect(LEGACY_CATALOG_DB_PATH, timeout=10)
     connection = sqlite3.connect(CATALOG_DB_PATH, timeout=10)
     catalog_path = str(CATALOG_DB_PATH.resolve())
+    try:
+        # Readers (the dashboard) no longer block behind the importer's writes.
+        connection.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.Error:
+        pass
     if _CATALOG_INITIALIZED_PATH != catalog_path:
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")  # persistent per database file
+        except sqlite3.Error as exc:  # e.g. a filesystem without shared-memory support
+            logger.debug("Could not enable WAL for the catalog: %s", exc)
         connection.execute("""
             CREATE TABLE IF NOT EXISTS file_locations (
                 path TEXT PRIMARY KEY,
@@ -249,21 +309,45 @@ def catalog_db() -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
+def mark_google_photos_uploaded_many(paths: Sequence[Path], remote: str, album: str) -> int:
+    """Record cloud uploads for many files using a single connection/transaction."""
+    now = time.time()
+    rows = []
+    for path in paths:
+        try:
+            fingerprint = file_fingerprint(path)
+            rows.append((str(path.resolve()), fingerprint.size, fingerprint.mtime_ns,
+                         fingerprint.inode, now, remote, album))
+        except OSError as exc:
+            logger.debug("Skipping upload record for vanished file %s: %s", path, exc)
+    if rows:
+        with catalog_db() as db:
+            db.executemany(
+                """INSERT INTO google_photos_uploads
+                   (path, size, mtime_ns, inode, uploaded_at, remote, album)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(path) DO UPDATE SET
+                     size=excluded.size, mtime_ns=excluded.mtime_ns, inode=excluded.inode,
+                     uploaded_at=excluded.uploaded_at, remote=excluded.remote, album=excluded.album""",
+                rows,
+            )
+    return len(rows)
+
+
 def mark_google_photos_uploaded(path: Path, remote: str, album: str) -> None:
     """Record successful cloud upload for this exact local-file fingerprint."""
-    fingerprint = file_fingerprint(path)
-    resolved = str(path.resolve())
-    with catalog_db() as db:
-        db.execute(
-            """INSERT INTO google_photos_uploads
-               (path, size, mtime_ns, inode, uploaded_at, remote, album)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(path) DO UPDATE SET
-                 size=excluded.size, mtime_ns=excluded.mtime_ns, inode=excluded.inode,
-                 uploaded_at=excluded.uploaded_at, remote=excluded.remote, album=excluded.album""",
-            (resolved, fingerprint.size, fingerprint.mtime_ns, fingerprint.inode,
-             time.time(), remote, album),
-        )
+    mark_google_photos_uploaded_many([path], remote, album)
+
+
+def google_photos_uploaded_fingerprints() -> Dict[str, Tuple[int, int, int]]:
+    """Return {resolved path: (size, mtime_ns, inode)} for every recorded upload in one query."""
+    try:
+        with catalog_db() as db:
+            rows = db.execute("SELECT path, size, mtime_ns, inode FROM google_photos_uploads").fetchall()
+    except sqlite3.Error as exc:
+        logger.debug("Could not read Google Photos upload records: %s", exc)
+        return {}
+    return {row[0]: (row[1], row[2], row[3]) for row in rows}
 
 
 def google_photos_upload_record(path: Path) -> Optional[dict]:
@@ -362,6 +446,11 @@ CARD_MANIFEST_DIR = ".photo-offloader"
 CARD_MANIFEST_NAME = "manifest-v1.json"
 
 
+def card_relative_key(source: Path, dcim_folder: Path) -> str:
+    """Stable manifest key: unchanged for DCIM files, ``../PRIVATE/...`` for siblings of DCIM."""
+    return Path(os.path.relpath(source.resolve(), dcim_folder.resolve())).as_posix()
+
+
 def card_manifest_path(dcim_folder: Path) -> Path:
     """Return the optional sidecar manifest location at the card volume root."""
     return dcim_folder.resolve().parent / CARD_MANIFEST_DIR / CARD_MANIFEST_NAME
@@ -418,7 +507,7 @@ def reconcile_card_manifest(
     dcim_folder: Path, discovered: Dict[str, List[Path]],
 ) -> Dict[str, int]:
     """Compare the live card inventory with the prior manifest without trusting it to skip copies."""
-    now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat() + "Z"
     payload = load_card_manifest_payload(dcim_folder)
     manifest = payload.get("files", {})
     if not isinstance(manifest, dict):
@@ -429,7 +518,7 @@ def reconcile_card_manifest(
     for category_paths in discovered.values():
         for source in category_paths:
             try:
-                relative = source.resolve().relative_to(dcim_folder.resolve()).as_posix()
+                relative = card_relative_key(source, dcim_folder)
                 fingerprint = file_fingerprint(source)
             except (OSError, ValueError):
                 continue
@@ -469,7 +558,7 @@ def update_card_scan_history(
     verified_imported: int = 0, pending_or_failed: int = 0,
 ) -> bool:
     """Record scan/import reconciliation metadata without claiming failed scans succeeded."""
-    now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat() + "Z"
     previous = load_card_manifest_payload(dcim_folder)
     history = previous.get("history", {})
     if not isinstance(history, dict):
@@ -491,7 +580,7 @@ def card_manifest_entry(
 ) -> Optional[str]:
     """Return a card-cached hash only when relative path, size, and mtime still match."""
     try:
-        relative = source.resolve().relative_to(dcim_folder.resolve()).as_posix()
+        relative = card_relative_key(source, dcim_folder)
         entry = manifest.get(relative)
         fingerprint = file_fingerprint(source)
         if (isinstance(entry, dict) and entry.get("size") == fingerprint.size
@@ -508,7 +597,7 @@ def update_card_manifest_entry(
 ) -> None:
     """Cache a verified source hash keyed by card-relative path and stable fingerprint."""
     try:
-        relative = source.resolve().relative_to(dcim_folder.resolve()).as_posix()
+        relative = card_relative_key(source, dcim_folder)
         fingerprint = file_fingerprint(source)
         manifest[relative] = {
             "size": fingerprint.size,
@@ -604,6 +693,7 @@ def launch_google_photos_sync() -> None:
         return
     try:
         log_path = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "google_photos_sync_launcher.log"
+        rotate_log_file(log_path, max_bytes=1024 * 1024, backups=1)
         with log_path.open("a", encoding="utf-8") as output:
             subprocess.Popen([sys.executable, str(GOOGLE_PHOTOS_SYNC_PATH), "--sync"], stdin=subprocess.DEVNULL,
                              stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
@@ -620,7 +710,8 @@ def configure_logging(verbose: bool = False) -> None:
         "[%(asctime)s] [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    fh = logging.FileHandler(LOG_FILE_PATH, encoding="utf-8")
+    fh = logging.handlers.RotatingFileHandler(
+        LOG_FILE_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(formatter)
     ch = logging.StreamHandler()
@@ -710,17 +801,46 @@ def resolve_dcim_path(path: Path) -> Path:
     raise RuntimeError(f"DCIM folder not found at {dcim if path.name.lower() != 'dcim' else path}")
 
 
-def find_media_files(dcim_folder: Path) -> Dict[str, List[Path]]:
-    files = {"JPG": [], "RAW": [], "VIDEO": []}
-    for path in dcim_folder.rglob("*"):
+def _walk_card_files(root: Path) -> Iterator[Path]:
+    """Yield regular, non-hidden files under ``root`` (one stat-free scandir pass)."""
+    stack = [root]
+    while stack:
+        current = stack.pop()
         try:
-            if path.name.startswith(".") or not path.is_file() or path.is_symlink():
-                continue
-            category = MEDIA_EXTENSIONS.get(path.suffix.lower())
-            if category:
-                files[category].append(path)
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if entry.name.startswith("."):
+                        continue
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            yield Path(entry.path)
+                    except OSError as exc:
+                        logger.error("Could not inspect %s: %s", entry.path, exc)
         except OSError as exc:
-            logger.error("Could not inspect %s: %s", path, exc)
+            logger.error("Could not read %s: %s", current, exc)
+
+
+def find_media_files(dcim_folder: Path) -> Dict[str, List[Path]]:
+    """Inventory a camera card.
+
+    Known photo/RAW/video types are categorised; every other file is returned
+    under ``OTHER`` instead of being ignored, so nothing on the card is silently
+    left behind (sidecar XML, thumbnails, unfamiliar RAW formats, AVCHD indexes).
+    """
+    files: Dict[str, List[Path]] = {category: [] for category in MEDIA_CATEGORIES}
+    card_root = dcim_folder.parent
+    roots = [dcim_folder] + [
+        card_root / name for name in CARD_SCAN_FOLDERS[1:] if (card_root / name).is_dir()
+    ]
+    for root in roots:
+        for path in _walk_card_files(root):
+            if path.name.lower() in IGNORED_CARD_FILENAMES:
+                continue
+            files[MEDIA_EXTENSIONS.get(path.suffix.lower(), "OTHER")].append(path)
     for category in files:
         files[category].sort(key=lambda p: str(p).lower())
     return files
@@ -740,9 +860,16 @@ def scan_with_retry(dcim_folder: Path) -> Dict[str, List[Path]]:
     return files
 
 
-def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+def sha256_file(path: Path, chunk_size: int = 1024 * 1024, nocache: bool = False) -> str:
+    """SHA-256 of a file. ``nocache`` bypasses the macOS page cache so a verification
+    read comes from the disk that was just written, not from RAM."""
     digest = hashlib.sha256()
     with path.open("rb") as handle:
+        if nocache and hasattr(fcntl, "F_NOCACHE"):
+            try:
+                fcntl.fcntl(handle.fileno(), fcntl.F_NOCACHE, 1)
+            except OSError:
+                pass
         while chunk := handle.read(chunk_size):
             digest.update(chunk)
     return digest.hexdigest()
@@ -760,6 +887,13 @@ def files_match(source: Path, destination: Path, force_sha256: bool = False) -> 
         if VERIFY_WITH_SHA256 or force_sha256:
             return sha256_file(source) == sha256_file(destination)
         return True
+    except OSError:
+        return False
+
+
+def _same_file(first: Path, second: Path) -> bool:
+    try:
+        return os.path.samefile(first, second)
     except OSError:
         return False
 
@@ -810,14 +944,6 @@ def _parse_exif_datetime_value(value: str) -> Optional[datetime]:
             pass
     return None
 
-
-RAW_EXTENSIONS = {
-    ".3fr", ".arw", ".cr2", ".cr3", ".dcr", ".dng", ".erf", ".fff",
-    ".gpr", ".iiq", ".k25", ".kdc", ".mef", ".mos", ".mrw", ".nef",
-    ".nrw", ".orf", ".pef", ".raf", ".raw", ".rw2", ".rwl", ".sr2",
-    ".srf", ".srw", ".x3f",
-}
-VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts"}
 
 
 def get_exiftool_metadata_batch(paths: List[Path], tags: List[str], batch_size: int = 100) -> dict:
@@ -896,7 +1022,7 @@ def get_exiftool_metadata(path: Path, tags: List[str]) -> dict:
 
 
 def get_exif_datetime(path: Path) -> Optional[datetime]:
-    if path.suffix.lower() in VIDEO_EXTENSIONS:
+    if path.suffix.lower() in VIDEO_EXTENSIONS or path.suffix.lower() not in MEDIA_EXTENSIONS:
         return None
 
     # Pillow often cannot identify proprietary camera RAW formats such as Nikon NEF.
@@ -994,6 +1120,8 @@ def get_camera_model_from_exiftool(path: Path) -> str:
 
 def get_camera_model(path: Path) -> str:
     """Read camera make/model once per unchanged file and cache it in SQLite."""
+    if path.suffix.lower() not in MEDIA_EXTENSIONS:
+        return "Unknown-Camera"
     cached = catalog_row(path)
     if cached and cached[5]:
         return str(cached[5])
@@ -1057,18 +1185,22 @@ def build_destination_path(source: Path, dcim_folder: Path, destination_base: Pa
     )
 
 
-def copy_file_with_progress(source: Path, destination: Path) -> None:
-    """Copy in chunks so progress and ETA update even for large video files."""
+def copy_file_with_progress(source: Path, destination: Path) -> str:
+    """Copy in chunks so progress and ETA update even for large video files.
+
+    Returns the SHA-256 of the bytes that were read from ``source``, computed in
+    the same pass, so the source never has to be read a second time to verify.
+    """
+    digest = hashlib.sha256()
     with source.open("rb") as input_file, destination.open("wb") as output_file:
-        while True:
-            chunk = input_file.read(1024 * 1024)
-            if not chunk:
-                break
+        while chunk := input_file.read(COPY_CHUNK_BYTES):
+            digest.update(chunk)
             output_file.write(chunk)
             add_progress_bytes(len(chunk), transferred=True)
         output_file.flush()
         os.fsync(output_file.fileno())
     shutil.copystat(source, destination, follow_symlinks=True)
+    return digest.hexdigest()
 
 
 def copy_one_to_destination(
@@ -1114,18 +1246,24 @@ def copy_one_to_destination(
         fd, temp_name = tempfile.mkstemp(prefix=".photo-copy-", suffix=".tmp", dir=final_path.parent)
         os.close(fd)
         temp_path = Path(temp_name)
-        copy_file_with_progress(source, temp_path)
+        source_hash = copy_file_with_progress(source, temp_path)
         after_copy = file_fingerprint(source)
         if after_copy != before:
             raise IOError(f"Source changed during copy: {source}")
-        if not files_match(source, temp_path):
+        if not source_hash:  # copy helper replaced/legacy: fall back to a second read
+            source_hash = sha256_file(source)
+        # Verify what is actually on the destination disk against what was read
+        # from the card (cache-bypassing read where the OS supports it).
+        if sha256_file(temp_path, nocache=True) != source_hash:
             raise IOError(f"Verification failed for temporary copy: {source}")
         if not install_without_overwrite(temp_path, final_path):
             if files_match(source, final_path, force_sha256=True):
                 return DestinationResult(destination_base, "skipped", final_path,
                                          "another process created a matching file")
             raise FileExistsError(f"Destination appeared during copy and does not match source: {final_path}")
-        if not files_match(source, final_path):
+        if not _same_file(temp_path, final_path) and sha256_file(final_path, nocache=True) != source_hash:
+            # Hard-linked installs share the verified inode; only a fallback
+            # copy (e.g. exFAT) is a fresh write that needs its own check.
             try:
                 final_path.unlink(missing_ok=True)
             except OSError:
@@ -1139,18 +1277,9 @@ def copy_one_to_destination(
         os.chmod(final_path, stat.S_IRUSR | stat.S_IWUSR)
         # Persist content hashes after a successful copy so later card insertions
         # can compare cached source/destination hashes without rereading large RAWs.
-        source_hash = sha256_file(source)
-        destination_hash = sha256_file(final_path)
-        if source_hash == destination_hash:
-            catalog_record(source, sha256=source_hash)
-            catalog_record(final_path, sha256=destination_hash)
-            update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
-        else:
-            try:
-                final_path.unlink(missing_ok=True)
-            except OSError:
-                logger.exception("Could not remove hash-mismatched destination %s", final_path)
-            raise IOError(f"SHA-256 verification failed after copy: {source}")
+        catalog_record(source, sha256=source_hash)
+        catalog_record(final_path, sha256=source_hash)
+        update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
         update_status(state="copying", phase="copy", message="Copy verified")
         return DestinationResult(destination_base, "copied", final_path, "copied and verified")
     finally:
@@ -1573,12 +1702,12 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
                                              dir=destination.parent)
             os.close(fd)
             temp_path = Path(temp_name)
-            copy_file_with_progress(source, temp_path)
+            source_hash = copy_file_with_progress(source, temp_path)
             if file_fingerprint(source) != before:
                 raise IOError(f"Local source changed during backup: {source}")
-            source_hash = sha256_file(source)
-            temp_hash = sha256_file(temp_path)
-            if source_hash != temp_hash:
+            if not source_hash:
+                source_hash = sha256_file(source)
+            if sha256_file(temp_path, nocache=True) != source_hash:
                 raise IOError(f"SHA-256 verification failed for USB temporary copy: {source}")
             if not install_without_overwrite(temp_path, destination):
                 if files_match(source, destination, force_sha256=True):
@@ -1588,7 +1717,7 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
                     catalog_record(destination, sha256=source_hash)
                     continue
                 raise FileExistsError(f"USB destination appeared and differs from source: {destination}")
-            if sha256_file(destination) != source_hash:
+            if not _same_file(temp_path, destination) and sha256_file(destination, nocache=True) != source_hash:
                 destination.unlink(missing_ok=True)
                 raise IOError(f"SHA-256 verification failed for USB copy: {destination}")
             os.chmod(destination, stat.S_IRUSR | stat.S_IWUSR)
@@ -1675,7 +1804,30 @@ def print_summary(dcim_folder: Path, destinations: Sequence[Path], stats: Import
     print("=" * 64)
 
 
+def _raise_keyboard_interrupt(signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt(f"terminated by signal {signum}")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Run the importer, treating SIGTERM (service stop, launchd) like Ctrl-C.
+
+    That routes a stop request through the existing cancel path: the session lock
+    is released, temp files are cleaned up, and the dashboard sees "canceled"
+    instead of a status file frozen on "copying".
+    """
+    previous = None
+    try:
+        previous = signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+    except ValueError:  # not the main thread (e.g. called from a test harness)
+        pass
+    try:
+        return _main(argv)
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
+
+
+def _main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     global VERIFY_WITH_SHA256, _PROGRESS_STARTED
     VERIFY_WITH_SHA256 = args.sha256
@@ -1743,8 +1895,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             total_found = sum(len(items) for items in files.values())
             source_bytes = required_source_bytes(files)
             local_stats = ImportStats(found=total_found, source_bytes=source_bytes)
-            logger.info("Scan complete: %d files (%d JPG, %d RAW, %d VIDEO)",
-                        total_found, len(files["JPG"]), len(files["RAW"]), len(files["VIDEO"]))
+            logger.info("Scan complete: %d files (%d JPG, %d RAW, %d VIDEO, %d other)",
+                        total_found, len(files["JPG"]), len(files["RAW"]), len(files["VIDEO"]),
+                        len(files["OTHER"]))
+            if files["OTHER"]:
+                kinds: Dict[str, int] = {}
+                for path in files["OTHER"]:
+                    kinds[path.suffix.lower() or "(no extension)"] = kinds.get(path.suffix.lower() or "(no extension)", 0) + 1
+                logger.info("Unrecognized file types will be copied to 'Other': %s",
+                            ", ".join(f"{ext} x{count}" for ext, count in sorted(kinds.items())))
             # Reconcile the live card inventory with the previous manifest. The
             # manifest is diagnostic/cache data only; copy decisions still verify destinations.
             reconciliation = reconcile_card_manifest(dcim_folder, files)
@@ -1757,7 +1916,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             usb_identity = get_volume_identity(USB_DEST_VOLUME) if usb_expected else None
             local_destinations = [LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT]
             local_required = {
-                LOCAL_DEST_ROOT: sum(path.stat().st_size for category in ("JPG", "VIDEO") for path in files[category]),
+                LOCAL_DEST_ROOT: sum(path.stat().st_size for category in ("JPG", "VIDEO", "OTHER") for path in files[category]),
                 LOCAL_RAW_DEST_ROOT: sum(path.stat().st_size for path in files["RAW"]),
             }
             for destination in local_destinations:
@@ -1773,7 +1932,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                               "bytes_transferred": 0, "state": "copying",
                               "phase": "card-to-ssd", "message": "Copying camera card to Mac SSD"})
             update_status()
-            for category in ("JPG", "RAW", "VIDEO"):
+            for category in MEDIA_CATEGORIES:
                 category_root = local_root_for_category(category)
                 copy_category(files[category], dcim_folder, [category_root], category, local_stats)
 
