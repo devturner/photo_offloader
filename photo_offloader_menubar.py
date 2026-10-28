@@ -18,6 +18,7 @@ PAUSE_FILE = INSTALL_DIR / ".paused"
 TRIGGER_SCRIPT = INSTALL_DIR / "camera_offloader_trigger.sh"
 DASHBOARD_SCRIPT = INSTALL_DIR / "photo_offloader_ui.py"
 IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
+SERVICE_SCRIPT = INSTALL_DIR / "photo_offloader_service.sh"
 BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
 USB_VOLUME = Path("/Volumes/Photos")
 UI_LABEL = "com.user.photooffloader.menubar"
@@ -36,7 +37,8 @@ class PhotoOffloaderMenuBar(rumps.App):
             self.catalog_item,
             self.pause_item,
             None,
-            rumps.MenuItem("Quit Menu Bar App", callback=self.quit_app),
+            rumps.MenuItem("Stop Photo Offloader…", callback=self.stop_service),
+            rumps.MenuItem("Quit Menu Bar (Service Keeps Running)", callback=self.quit_app),
         ]
 
     def copy_to_usb(self, _sender: object = None) -> None:
@@ -99,6 +101,49 @@ class PhotoOffloaderMenuBar(rumps.App):
             self.pause_item.title = self.pause_title()
             rumps.notification("Photo Offloader", "Automatic imports paused",
                                "Already-running copies will continue safely.")
+
+    @staticmethod
+    def transfer_running() -> bool:
+        try:
+            result = subprocess.run(["/usr/bin/pgrep", "-f", str(IMPORTER_SCRIPT)],
+                                    check=False, capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return bool(result.stdout.strip())
+
+    def stop_service(self, _sender: object = None) -> None:
+        """Shut down the whole background service (trigger + menu bar), not just this UI.
+
+        Quitting the menu bar leaves the trigger agent polling for cards. This asks
+        photo_offloader_service.sh to stop everything; a running transfer is only
+        interrupted if the user explicitly chooses to cancel it.
+        """
+        flags: list[str] = []
+        if self.transfer_running():
+            choice = rumps.alert(
+                title="A transfer is in progress",
+                message="Photo Offloader can stop once the current transfer finishes, "
+                        "or cancel it now. Cancelled copies are safe to resume later.",
+                ok="Stop After Transfer", cancel="Keep Running",
+                other="Cancel Transfer and Stop",
+            )
+            if choice == 0:
+                return
+            flags = ["--wait"] if choice == 1 else ["--force"]
+        elif rumps.alert(
+            title="Stop Photo Offloader?",
+            message="Cards will no longer be detected until you start it again "
+                    "(or log in again).",
+            ok="Stop", cancel="Cancel",
+        ) != 1:
+            return
+        try:
+            # Detached: the script unloads this menu-bar agent as its final step.
+            subprocess.Popen(["/bin/bash", str(SERVICE_SCRIPT), "stop", *flags],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError as exc:
+            rumps.notification("Photo Offloader", "Could not stop the service", str(exc))
 
     def quit_app(self, _sender: object = None) -> None:
         """Stop the dashboard and unload the KeepAlive menu-bar agent before exiting."""

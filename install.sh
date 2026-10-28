@@ -69,7 +69,7 @@ fi
 
 mkdir -p "$INSTALL_DIR" "$HOME/Library/LaunchAgents"
 
-for file in "$SCRIPT_NAME" "$TRIGGER_NAME" "photo_offloader_import_supervisor.sh" "$UI_NAME" "$MENUBAR_NAME" "photo_offloader_backup_launcher.py" "google_photos_sync.py" "VERSION" "requirements.txt" "requirements-ui.txt"; do
+for file in "$SCRIPT_NAME" "$TRIGGER_NAME" "photo_offloader_import_supervisor.sh" "photo_offloader_service.sh" "$UI_NAME" "$MENUBAR_NAME" "photo_offloader_backup_launcher.py" "google_photos_sync.py" "VERSION" "requirements.txt" "requirements-ui.txt"; do
   if [[ ! -f "$SCRIPT_DIR/$file" ]]; then
     echo "Error: $file not found in $SCRIPT_DIR."
     exit 1
@@ -79,6 +79,7 @@ done
 cp "$SCRIPT_DIR/$SCRIPT_NAME" "$SCRIPT_PATH"
 cp "$SCRIPT_DIR/$TRIGGER_NAME" "$TRIGGER_PATH"
 cp "$SCRIPT_DIR/photo_offloader_import_supervisor.sh" "$INSTALL_DIR/photo_offloader_import_supervisor.sh"
+cp "$SCRIPT_DIR/photo_offloader_service.sh" "$INSTALL_DIR/photo_offloader_service.sh"
 cp "$SCRIPT_DIR/$UI_NAME" "$INSTALL_DIR/$UI_NAME"
 cp "$SCRIPT_DIR/$MENUBAR_NAME" "$INSTALL_DIR/$MENUBAR_NAME"
 cp "$SCRIPT_DIR/photo_offloader_backup_launcher.py" "$INSTALL_DIR/photo_offloader_backup_launcher.py"
@@ -86,7 +87,7 @@ cp "$SCRIPT_DIR/google_photos_sync.py" "$INSTALL_DIR/google_photos_sync.py"
 cp "$SCRIPT_DIR/VERSION" "$INSTALL_DIR/VERSION"
 cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
 cp "$SCRIPT_DIR/requirements-ui.txt" "$INSTALL_DIR/requirements-ui.txt"
-chmod +x "$SCRIPT_PATH" "$TRIGGER_PATH" "$INSTALL_DIR/photo_offloader_import_supervisor.sh" "$INSTALL_DIR/$UI_NAME" "$INSTALL_DIR/$MENUBAR_NAME" "$INSTALL_DIR/photo_offloader_backup_launcher.py" "$INSTALL_DIR/google_photos_sync.py"
+chmod +x "$SCRIPT_PATH" "$TRIGGER_PATH" "$INSTALL_DIR/photo_offloader_import_supervisor.sh" "$INSTALL_DIR/photo_offloader_service.sh" "$INSTALL_DIR/$UI_NAME" "$INSTALL_DIR/$MENUBAR_NAME" "$INSTALL_DIR/photo_offloader_backup_launcher.py" "$INSTALL_DIR/google_photos_sync.py"
 
 # Capture provenance at install time so installed logs identify the exact source
 # revision, even though the installed Application Support directory is not a git checkout.
@@ -192,6 +193,13 @@ cat > "$UI_PLIST_PATH" <<EOF
 EOF
 plutil -lint "$UI_PLIST_PATH"
 
+# Logs captured by launchd/nohup have no rotation of their own; keep them bounded.
+for captured_log in "$INSTALL_DIR/dashboard.log" "$INSTALL_DIR/menubar.log" "$INSTALL_DIR/menubar-error.log"; do
+  if [[ -f "$captured_log" && "$(wc -c < "$captured_log" | tr -d ' ')" -gt 1048576 ]]; then
+    mv -f "$captured_log" "$captured_log.1"
+  fi
+done
+
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootout "gui/$(id -u)/$UI_LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
@@ -220,3 +228,4 @@ echo "Menu bar errors: $INSTALL_DIR/menubar-error.log"
 echo "Dashboard log: $INSTALL_DIR/dashboard.log"
 echo "Log:       ~/.camera_transfer.log"
 echo "Trigger log: ~/.camera_transfer_trigger.log"
+echo "Stop / start the service: \"$INSTALL_DIR/photo_offloader_service.sh\" stop | start | status"
