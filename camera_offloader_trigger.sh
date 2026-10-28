@@ -13,7 +13,13 @@ IMPORTER="${PHOTO_OFFLOADER_IMPORTER:-$INSTALL_DIR/camera_offloader_v2.py}"
 DASHBOARD="${PHOTO_OFFLOADER_DASHBOARD:-$INSTALL_DIR/photo_offloader_ui.py}"
 OPEN_DASHBOARD="${PHOTO_OFFLOADER_OPEN_DASHBOARD:-1}"
 LOG="${PHOTO_OFFLOADER_TRIGGER_LOG:-$HOME/.camera_transfer_trigger.log}"
+LOG_MAX_BYTES="${PHOTO_OFFLOADER_LOG_MAX_BYTES:-1048576}"
+LOG_BACKUPS="${PHOTO_OFFLOADER_LOG_BACKUPS:-2}"
+LOG_SIGNATURE_FILE="${PHOTO_OFFLOADER_TRIGGER_LOG_SIGNATURE:-$INSTALL_DIR/.trigger-log-signature}"
 STATE_FILE="${PHOTO_OFFLOADER_TRIGGER_STATE:-$INSTALL_DIR/.last_camera_source}"
+# Identity (volume UUID) of the card that STATE_FILE refers to. The path alone is
+# not enough: every card from the same camera mounts under the same volume name.
+IDENTITY_FILE="${PHOTO_OFFLOADER_TRIGGER_IDENTITY:-$STATE_FILE.identity}"
 PAUSE_FILE="${PHOTO_OFFLOADER_PAUSE_FILE:-$INSTALL_DIR/.paused}"
 LOCK_DIR="${PHOTO_OFFLOADER_TRIGGER_LOCK:-$INSTALL_DIR/.trigger.lock}"
 SETTLE_SECONDS="${PHOTO_OFFLOADER_TRIGGER_SETTLE_SECONDS:-1}"
@@ -32,9 +38,75 @@ AUTO_EJECT_FILE="${PHOTO_OFFLOADER_AUTO_EJECT_FILE:-$INSTALL_DIR/.auto-eject-ena
 # paths available to ExifTool, ffmpeg, and other optional media helpers.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
+# The trigger runs every 30 seconds, so logging must be quiet when nothing
+# changes. Lines are buffered for the run and written once at exit, and only if
+# they differ from the previous run's lines (timestamps ignored). A run that
+# logs nothing resets that comparison, so a genuine repeat event is still logged.
+# The log is size-capped: it rotates to $LOG.1 .. $LOG.$LOG_BACKUPS.
+LOG_BUFFER=()
+LOG_MESSAGES=()
+
 log() {
-    mkdir -p "$(dirname "$LOG")"
-    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"
+    LOG_BUFFER+=("[$(date '+%Y-%m-%d %H:%M:%S')] $*")
+    LOG_MESSAGES+=("$*")
+}
+
+rotate_log() {
+    [[ -f "$LOG" ]] || return 0
+    local size i
+    size="$(wc -c < "$LOG" 2>/dev/null | tr -d ' ')"
+    [[ "${size:-0}" -gt "$LOG_MAX_BYTES" ]] || return 0
+    rm -f "$LOG.$LOG_BACKUPS"
+    for ((i = LOG_BACKUPS - 1; i >= 1; i--)); do
+        [[ -f "$LOG.$i" ]] && mv -f "$LOG.$i" "$LOG.$((i + 1))"
+    done
+    mv -f "$LOG" "$LOG.1"
+    return 0
+}
+
+flush_log() {
+    if [[ ${#LOG_BUFFER[@]} -eq 0 ]]; then
+        rm -f "$LOG_SIGNATURE_FILE" 2>/dev/null || true
+        return 0
+    fi
+    local signature previous=""
+    signature="$(printf '%s\n' "${LOG_MESSAGES[@]}" | cksum)"
+    [[ -f "$LOG_SIGNATURE_FILE" ]] && previous="$(cat "$LOG_SIGNATURE_FILE" 2>/dev/null || true)"
+    if [[ "$signature" != "$previous" ]]; then
+        mkdir -p "$(dirname "$LOG")"
+        rotate_log
+        printf '%s\n' "${LOG_BUFFER[@]}" >> "$LOG"
+        mkdir -p "$(dirname "$LOG_SIGNATURE_FILE")" 2>/dev/null || true
+        printf '%s\n' "$signature" > "$LOG_SIGNATURE_FILE" 2>/dev/null || true
+    fi
+    LOG_BUFFER=()
+    LOG_MESSAGES=()
+}
+trap flush_log EXIT
+
+# Identity of a mounted volume: its VolumeUUID (empty when it cannot be read).
+volume_identity() {
+    "$DISKUTIL" info -plist "$1" 2>/dev/null \
+        | tr '\n' ' ' \
+        | sed -n 's/.*<key>VolumeUUID<\/key>[[:space:]]*<string>\([^<]*\)<\/string>.*/\1/p' \
+        | head -n 1 || true
+}
+
+build_provenance() {
+    "$PYTHON" - "$INSTALL_DIR/build_info.json" <<'PYBUILDINFO' 2>/dev/null || printf 'version=unknown git_commit=unknown git_branch=unknown'
+import json
+import sys
+from pathlib import Path
+
+info = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print("version={version} git_commit={git_commit} git_branch={git_branch} git_tag={git_tag} git_dirty={git_dirty}".format(
+    version=info.get("version", "unknown"),
+    git_commit=info.get("git_commit", "unknown"),
+    git_branch=info.get("git_branch", "unknown"),
+    git_tag=info.get("git_tag", "unknown"),
+    git_dirty=info.get("git_dirty", "unknown"),
+))
+PYBUILDINFO
 }
 
 # Run background imports under a small supervisor. If Python exits unsuccessfully,
@@ -70,6 +142,7 @@ start_background_import() {
         rm -f "$STATE_FILE"
         return 0
     fi
+    flush_log
     if "$LAUNCHCTL" submit -l "$IMPORT_WORKER_LABEL" -- /bin/bash "$supervisor_script" \
         "$PYTHON" "$IMPORTER" "$source_path" "$STATE_FILE" "$LOG" "$INSTALL_DIR" "$import_log" "$IMPORT_STATUS_FILE" "$no_eject" \
         >> "$import_log" 2>&1; then
@@ -87,23 +160,6 @@ if [[ ! -x "$PYTHON" || ! -f "$IMPORTER" ]]; then
     exit 0
 fi
 
-BUILD_INFO_LOG="$("$PYTHON" - "$INSTALL_DIR/build_info.json" <<'PYBUILDINFO' 2>/dev/null || printf 'version=unknown git_commit=unknown git_branch=unknown'
-import json
-import sys
-from pathlib import Path
-
-info = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-print("version={version} git_commit={git_commit} git_branch={git_branch} git_tag={git_tag} git_dirty={git_dirty}".format(
-    version=info.get("version", "unknown"),
-    git_commit=info.get("git_commit", "unknown"),
-    git_branch=info.get("git_branch", "unknown"),
-    git_tag=info.get("git_tag", "unknown"),
-    git_dirty=info.get("git_dirty", "unknown"),
-))
-PYBUILDINFO
-)"
-log "Build provenance: $BUILD_INFO_LOG"
-
 mkdir -p "$(dirname "$STATE_FILE")"
 
 # launchd can deliver several /Volumes events while a device is mounting. Use
@@ -113,7 +169,7 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     log "Another trigger invocation is already evaluating the mounted volumes; ignoring event."
     exit 0
 fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true; flush_log' EXIT
 
 sleep "$SETTLE_SECONDS"
 
@@ -133,6 +189,21 @@ for volume in "$VOLUMES_ROOT"/*; do
     break
 done
 
+camera_identity=""
+if [[ -n "$camera_dcim" ]]; then
+    camera_identity="$(volume_identity "${camera_dcim%/DCIM}")"
+    # Cards from the same camera body share a volume name, so a matching path
+    # is not proof that this is the card that was already handled.
+    if [[ -f "$STATE_FILE" && "$(cat "$STATE_FILE" 2>/dev/null)" == "$camera_dcim" ]]; then
+        handled_identity=""
+        [[ -f "$IDENTITY_FILE" ]] && handled_identity="$(cat "$IDENTITY_FILE" 2>/dev/null || true)"
+        if [[ -n "$handled_identity" && -n "$camera_identity" && "$handled_identity" != "$camera_identity" ]]; then
+            log "A different card ($camera_identity) is mounted at the path of the previously handled card ($handled_identity); treating it as a new card: $camera_dcim"
+            rm -f "$STATE_FILE" "$EJECT_STATE_FILE" "$IDENTITY_FILE"
+        fi
+    fi
+fi
+
 if [[ -z "$camera_dcim" ]]; then
     # A transient /Volumes/DCIM visibility gap must not make a successfully
     # handled card eligible for another import. Keep successful state across
@@ -145,9 +216,11 @@ if [[ -z "$camera_dcim" ]]; then
     fi
     if [[ -n "$handled_source" ]] && grep -Fq "success|$handled_source|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
         log "No recognized camera DCIM currently mounted; preserving successful handled-state through mount visibility gap: $handled_source"
-    else
-        rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
+    elif [[ -f "$STATE_FILE" ]]; then
+        rm -f "$STATE_FILE" "$EJECT_STATE_FILE" "$IDENTITY_FILE"
         log "No recognized camera DCIM currently mounted; cleared incomplete handled-state."
+    else
+        rm -f "$EJECT_STATE_FILE" "$IDENTITY_FILE"  # idle poll: nothing to report
     fi
     exit 0
 fi
@@ -220,13 +293,14 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
 
     volume_path="${camera_dcim%/DCIM}"
     log "Camera source already handled for this mount; no importer is running. Requesting safe ejection: $volume_path"
-    if "$DISKUTIL" eject "$volume_path" >> "$LOG" 2>&1; then
+    if eject_output="$("$DISKUTIL" eject "$volume_path" 2>&1)"; then
         printf '%s\n' "$camera_dcim:ejected" > "$EJECT_STATE_FILE"
         log "Card ejected successfully: $volume_path"
     else
         log "Card ejection failed; card remains mounted and will be retried: $volume_path"
         rm -f "$EJECT_STATE_FILE"
     fi
+    [[ -z "$eject_output" ]] || log "diskutil: $eject_output"
     exit 0
 fi
 
@@ -245,11 +319,13 @@ if [[ -f "$PAUSE_FILE" ]]; then
 fi
 if [[ ! -d "$camera_dcim" ]]; then
     log "Camera DCIM disappeared before importer launch; skipping stale source: $camera_dcim"
-    rm -f "$STATE_FILE" "$EJECT_STATE_FILE"
+    rm -f "$STATE_FILE" "$EJECT_STATE_FILE" "$IDENTITY_FILE"
     exit 0
 fi
 
 log "Recognized camera source: $camera_dcim"
+log "Build provenance: $(build_provenance)"
+printf '%s\n' "$camera_identity" > "$IDENTITY_FILE"
 
 # Open one dashboard window when an import starts. LaunchAgent jobs run in the
 # logged-in user's GUI session, so the Tk window is visible without a Terminal
@@ -270,7 +346,7 @@ IMPORTER_EJECT_ARGS=()
 if [[ ! -f "$AUTO_EJECT_FILE" ]]; then
     IMPORTER_EJECT_ARGS+=(--no-eject)
 fi
-command="$(printf '%q ' "$PYTHON" "$IMPORTER" --source "$camera_dcim" "${IMPORTER_EJECT_ARGS[@]}")"
+command="$(printf '%q ' "$PYTHON" "$IMPORTER" --source "$camera_dcim" ${IMPORTER_EJECT_ARGS[@]+"${IMPORTER_EJECT_ARGS[@]}"})"
 
 if [[ -f "$TERMINAL_OUTPUT_FILE" ]]; then
     if [[ "$TERMINAL_APP" == "iTerm2" ]]; then
@@ -301,7 +377,7 @@ APPLESCRIPT
             log "Launched $TERMINAL_APP importer for: $camera_dcim"
         else
             log "Failed to launch $TERMINAL_APP importer; falling back to background import."
-            nohup "$PYTHON" "$IMPORTER" --source "$camera_dcim" "${IMPORTER_EJECT_ARGS[@]}" >> "$HOME/.camera_transfer.log" 2>&1 </dev/null &
+            nohup "$PYTHON" "$IMPORTER" --source "$camera_dcim" ${IMPORTER_EJECT_ARGS[@]+"${IMPORTER_EJECT_ARGS[@]}"} >> "$HOME/.camera_transfer.log" 2>&1 </dev/null &
             printf '%s\n' "$camera_dcim" > "$STATE_FILE"
         fi
     fi
