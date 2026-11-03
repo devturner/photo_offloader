@@ -90,8 +90,34 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         (self.install / ".terminal-output-enabled").touch()
         self.script = Path(__file__).with_name("camera_offloader_trigger.sh")
 
+    def worker_pids(self):
+        """PIDs of any stub worker/supervisor still running out of this test's temp dir."""
+        result = subprocess.run(["pgrep", "-f", str(self.root)], capture_output=True, text=True)
+        return [int(pid) for pid in result.stdout.split()] if result.returncode == 0 else []
+
+    def wait_for_workers(self, timeout=10.0):
+        # The launchctl stub backgrounds the supervisor, so a test can finish while
+        # it is still writing status/log files. Deleting the temp dir underneath it
+        # fails intermittently with "Directory not empty" (seen on slower CI runners).
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and self.worker_pids():
+            time.sleep(0.05)
+        for pid in self.worker_pids():
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+        return not self.worker_pids()
+
     def tearDown(self):
-        self.tmp.cleanup()
+        self.wait_for_workers()
+        for _attempt in range(5):
+            try:
+                self.tmp.cleanup()
+                return
+            except OSError:
+                time.sleep(0.2)
+        shutil.rmtree(self.root, ignore_errors=True)
 
     def run_trigger(self, **extra):
         env = os.environ.copy()
@@ -306,6 +332,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertEqual(self.run_trigger().returncode, 0)
         self.assertTrue(self.wait_for(self.background_args.exists),
                         "a different card with the same volume name was never imported")
+        self.assertTrue(self.wait_for_workers(), "card B's import worker did not finish")
         self.assertIn("different card", self.log.read_text().lower())
 
     def test_same_card_after_visibility_gap_is_not_imported_again(self):
