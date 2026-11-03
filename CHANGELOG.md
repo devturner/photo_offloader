@@ -4,6 +4,30 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **A second card with the same volume name was never imported.** The trigger kept successful handled-state across unmount keyed only on the `/Volumes/<name>/DCIM` path, so every later card from the same camera body (same volume name) was suppressed as "already handled". Handled-state now records the card's volume UUID, and a different card at the same path starts a new import.
+- **Files outside the recognised extension list were silently left on the card while the import reported success.** The scan now covers `PRIVATE` and `MP_ROOT` (Sony/Canon/Panasonic video) as well as `DCIM`, recognises more formats (`.hif`, `.x3f`, `.crw`, `.mxf`, ...; `RAW_EXTENSIONS` and the import filter had drifted apart and are now a single definition), and copies every other file to an `Other` folder, logging the unrecognised extensions. `Other` files are included in USB backup.
+- **A crashed Google Photos sync could disable uploads forever.** The `O_EXCL` lock file was never cleaned up after a crash, SIGKILL or power loss, and its PID was never checked. The sync now uses `flock`, which the OS releases when the holder dies. A duplicate launch no longer overwrites the live run's progress status.
+- **Files imported while an upload was running were recorded as uploaded without being sent.** The sync now snapshots the files to upload, passes exactly that list to rclone with `--files-from`, and records only those files. Nothing new to upload no longer starts rclone at all.
+- The importer exits cleanly on `SIGTERM` (service stop, launchd): the lock is released and the dashboard shows "canceled" instead of a frozen "copying" state.
+- The trigger could fail under macOS's stock `/bin/bash` 3.2 when auto-eject was enabled, because `"${array[@]}"` on an empty array is an error under `set -u` there.
+- `datetime.utcnow()` (deprecated since Python 3.12) replaced.
+
+### Added
+- `photo_offloader_service.sh` (`status | stop | start | restart`) and a **Stop Photo Offloader…** menu-bar item. Quitting the menu bar previously left the trigger LaunchAgent polling; there was no supported way to stop the service short of uninstalling.
+- Log size caps: the importer log uses a rotating handler (5 MiB x 3), the trigger log rotates at 1 MiB, the rclone and launcher logs rotate before each sync, and the installer trims launchd-captured logs. The trigger now logs only when its output changed since the previous 30-second poll; idle polls were writing about 400 KB per day.
+
+### Performance
+- Card files are read once instead of twice: the SHA-256 is computed while copying. The same applies to the Mac SSD to USB backup, and to hard-linked installs, which no longer re-read the destination a second time.
+- Destination verification reads with `F_NOCACHE` (macOS), so it checks the disk rather than the page cache.
+- `status.json` is rewritten at most four times per second instead of once per 1 MiB chunk; byte counters remain exact.
+- The catalog uses SQLite WAL mode with `synchronous=NORMAL`, so the dashboard no longer blocks behind importer writes; Google Photos upload records are written in one transaction instead of one connection per file.
+- Card scanning uses one `scandir` pass instead of `rglob` with per-entry `stat` calls; the trigger no longer starts a Python interpreter on every poll.
+
+### Changed
+- README: card detection (any `DCIM` volume), what is scanned, verification behaviour, log caps, and stopping the service now describe the current behaviour.
+- `*.heic` / `*.heif` are included in Google Photos uploads.
+
 ### Changed
 - Automatic import detection now accepts any mounted volume containing a top-level `DCIM` directory, regardless of volume name or camera manufacturer.
 - Added regression coverage for manufacturer-independent DCIM detection.

@@ -981,6 +981,40 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(log.read_text(), "tiny\n")
         self.assertFalse((self.root / "small.log.1").exists())
 
+    # ------------------------------------------ clean shutdown (service stop)
+    def test_sigterm_cancels_the_import_and_publishes_a_canceled_status(self):
+        # `photo_offloader_service.sh stop --force` sends SIGTERM. The importer must
+        # shut down like Ctrl-C: release its lock, report "canceled", exit 130.
+        import json
+        import subprocess
+        import sys
+        import textwrap
+        self.media()
+        status_path = self.root / "term-status.json"
+        script = textwrap.dedent(f"""
+            import os, signal, sys
+            from pathlib import Path
+            from unittest.mock import patch
+            sys.path.insert(0, {str(Path(app.__file__).parent)!r})
+            import camera_offloader_v2 as app
+            app.STATUS_FILE_PATH = Path({str(status_path)!r})
+            app.LOG_FILE_PATH = Path({str(self.log)!r})
+            app.SESSION_LOCK_PATH = Path({str(self.lock)!r})
+            app.CATALOG_DB_PATH = Path({str(self.root / "term-db" / "c.sqlite3")!r})
+            app.LEGACY_CATALOG_DB_PATH = Path({str(self.root / "term-legacy.sqlite3")!r})
+            app.LOCAL_DEST_ROOT = Path({str(self.local)!r})
+            app.LOCAL_RAW_DEST_ROOT = Path({str(self.root / "local-raw")!r})
+            def interrupted_scan(*_args, **_kwargs):
+                os.kill(os.getpid(), signal.SIGTERM)   # what `stop --force` does
+                raise AssertionError("SIGTERM was not turned into a clean cancel")
+            with patch.object(app, "scan_with_retry", interrupted_scan), \
+                    patch.object(app, "notify"):
+                sys.exit(app.main(["--source", {str(self.card)!r}, "--no-usb", "--no-eject"]))
+        """)
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 130, result.stdout + result.stderr)
+        self.assertEqual(json.loads(status_path.read_text())["state"], "canceled")
+
 
 if __name__ == "__main__":
     unittest.main()

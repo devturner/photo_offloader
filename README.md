@@ -20,21 +20,36 @@ The installed `build_info.json` records the revision and checkout state at insta
 
 ### Camera card detection
 
-Configured camera volume patterns currently include:
+Any mounted volume with a top-level `DCIM` directory is treated as a camera card, whatever its name or manufacturer. A volume such as `/Volumes/Photos` is ignored as a source.
 
-- `NIKON*`
-- `SONY*`
-- `EOS*`
-
-The automatic LaunchAgent watches `/Volumes`, but the trigger only launches when one of those camera volumes contains a `DCIM` directory. A volume such as `/Volumes/Photos` is ignored as a source.
+Cards are tracked by their **volume UUID**, not just their mount path. Every card from the same camera body mounts under the same name (`NIKON Z 8`, `EOS_DIGITAL`), so a second card inserted after the first one finished is recognised as a new card and imported. Re-inserting the *same* card is still not re-imported automatically.
 
 The importer also accepts a volume or `DCIM` path through `--source`.
+
+### Everything on the card is copied
+
+Besides `DCIM`, the importer scans `PRIVATE` and `MP_ROOT`, where Sony, Canon and Panasonic cameras store video (`PRIVATE/M4ROOT/CLIP`, `PRIVATE/AVCHD`, ...). Known photo, RAW and video formats go to `Photos`, `Raws` and `Movies`. **Any other file** (clip sidecar XML, thumbnails, an unfamiliar RAW format) is copied to an `Other` folder instead of being ignored, and the log lists the unrecognised extensions, so nothing is silently left on a card that you then format. Hidden files (including macOS `._*` files) are skipped.
 
 ### 🖥️ Menu-bar dashboard and pause control
 
 The installer launches a native macOS menu-bar item and opens the dashboard window at the end of installation. When a camera import starts, the dashboard is opened automatically (or reused if already running). Select **Open Dashboard** from the menu-bar item at any time to view the current source, file being processed, copy progress and speed, a rolling copy-speed graph, and estimated time remaining. The dashboard has separate Copy and Google Photos Upload cards, each with its own progress percentage, elapsed timer, current speed, rolling throughput graph, and ETA. The Copy card title identifies whether media is being imported to the internal HD or backed up to USB. Use **Copy to USB Drive** in the menu bar or dashboard to run a USB-only sync without a camera card. Both controls use a shared launch lock, so repeated clicks cannot start overlapping USB backup requests. A 15-second debounce also suppresses duplicate requests if a very fast backup finishes before a second click. The importer acquires its session lock before changing dashboard status; duplicate launches are ignored cleanly and do not overwrite the active session's progress.
 
 Use **Pause Automatic Imports** before inserting a card when you do not want automatic copying to start. Pausing prevents new automatic import sessions; it does not interrupt a copy already in progress. Choose **Resume Automatic Imports** to re-enable the service and immediately re-check any camera card that is already mounted.
+
+### Stopping and starting the service
+
+Photo Offloader runs as two LaunchAgents: the **trigger** (watches for cards) and the **menu-bar app**. **Quit Menu Bar (Service Keeps Running)** only closes the menu-bar app; the trigger keeps watching for cards. To shut everything down, choose **Stop Photo Offloader…** from the menu bar, or use the command line:
+
+```bash
+~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh status
+~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh stop            # refuses while a transfer is running
+~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh stop --wait     # finish the current transfer, then stop
+~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh stop --force    # cancel the transfer and stop now
+~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh stop --disable  # also stay off at next login
+~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh start
+```
+
+`stop` unloads the trigger first so no new import can begin, closes open dashboards, and unloads the menu-bar app last. A transfer is never interrupted unless you pass `--force`; the importer treats the stop request like Ctrl-C, so the dashboard shows "canceled" rather than a stuck "copying" state. Without `--disable`, the service comes back at your next login.
 
 The menu-bar controller uses `rumps`; the dashboard uses Python's `tkinter` UI. The menu-bar dependency is declared in `requirements-ui.txt` and installed by `install.sh`.
 
@@ -120,15 +135,9 @@ The card manifest is a cache, not a source of truth. It is written atomically, n
 
 ### 🔐 Copy verification
 
-Every copied file is verified after the copy completes.
+Every copied file is verified after the copy completes. The SHA-256 of the bytes read from the card is computed **while copying** (the card is read once), then the copy is re-read from the destination, bypassing the macOS file cache where supported, and compared. The copy is only installed under its final name if the hashes match. The same single-read verification is used for the Mac SSD to USB backup.
 
-By default, verification compares file sizes. For stronger verification of every new copy:
-
-```bash
-python3 camera_offloader_v2.py --sha256
-```
-
-Existing same-name files are always content-checked before being skipped.
+Existing same-name files are always content-checked before being skipped. The `--sha256` flag is kept for compatibility and only affects the remaining size-based comparisons.
 
 ### Source stability
 
@@ -207,6 +216,8 @@ Persistent logs are written to:
 ```text
 ~/.camera_transfer.log
 ```
+
+All logs are size-capped. The importer log rotates at 5 MiB (keeping three older files, `.1` to `.3`); the trigger log at 1 MiB (two older files); the Google Photos rclone log at 5 MiB (two older files); and the dashboard and menu-bar logs are trimmed when you run `./install.sh`. The trigger runs every 30 seconds, so it only writes a log entry when something changed since its previous run; an idle Mac with no card produces no log output.
 
 The SQLite file catalog is stored at:
 
