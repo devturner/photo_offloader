@@ -52,24 +52,6 @@ def parse_display_bytes(value: str) -> float:
     return amount * (1024 ** exponent)
 
 
-def format_duration(value: float) -> str:
-    seconds = max(int(value or 0), 0)
-    hours, remainder = divmod(seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    if hours:
-        return f"{hours}h {minutes:02d}m"
-    if minutes:
-        return f"{minutes}m {seconds:02d}s"
-    return f"{seconds}s"
-
-
-def format_clock(value: float) -> str:
-    seconds = max(int(value or 0), 0)
-    hours, remainder = divmod(seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-
 CATEGORY_LABELS = {"JPG": "JPG", "RAW": "RAW", "VIDEO": "Video", "OTHER": "Other"}
 IMPORT_STAGES = (("scan", "Scan card"), ("metadata", "Read photo info"),
                  ("copy", "Copy new files"), ("usb", "Back up to USB"))

@@ -1411,11 +1411,6 @@ def local_root_for_category(category: str) -> Path:
     return LOCAL_RAW_DEST_ROOT if category == "RAW" else LOCAL_DEST_ROOT
 
 
-def usb_root_for_category(category: str) -> Path:
-    """Choose the matching top-level USB archive by media category."""
-    return USB_DEST_ROOT
-
-
 def build_destination_path(source: Path, dcim_folder: Path, destination_base: Path) -> Path:
     return (
         destination_base
@@ -1571,10 +1566,6 @@ def snapshot_destinations(no_usb: bool = False) -> DestinationSnapshot:
         return DestinationSnapshot((LOCAL_DEST_ROOT,), False, None)
     identity = get_volume_identity(USB_DEST_VOLUME)
     return DestinationSnapshot((LOCAL_DEST_ROOT, USB_DEST_ROOT), True, identity)
-
-
-def build_destinations() -> List[Path]:
-    return list(snapshot_destinations().destinations)
 
 
 def required_source_bytes(files: Dict[str, List[Path]]) -> int:

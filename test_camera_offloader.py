@@ -165,8 +165,6 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(app.local_root_for_category("RAW"), app.LOCAL_RAW_DEST_ROOT)
         self.assertEqual(app.local_root_for_category("JPG"), app.LOCAL_DEST_ROOT)
         self.assertEqual(app.local_root_for_category("VIDEO"), app.LOCAL_DEST_ROOT)
-        self.assertEqual(app.usb_root_for_category("RAW"), app.USB_DEST_ROOT)
-        self.assertEqual(app.usb_root_for_category("JPG"), app.USB_DEST_ROOT)
 
     def test_usb_backup_mirrors_raw_archive_to_matching_root(self):
         jpg = self.local / "2026-10" / "100NIKON" / "Photos" / "photo.jpg"

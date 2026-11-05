@@ -13,8 +13,6 @@ venv/
 
 # Runtime / generated artifacts
 *.log
-photo_offloader_v2_dist/
-photo_offloader_*.zip
 camera_offloader_trigger.log
 
 # Local test artifacts

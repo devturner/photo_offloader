@@ -201,13 +201,5 @@ class TestSingleInstance(LauncherCase):
         self.assertEqual(len(self.opened), 1)
 
 
-class TestCompatibility(unittest.TestCase):
-    def test_formatting_helpers_are_still_importable_from_the_old_module(self):
-        self.assertEqual(ui.format_clock(61), "00:01:01")
-        self.assertEqual(ui.parse_display_bytes("2 KiB"), 2048.0)
-        self.assertEqual(ui.format_bytes(1024), "1.0 KB")
-        self.assertEqual(ui.format_duration(5), "5s")
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -639,13 +639,12 @@ class TestActions(Fixture):
 
 
 class TestFormatting(unittest.TestCase):
-    def test_helpers_match_the_old_dashboard(self):
-        self.assertEqual(core.format_clock(3661), "01:01:01")
-        self.assertEqual(core.format_clock(-5), "00:00:00")
+    def test_byte_helpers(self):
         self.assertEqual(core.parse_display_bytes("1.5 GiB"), 1.5 * 1024**3)
+        self.assertEqual(core.parse_display_bytes("2 KiB"), 2048.0)
         self.assertEqual(core.parse_display_bytes("unknown"), 0.0)
         self.assertEqual(core.format_bytes(512), "512 B")
-        self.assertEqual(core.format_duration(65), "1m 05s")
+        self.assertEqual(core.format_bytes(1024), "1.0 KB")
 
 
 if __name__ == "__main__":

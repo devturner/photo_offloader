@@ -18,15 +18,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-# Re-exported: these helpers used to live in this module.
-from dashboard_core import (  # noqa: F401
-    DashboardCore,
-    Paths,
-    format_bytes,
-    format_clock,
-    format_duration,
-    parse_display_bytes,
-)
+from dashboard_core import DashboardCore, Paths
 from dashboard_server import DashboardServer, find_running_instance, write_instance_file
 
 BROWSER_IDLE_TIMEOUT = 180.0  # tolerant: browsers throttle polling in background tabs
