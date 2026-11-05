@@ -12,11 +12,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from photo_offloader import config
 from photo_offloader import importer as app
 from photo_offloader.importer import (
     ImportStats,
     VolumeIdentity,
 )
+from tests import support
 
 
 class TestCameraOffloader(unittest.TestCase):
@@ -34,38 +36,23 @@ class TestCameraOffloader(unittest.TestCase):
         self.local.mkdir()
         self.usb.mkdir()
         self.usb_volume.mkdir()
-        self.original = {k: getattr(app, k) for k in (
-            "LOCAL_DEST_ROOT", "LOCAL_RAW_DEST_ROOT", "USB_DEST_ROOT", "USB_DEST_VOLUME", "CATALOG_DB_PATH",
-            "LEGACY_CATALOG_DB_PATH", "_CATALOG_INITIALIZED_PATH",
-            "BUILD_INFO_PATH", "VERSION_PATH",
-            "LOG_FILE_PATH", "SESSION_LOCK_PATH", "VERIFY_WITH_SHA256",
-            "USE_FILE_BIRTH_TIME", "WAIT_SECONDS",
-            "EJECT_CARD_AFTER_SUCCESS", "MIN_FREE_SPACE_BUFFER_BYTES", "STATUS_FILE_PATH",
-            "_PROGRESS_STARTED", "_PROGRESS", "GOOGLE_PHOTOS_SYNC_PATH",
-        )}
-        app.LOCAL_DEST_ROOT = self.local
-        app.LOCAL_RAW_DEST_ROOT = self.root / "local-raw"
-        app.LOCAL_RAW_DEST_ROOT.mkdir()
-        app.USB_DEST_ROOT = self.usb
-        app.USB_DEST_VOLUME = self.usb_volume
-        app.LOG_FILE_PATH = self.log
-        app.SESSION_LOCK_PATH = self.lock
-        app.VERIFY_WITH_SHA256 = False
-        app.USE_FILE_BIRTH_TIME = False
-        app.WAIT_SECONDS = 0
-        app.EJECT_CARD_AFTER_SUCCESS = True
-        app.MIN_FREE_SPACE_BUFFER_BYTES = 0
-        app.STATUS_FILE_PATH = self.root / "status.json"
-        app.CATALOG_DB_PATH = self.root / "persistent-data" / "catalog.sqlite3"
-        app.LEGACY_CATALOG_DB_PATH = self.root / "legacy-app-dir" / "catalog.sqlite3"
-        app._CATALOG_INITIALIZED_PATH = None
-        app.BUILD_INFO_PATH = self.root / "build_info.json"
-        app.VERSION_PATH = self.root / "VERSION"
-        app._PROGRESS_STARTED = None
-        app._PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
-        # Never start the real installed Google Photos sync from a test: an import that
-        # succeeds launches it, and it would upload from (and log into) the user's library.
-        app.GOOGLE_PHOTOS_SYNC_PATH = self.root / "not-installed" / "photo-offloader-google-sync"
+        support.isolate_config(
+            self, self.root, LOCAL_DEST_ROOT=self.local, LOCAL_RAW_DEST_ROOT=self.root / "local-raw",
+            USB_DEST_ROOT=self.usb, USB_DEST_VOLUME=self.usb_volume, LOG_FILE_PATH=self.log,
+            SESSION_LOCK_PATH=self.lock, STATUS_FILE_PATH=self.root / "status.json",
+            CATALOG_DB_PATH=self.root / "persistent-data" / "catalog.sqlite3",
+            LEGACY_CATALOG_DB_PATH=self.root / "legacy-app-dir" / "catalog.sqlite3")
+        config.LOCAL_RAW_DEST_ROOT.mkdir()
+        for name, value in (("VERIFY_WITH_SHA256", False), ("USE_FILE_BIRTH_TIME", False), ("WAIT_SECONDS", 0),
+                            ("EJECT_CARD_AFTER_SUCCESS", True), ("MIN_FREE_SPACE_BUFFER_BYTES", 0)):
+            patcher = patch.object(config, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name, value in (("_PROGRESS_STARTED", None), ("_PROGRESS", {"state": "idle", "bytes_done": 0,
+                                                                         "bytes_total": 0, "bytes_transferred": 0})):
+            patcher = patch.object(app, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         app.find_exiftool.cache_clear()
         app.logger.handlers.clear()
 
@@ -74,8 +61,6 @@ class TestCameraOffloader(unittest.TestCase):
             handler.close()
         app.find_exiftool.cache_clear()
         app.logger.handlers.clear()
-        for key, value in self.original.items():
-            setattr(app, key, value)
         self.tmp.cleanup()
 
     def media(self):
@@ -162,13 +147,13 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(history["last_successful_import"], "previous-import")
 
     def test_raw_media_uses_separate_top_level_archive(self):
-        self.assertEqual(app.local_root_for_category("RAW"), app.LOCAL_RAW_DEST_ROOT)
-        self.assertEqual(app.local_root_for_category("JPG"), app.LOCAL_DEST_ROOT)
-        self.assertEqual(app.local_root_for_category("VIDEO"), app.LOCAL_DEST_ROOT)
+        self.assertEqual(app.local_root_for_category("RAW"), config.LOCAL_RAW_DEST_ROOT)
+        self.assertEqual(app.local_root_for_category("JPG"), config.LOCAL_DEST_ROOT)
+        self.assertEqual(app.local_root_for_category("VIDEO"), config.LOCAL_DEST_ROOT)
 
     def test_usb_backup_mirrors_raw_archive_to_matching_root(self):
         jpg = self.local / "2026-10" / "100NIKON" / "Photos" / "photo.jpg"
-        raw = app.LOCAL_RAW_DEST_ROOT / "2026-10" / "100NIKON" / "Raws" / "photo.nef"
+        raw = config.LOCAL_RAW_DEST_ROOT / "2026-10" / "100NIKON" / "Raws" / "photo.nef"
         jpg.parent.mkdir(parents=True)
         raw.parent.mkdir(parents=True)
         jpg.write_bytes(b"jpeg-content")
@@ -184,7 +169,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(stats.destination_copies, 2)
         self.assertEqual((self.usb / jpg.relative_to(self.local)).read_bytes(), b"jpeg-content")
         self.assertEqual(
-            (self.usb / raw.relative_to(app.LOCAL_RAW_DEST_ROOT)).read_bytes(),
+            (self.usb / raw.relative_to(config.LOCAL_RAW_DEST_ROOT)).read_bytes(),
             b"raw-content",
         )
 
@@ -261,7 +246,7 @@ class TestCameraOffloader(unittest.TestCase):
         empty = {"JPG": [], "RAW": [], "VIDEO": []}
         found = {"JPG": [self.dcim / "x.jpg"], "RAW": [], "VIDEO": []}
         scan.side_effect = [empty, found]
-        app.WAIT_SECONDS = 30
+        config.WAIT_SECONDS = 30
         with patch("photo_offloader.importer.time.monotonic", side_effect=[0, 1]), patch("photo_offloader.importer.time.sleep"):
             self.assertEqual(app.scan_with_retry(self.dcim), found)
 
@@ -308,14 +293,14 @@ class TestCameraOffloader(unittest.TestCase):
         connection.close.assert_called_once_with()
 
     def test_catalog_migrates_from_legacy_install_directory(self):
-        app.LEGACY_CATALOG_DB_PATH.parent.mkdir(parents=True)
-        with sqlite3.connect(app.LEGACY_CATALOG_DB_PATH) as legacy:
+        config.LEGACY_CATALOG_DB_PATH.parent.mkdir(parents=True)
+        with sqlite3.connect(config.LEGACY_CATALOG_DB_PATH) as legacy:
             legacy.execute("CREATE TABLE legacy_marker (value TEXT)")
             legacy.execute("INSERT INTO legacy_marker VALUES ('preserve-me')")
         with app.catalog_connection() as db:
             self.assertEqual(db.execute("SELECT value FROM legacy_marker").fetchone()[0],
                              "preserve-me")
-        self.assertTrue(app.CATALOG_DB_PATH.is_file())
+        self.assertTrue(config.CATALOG_DB_PATH.is_file())
 
     def test_update_file_catalog_indexes_local_archive_without_usb(self):
         media = self.local / "2026-10" / "NIKON-Z-8" / "Photos" / "test.jpg"
@@ -470,7 +455,7 @@ class TestCameraOffloader(unittest.TestCase):
         files = self.card_files(2)
         everything = files["RAW"] + files["VIDEO"]
         per_file = [app.build_destination_path(p, self.dcim, self.local) for p in everything]
-        app.CATALOG_DB_PATH.unlink()
+        config.CATALOG_DB_PATH.unlink()
         app._CATALOG_INITIALIZED_PATH = None
         app.prefetch_card_metadata(files)
         self.assertEqual([app.build_destination_path(p, self.dcim, self.local) for p in everything], per_file)
@@ -665,7 +650,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertIn("run_id=", log)
 
     def test_load_build_info_reads_installed_provenance(self):
-        app.BUILD_INFO_PATH.write_text(
+        config.BUILD_INFO_PATH.write_text(
             __import__("json").dumps({
                 "version": "2.4",
                 "git_commit": "abc123def456",
@@ -1156,15 +1141,16 @@ class TestCameraOffloader(unittest.TestCase):
             import os, signal, sys
             from pathlib import Path
             from unittest.mock import patch
-            sys.path.insert(0, {str(Path(app.__file__).parent)!r})
+            sys.path.insert(0, {str(support.REPO_ROOT)!r})
+            from photo_offloader import config
             from photo_offloader import importer as app
-            app.STATUS_FILE_PATH = Path({str(status_path)!r})
-            app.LOG_FILE_PATH = Path({str(self.log)!r})
-            app.SESSION_LOCK_PATH = Path({str(self.lock)!r})
-            app.CATALOG_DB_PATH = Path({str(self.root / "term-db" / "c.sqlite3")!r})
-            app.LEGACY_CATALOG_DB_PATH = Path({str(self.root / "term-legacy.sqlite3")!r})
-            app.LOCAL_DEST_ROOT = Path({str(self.local)!r})
-            app.LOCAL_RAW_DEST_ROOT = Path({str(self.root / "local-raw")!r})
+            config.STATUS_FILE_PATH = Path({str(status_path)!r})
+            config.LOG_FILE_PATH = Path({str(self.log)!r})
+            config.SESSION_LOCK_PATH = Path({str(self.lock)!r})
+            config.CATALOG_DB_PATH = Path({str(self.root / "term-db" / "c.sqlite3")!r})
+            config.LEGACY_CATALOG_DB_PATH = Path({str(self.root / "term-legacy.sqlite3")!r})
+            config.LOCAL_DEST_ROOT = Path({str(self.local)!r})
+            config.LOCAL_RAW_DEST_ROOT = Path({str(self.root / "local-raw")!r})
             def interrupted_scan(*_args, **_kwargs):
                 os.kill(os.getpid(), signal.SIGTERM)   # what `stop --force` does
                 raise AssertionError("SIGTERM was not turned into a clean cancel")
@@ -1264,8 +1250,8 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertFalse(last_copy["usb_planned"])
 
     def test_old_history_table_gains_the_details_column(self):
-        app.CATALOG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with app.sqlite3.connect(app.CATALOG_DB_PATH) as db:
+        config.CATALOG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with app.sqlite3.connect(config.CATALOG_DB_PATH) as db:
             db.execute("""CREATE TABLE import_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
                 started_at REAL NOT NULL, finished_at REAL NOT NULL, kind TEXT NOT NULL,
                 source TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL,

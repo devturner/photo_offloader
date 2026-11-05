@@ -8,11 +8,11 @@ import sys
 import time
 from pathlib import Path
 
-from photo_offloader import layout
+from photo_offloader import config
 
-INSTALL_DIR = layout.INSTALL_DIR
+INSTALL_DIR = config.INSTALL_DIR
 IMPORTER_SCRIPT = Path(os.environ.get(
-    "PHOTO_OFFLOADER_IMPORTER", str(INSTALL_DIR / layout.IMPORTER)
+    "PHOTO_OFFLOADER_IMPORTER", str(INSTALL_DIR / config.IMPORTER)
 ))
 LOCK_PATH = Path(os.environ.get(
     "PHOTO_OFFLOADER_USB_REQUEST_LOCK", str(INSTALL_DIR / ".usb-backup-request.lock")

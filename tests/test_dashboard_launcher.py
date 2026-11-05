@@ -12,10 +12,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import importer as catalog
 from photo_offloader.dashboard import core
 from photo_offloader.dashboard import launcher as ui
 from photo_offloader.dashboard import server as srv
+from tests import support
 
 
 class FakeWebview:
@@ -44,12 +44,8 @@ class LauncherCase(unittest.TestCase):
         self.web = root / "web"
         self.web.mkdir()
         (self.web / "index.html").write_text("<!doctype html><title>Photo Offloader</title>")
-        for name, value in (("CATALOG_DB_PATH", self.data / "catalog.sqlite3"),
-                            ("LEGACY_CATALOG_DB_PATH", root / "legacy.sqlite3"),
-                            ("_CATALOG_INITIALIZED_PATH", None)):
-            patcher = patch.object(catalog, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        support.isolate_config(self, root, CATALOG_DB_PATH=self.data / "catalog.sqlite3",
+                               LEGACY_CATALOG_DB_PATH=root / "legacy.sqlite3")
         self.paths = core.Paths(
             install_dir=self.install, data_dir=self.data, volumes_root=root / "Volumes",
             usb_volume=root / "Volumes" / "Photos", local_archives=(root / "a", root / "b"),

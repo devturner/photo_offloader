@@ -14,19 +14,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from photo_offloader import config
 from photo_offloader import importer as catalog
 
-LOCAL_PHOTOS = Path.home() / "Pictures" / "CameraImports"
-SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
-STATUS_PATH = SUPPORT_DIR / "google_photos_status.json"
-LOG_PATH = SUPPORT_DIR / "google_photos_sync.log"
-LOCK_PATH = SUPPORT_DIR / ".google-photos-sync.lock"
-# Preferences live outside the install directory so they survive app upgrades
-# and uninstall/reinstall cycles. Authentication tokens remain in rclone's own
-# config; this file stores only the remote name and successful-connection marker.
-PREFERENCES_PATH = (
-    Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "preferences.json"
-)
 REMOTE_NAME = os.environ.get("PHOTO_OFFLOADER_GPHOTOS_REMOTE", "gphotos").rstrip(":")
 ALBUM_NAME = os.environ.get("PHOTO_OFFLOADER_GPHOTOS_ALBUM", "Photo Offloader")
 SYNC_LOG_MAX_BYTES = 5 * 1024 * 1024
@@ -73,9 +63,9 @@ def parse_rclone_stats_line(line: str) -> Optional[dict[str, object]]:
 
 
 def publish_status(state: str, message: str) -> None:
-    SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+    config.INSTALL_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        previous = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+        previous = json.loads(config.GOOGLE_STATUS_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         previous = {}
 
@@ -88,16 +78,16 @@ def publish_status(state: str, message: str) -> None:
     if state == "complete":
         payload["last_success"] = payload["updated_at"]
 
-    temporary = STATUS_PATH.with_suffix(".tmp")
+    temporary = config.GOOGLE_STATUS_PATH.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, STATUS_PATH)
+    os.replace(temporary, config.GOOGLE_STATUS_PATH)
 
 
 def remember_google_photos_connection(remote_name: str) -> None:
     """Persist non-secret connection metadata outside the replaceable install directory."""
-    PREFERENCES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    config.PREFERENCES_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
-        preferences = json.loads(PREFERENCES_PATH.read_text(encoding="utf-8"))
+        preferences = json.loads(config.PREFERENCES_PATH.read_text(encoding="utf-8"))
         if not isinstance(preferences, dict):
             preferences = {}
     except (OSError, ValueError):
@@ -107,17 +97,17 @@ def remember_google_photos_connection(remote_name: str) -> None:
         "remote": f"{remote_name}:",
         "last_connection_check": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
-    temporary = PREFERENCES_PATH.with_suffix(".tmp")
+    temporary = config.PREFERENCES_PATH.with_suffix(".tmp")
     temporary.write_text(json.dumps(preferences, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, PREFERENCES_PATH)
+    os.replace(temporary, config.PREFERENCES_PATH)
 
 
 def log_sync_event(message: str) -> None:
     """Append an application-level lifecycle message to the rclone log."""
     stamp = datetime.now().astimezone().strftime("%Y/%m/%d %H:%M:%S")
     try:
-        SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-        with LOG_PATH.open("a", encoding="utf-8") as handle:
+        config.INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+        with config.GOOGLE_LOG_PATH.open("a", encoding="utf-8") as handle:
             handle.write(f"{stamp} INFO  : Photo Offloader: {message}\n")
     except OSError:
         # Logging must never turn an otherwise successful upload into a failure.
@@ -136,17 +126,17 @@ def find_rclone() -> Optional[str]:
 
 def current_status_state() -> str:
     try:
-        return str(json.loads(STATUS_PATH.read_text(encoding="utf-8")).get("state", ""))
+        return str(json.loads(config.GOOGLE_STATUS_PATH.read_text(encoding="utf-8")).get("state", ""))
     except (OSError, ValueError):
         return ""
 
 
 def run_sync(argv: Optional[Sequence[str]] = None) -> int:
-    SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+    config.INSTALL_DIR.mkdir(parents=True, exist_ok=True)
     # An flock is released by the OS the moment its holder dies, so a crash,
     # SIGKILL or power loss can never leave a stale lock behind. The lock file
     # itself is never deleted (deleting it would reopen a lock/unlink race).
-    lock_fd = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+    lock_fd = os.open(config.GOOGLE_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -167,9 +157,9 @@ def list_upload_candidates() -> List[str]:
     eligible = {ext[1:] for ext in INCLUDE_EXTENSIONS}
     uploaded = catalog.google_photos_uploaded_fingerprints()
     pending: List[str] = []
-    for path in sorted(LOCAL_PHOTOS.rglob("*"), key=lambda item: str(item).lower()):
+    for path in sorted(config.LOCAL_DEST_ROOT.rglob("*"), key=lambda item: str(item).lower()):
         try:
-            relative = path.relative_to(LOCAL_PHOTOS)
+            relative = path.relative_to(config.LOCAL_DEST_ROOT)
             if (path.suffix.lower() not in eligible or not path.is_file() or path.is_symlink()
                     or any(part.startswith(".") for part in relative.parts)):
                 continue
@@ -194,8 +184,8 @@ def _sync() -> int:
         )
         return 2
 
-    if not LOCAL_PHOTOS.is_dir():
-        publish_status("failed", f"Local photo archive does not exist: {LOCAL_PHOTOS}")
+    if not config.LOCAL_DEST_ROOT.is_dir():
+        publish_status("failed", f"Local photo archive does not exist: {config.LOCAL_DEST_ROOT}")
         return 1
 
     pending = list_upload_candidates()
@@ -251,17 +241,17 @@ def _sync() -> int:
         # A preferences-file failure must not block a working upload.
         log_sync_event(f"Could not persist Google Photos connection preference: {exc}")
 
-    catalog.rotate_log_file(LOG_PATH, SYNC_LOG_MAX_BYTES, SYNC_LOG_BACKUPS)
+    catalog.rotate_log_file(config.GOOGLE_LOG_PATH, SYNC_LOG_MAX_BYTES, SYNC_LOG_BACKUPS)
     # Upload exactly the snapshot taken above. Files imported while the upload is
     # running are neither sent nor recorded, so the next sync picks them up.
-    list_fd, list_name = tempfile.mkstemp(prefix=".upload-list-", suffix=".txt", dir=SUPPORT_DIR)
+    list_fd, list_name = tempfile.mkstemp(prefix=".upload-list-", suffix=".txt", dir=config.INSTALL_DIR)
     try:
         with os.fdopen(list_fd, "w", encoding="utf-8") as handle:
             handle.write("\n".join(pending) + "\n")
         command = [
             rclone,
             "copy",
-            str(LOCAL_PHOTOS),
+            str(config.LOCAL_DEST_ROOT),
             destination,
             "--files-from",
             list_name,
@@ -269,7 +259,7 @@ def _sync() -> int:
             "--log-level",
             "INFO",
             "--log-file",
-            str(LOG_PATH),
+            str(config.GOOGLE_LOG_PATH),
             "--stats",
             "5s",
             "--stats-one-line",
@@ -292,7 +282,7 @@ def _sync() -> int:
     if result.returncode == 0:
         try:
             catalog.mark_google_photos_uploaded_many(
-                [LOCAL_PHOTOS / name for name in pending], REMOTE_NAME, ALBUM_NAME
+                [config.LOCAL_DEST_ROOT / name for name in pending], REMOTE_NAME, ALBUM_NAME
             )
         except (OSError, sqlite3.Error) as exc:
             publish_status(
@@ -312,7 +302,7 @@ def _sync() -> int:
         )
         return 0
 
-    publish_status("failed", f"rclone exited with status {result.returncode}. See {LOG_PATH}")
+    publish_status("failed", f"rclone exited with status {result.returncode}. See {config.GOOGLE_LOG_PATH}")
     return result.returncode or 1
 
 

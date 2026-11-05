@@ -7,11 +7,19 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from photo_offloader import config
 from photo_offloader import google_photos as sync
 from photo_offloader import importer as catalog
+from tests import support
 
 
 class TestGooglePhotosSync(unittest.TestCase):
+    def setUp(self):
+        # Safety net: anything a test does not point somewhere itself stays in a temp dir.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        support.isolate_config(self, Path(tmp.name))
+
     def test_filters_jpg_and_video_but_not_raw(self):
         for ext in ("*.jpg", "*.jpeg", "*.mov", "*.mp4"):
             self.assertIn(ext, sync.INCLUDE_EXTENSIONS)
@@ -36,7 +44,7 @@ class TestGooglePhotosSync(unittest.TestCase):
     def test_google_photos_connection_preference_survives_install_directory_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
             preferences = Path(tmp) / "PhotoOffloaderData" / "preferences.json"
-            with patch.object(sync, "PREFERENCES_PATH", preferences):
+            with patch.object(config, "PREFERENCES_PATH", preferences):
                 sync.remember_google_photos_connection("gphotos")
             payload = json.loads(preferences.read_text(encoding="utf-8"))
             self.assertEqual(payload["google_photos"]["remote"], "gphotos:")
@@ -49,8 +57,8 @@ class TestGooglePhotosSync(unittest.TestCase):
             root = Path(tmp)
             log_path = root / "sync.log"
             with (
-                patch.object(sync, "SUPPORT_DIR", root),
-                patch.object(sync, "LOG_PATH", log_path),
+                patch.object(config, "INSTALL_DIR", root),
+                patch.object(config, "GOOGLE_LOG_PATH", log_path),
             ):
                 sync.log_sync_event("Google Photos sync completed successfully.")
 
@@ -63,8 +71,8 @@ class TestGooglePhotosSync(unittest.TestCase):
             root = Path(tmp)
             status = root / "status.json"
             with (
-                patch.object(sync, "SUPPORT_DIR", root),
-                patch.object(sync, "STATUS_PATH", status),
+                patch.object(config, "INSTALL_DIR", root),
+                patch.object(config, "GOOGLE_STATUS_PATH", status),
             ):
                 sync.publish_status("complete", "ok")
                 success = json.loads(status.read_text())["last_success"]
@@ -79,9 +87,9 @@ class TestGooglePhotosSync(unittest.TestCase):
             root = Path(tmp)
             status = root / "status.json"
             with (
-                patch.object(sync, "SUPPORT_DIR", root),
-                patch.object(sync, "STATUS_PATH", status),
-                patch.object(sync, "LOCK_PATH", root / ".lock"),
+                patch.object(config, "INSTALL_DIR", root),
+                patch.object(config, "GOOGLE_STATUS_PATH", status),
+                patch.object(config, "GOOGLE_LOCK_PATH", root / ".lock"),
                 patch.object(sync, "find_rclone", return_value=None),
             ):
                 result = sync.run_sync()
@@ -96,15 +104,15 @@ class TestGooglePhotosSync(unittest.TestCase):
         photos = root / "CameraImports"
         photos.mkdir()
         patches = [
-            patch.object(sync, "SUPPORT_DIR", root),
-            patch.object(sync, "STATUS_PATH", root / "status.json"),
-            patch.object(sync, "LOCK_PATH", root / ".google-photos-sync.lock"),
-            patch.object(sync, "LOG_PATH", root / "google_photos_sync.log"),
-            patch.object(sync, "LOCAL_PHOTOS", photos),
-            patch.object(sync, "PREFERENCES_PATH", root / "preferences.json"),
+            patch.object(config, "INSTALL_DIR", root),
+            patch.object(config, "GOOGLE_STATUS_PATH", root / "status.json"),
+            patch.object(config, "GOOGLE_LOCK_PATH", root / ".google-photos-sync.lock"),
+            patch.object(config, "GOOGLE_LOG_PATH", root / "google_photos_sync.log"),
+            patch.object(config, "LOCAL_DEST_ROOT", photos),
+            patch.object(config, "PREFERENCES_PATH", root / "preferences.json"),
             patch.object(sync, "find_rclone", return_value="/usr/bin/rclone"),
-            patch.object(catalog, "CATALOG_DB_PATH", root / "data" / "catalog.sqlite3"),
-            patch.object(catalog, "LEGACY_CATALOG_DB_PATH", root / "legacy" / "catalog.sqlite3"),
+            patch.object(config, "CATALOG_DB_PATH", root / "data" / "catalog.sqlite3"),
+            patch.object(config, "LEGACY_CATALOG_DB_PATH", root / "legacy" / "catalog.sqlite3"),
             patch.object(catalog, "_CATALOG_INITIALIZED_PATH", None),
         ]
         for item in patches:

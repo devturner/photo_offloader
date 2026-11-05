@@ -13,16 +13,16 @@ try:
 except ImportError as exc:  # pragma: no cover - dependency is installed by install.sh
     raise SystemExit("Photo Offloader menu-bar UI requires rumps. Re-run ./install.sh.") from exc
 
-from photo_offloader import layout
+from photo_offloader import config
 from photo_offloader.menubar.model import Snapshot, menu_entries, menu_title, parse_status
 
-INSTALL_DIR = layout.INSTALL_DIR
+INSTALL_DIR = config.INSTALL_DIR
 PAUSE_FILE = INSTALL_DIR / ".paused"
-TRIGGER_SCRIPT = INSTALL_DIR / layout.TRIGGER
-DASHBOARD_SCRIPT = INSTALL_DIR / layout.DASHBOARD
-IMPORTER_SCRIPT = INSTALL_DIR / layout.IMPORTER
-SERVICE_SCRIPT = INSTALL_DIR / layout.SERVICE
-BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / layout.USB_BACKUP
+TRIGGER_SCRIPT = INSTALL_DIR / config.TRIGGER
+DASHBOARD_SCRIPT = INSTALL_DIR / config.DASHBOARD
+IMPORTER_SCRIPT = INSTALL_DIR / config.IMPORTER
+SERVICE_SCRIPT = INSTALL_DIR / config.SERVICE
+BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / config.USB_BACKUP
 USB_VOLUME = Path("/Volumes/Photos")
 UI_LABEL = "com.user.photooffloader.menubar"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
@@ -88,7 +88,7 @@ class PhotoOffloaderMenuBar(rumps.App):
 
     def view_log(self, _sender: object = None) -> None:
         """Open the import log in Console, which follows new lines as they are written."""
-        log = Path.home() / ".camera_transfer.log"
+        log = config.LOG_FILE_PATH
         if not log.is_file():
             rumps.notification("Photo Offloader", "No import log yet", "It is created by the first import.")
             return

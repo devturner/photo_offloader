@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from photo_offloader import importer as catalog
 from photo_offloader.dashboard import core
+from tests import support
 
 
 class Fixture(unittest.TestCase):
@@ -32,12 +33,8 @@ class Fixture(unittest.TestCase):
         (self.install / "bin" / "photo-offloader-google-sync").write_text("")
         (self.install / "scripts" / "trigger.sh").write_text("#!/bin/bash\n")
 
-        for name, value in (("CATALOG_DB_PATH", self.data / "catalog.sqlite3"),
-                            ("LEGACY_CATALOG_DB_PATH", root / "legacy.sqlite3"),
-                            ("_CATALOG_INITIALIZED_PATH", None)):
-            patcher = patch.object(catalog, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        support.isolate_config(self, root, CATALOG_DB_PATH=self.data / "catalog.sqlite3",
+                               LEGACY_CATALOG_DB_PATH=root / "legacy.sqlite3")
         env = patch.dict(os.environ)
         env.start()
         self.addCleanup(env.stop)
@@ -506,8 +503,7 @@ class TestPipeline(Fixture):
             self.assertEqual(core.Paths.default().rclone_config, Path("/tmp/custom-rclone.conf"))
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("RCLONE_CONFIG", None)
-            self.assertEqual(core.Paths.default().rclone_config,
-                             Path.home() / ".config" / "rclone" / "rclone.conf")
+            self.assertEqual(core.Paths.default().rclone_config, core.config.RCLONE_CONFIG_PATH)
 
     def test_google_photos_upload_shows_live_progress_from_the_rclone_log(self):
         self.google_up = True

@@ -37,7 +37,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
-from photo_offloader import layout
+from photo_offloader import config
 
 try:
     from alive_progress import alive_bar
@@ -63,23 +63,6 @@ CARD_VOLUME_GLOBS = [
     "/Volumes/SONY*/DCIM",
     "/Volumes/EOS*/DCIM",
 ]
-LOCAL_DEST_ROOT = Path.home() / "Pictures" / "CameraImports"
-LOCAL_RAW_DEST_ROOT = Path.home() / "Pictures" / "CameraImportsRaw"
-USB_DEST_VOLUME = Path("/Volumes/Photos")
-USB_DEST_ROOT = USB_DEST_VOLUME / "CameraImports"
-LOG_FILE_PATH = Path.home() / ".camera_transfer.log"
-SESSION_LOCK_PATH = Path.home() / "Library" / "Caches" / "PhotoOffloader" / "import.lock"
-WAIT_SECONDS = 30
-EJECT_CARD_AFTER_SUCCESS = True
-VERIFY_WITH_SHA256 = False
-USE_FILE_BIRTH_TIME = True
-MIN_FREE_SPACE_BUFFER_BYTES = 100 * 1024 * 1024
-STATUS_FILE_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "status.json"
-CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "catalog.sqlite3"
-LEGACY_CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "catalog.sqlite3"
-BUILD_INFO_PATH = layout.APP_ROOT / "build_info.json"
-VERSION_PATH = layout.APP_ROOT / "VERSION"
-GOOGLE_PHOTOS_SYNC_PATH = layout.APP_ROOT / layout.GOOGLE_SYNC
 _PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
 _PROGRESS_STARTED: Optional[float] = None
 
@@ -106,10 +89,10 @@ def update_status(**updates: object) -> None:
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     })
     try:
-        STATUS_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temp = STATUS_FILE_PATH.with_suffix(".tmp")
+        config.STATUS_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp = config.STATUS_FILE_PATH.with_suffix(".tmp")
         temp.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
-        os.replace(temp, STATUS_FILE_PATH)
+        os.replace(temp, config.STATUS_FILE_PATH)
         _LAST_STATUS_WRITE = time.monotonic()
     except OSError as exc:
         logger.debug("Could not publish dashboard status: %s", exc)
@@ -238,16 +221,16 @@ _CATALOG_INITIALIZED_PATH: Optional[str] = None
 def catalog_connection() -> sqlite3.Connection:
     """Open the persistent media/location catalog, initializing its schema once per path."""
     global _CATALOG_INITIALIZED_PATH
-    CATALOG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not CATALOG_DB_PATH.exists() and LEGACY_CATALOG_DB_PATH.is_file():
+    config.CATALOG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not config.CATALOG_DB_PATH.exists() and config.LEGACY_CATALOG_DB_PATH.is_file():
         try:
-            shutil.copy2(LEGACY_CATALOG_DB_PATH, CATALOG_DB_PATH)
-            logger.info("Migrated legacy file catalog to persistent data location: %s", CATALOG_DB_PATH)
+            shutil.copy2(config.LEGACY_CATALOG_DB_PATH, config.CATALOG_DB_PATH)
+            logger.info("Migrated legacy file catalog to persistent data location: %s", config.CATALOG_DB_PATH)
         except OSError as exc:
             logger.warning("Could not migrate legacy catalog; using the existing catalog location: %s", exc)
-            return sqlite3.connect(LEGACY_CATALOG_DB_PATH, timeout=10)
-    connection = sqlite3.connect(CATALOG_DB_PATH, timeout=10)
-    catalog_path = str(CATALOG_DB_PATH.resolve())
+            return sqlite3.connect(config.LEGACY_CATALOG_DB_PATH, timeout=10)
+    connection = sqlite3.connect(config.CATALOG_DB_PATH, timeout=10)
+    catalog_path = str(config.CATALOG_DB_PATH.resolve())
     try:
         # Readers (the dashboard) no longer block behind the importer's writes.
         connection.execute("PRAGMA synchronous=NORMAL")
@@ -518,7 +501,7 @@ def _catalog_upsert(db: sqlite3.Connection, path: Path, sha256: Optional[str] = 
     fingerprint = file_fingerprint(path)
     resolved = path.resolve()
     known_root = next(
-        (candidate.resolve() for candidate in (LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT, USB_DEST_ROOT)
+        (candidate.resolve() for candidate in (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT, config.USB_DEST_ROOT)
          if resolved == candidate.resolve() or candidate.resolve() in resolved.parents),
         None,
     )
@@ -823,7 +806,7 @@ def load_build_info() -> Dict[str, str]:
     """Identify the exact source/build installed when this process was launched."""
     info: Dict[str, str] = {}
     try:
-        loaded = json.loads(BUILD_INFO_PATH.read_text(encoding="utf-8"))
+        loaded = json.loads(config.BUILD_INFO_PATH.read_text(encoding="utf-8"))
         if isinstance(loaded, dict):
             info.update({str(key): str(value) for key, value in loaded.items()})
     except (OSError, ValueError):
@@ -831,7 +814,7 @@ def load_build_info() -> Dict[str, str]:
 
     if not info.get("version"):
         try:
-            info["version"] = VERSION_PATH.read_text(encoding="utf-8").strip()
+            info["version"] = config.VERSION_PATH.read_text(encoding="utf-8").strip()
         except OSError:
             info["version"] = "unknown"
 
@@ -861,14 +844,14 @@ def load_build_info() -> Dict[str, str]:
 
 def launch_google_photos_sync() -> None:
     """Start optional Google Photos uploads without making import success depend on cloud access."""
-    if not GOOGLE_PHOTOS_SYNC_PATH.is_file():
+    if not config.GOOGLE_PHOTOS_SYNC_PATH.is_file():
         logger.info("Google Photos helper is not installed; skipping optional cloud upload.")
         return
     try:
-        log_path = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "google_photos_sync_launcher.log"
+        log_path = config.GOOGLE_LAUNCHER_LOG_PATH
         rotate_log_file(log_path, max_bytes=1024 * 1024, backups=1)
         with log_path.open("a", encoding="utf-8") as output:
-            subprocess.Popen([sys.executable, str(GOOGLE_PHOTOS_SYNC_PATH), "--sync"], stdin=subprocess.DEVNULL,
+            subprocess.Popen([sys.executable, str(config.GOOGLE_PHOTOS_SYNC_PATH), "--sync"], stdin=subprocess.DEVNULL,
                              stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
         logger.info("Started optional Google Photos upload in the background.")
     except OSError as exc:
@@ -876,7 +859,7 @@ def launch_google_photos_sync() -> None:
 
 
 def configure_logging(verbose: bool = False) -> None:
-    LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    config.LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
     formatter = logging.Formatter(
@@ -884,7 +867,7 @@ def configure_logging(verbose: bool = False) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     fh = logging.handlers.RotatingFileHandler(
-        LOG_FILE_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8")
+        config.LOG_FILE_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(formatter)
     ch = logging.StreamHandler()
@@ -915,8 +898,8 @@ def notify(title: str, text: str) -> None:
 
 @contextmanager
 def import_session_lock() -> Iterator[None]:
-    SESSION_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    handle = SESSION_LOCK_PATH.open("w")
+    config.SESSION_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handle = config.SESSION_LOCK_PATH.open("w")
     try:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -931,7 +914,7 @@ def import_session_lock() -> Iterator[None]:
         finally:
             handle.close()
             try:
-                SESSION_LOCK_PATH.unlink(missing_ok=True)
+                config.SESSION_LOCK_PATH.unlink(missing_ok=True)
             except OSError:
                 pass
 
@@ -1023,7 +1006,7 @@ def scan_with_retry(dcim_folder: Path) -> Dict[str, List[Path]]:
     files = find_media_files(dcim_folder)
     if any(files.values()):
         return files
-    deadline = time.monotonic() + WAIT_SECONDS
+    deadline = time.monotonic() + config.WAIT_SECONDS
     while time.monotonic() < deadline:
         logger.info("No matching files visible yet; checking again...")
         time.sleep(2)
@@ -1057,7 +1040,7 @@ def files_match(source: Path, destination: Path, force_sha256: bool = False) -> 
     try:
         if source.stat().st_size != destination.stat().st_size:
             return False
-        if VERIFY_WITH_SHA256 or force_sha256:
+        if config.VERIFY_WITH_SHA256 or force_sha256:
             return sha256_file(source) == sha256_file(destination)
         return True
     except OSError:
@@ -1341,7 +1324,7 @@ def get_camera_model(path: Path) -> str:
 
 def _month_from_file_time(source: Path) -> str:
     info = source.stat()
-    birth = getattr(info, "st_birthtime", None) if USE_FILE_BIRTH_TIME else None
+    birth = getattr(info, "st_birthtime", None) if config.USE_FILE_BIRTH_TIME else None
     return datetime.fromtimestamp(birth if birth is not None else info.st_mtime).strftime("%Y-%m")
 
 
@@ -1409,7 +1392,7 @@ def get_media_type_folder(source: Path) -> str:
 
 def local_root_for_category(category: str) -> Path:
     """Choose the top-level local archive by media category."""
-    return LOCAL_RAW_DEST_ROOT if category == "RAW" else LOCAL_DEST_ROOT
+    return config.LOCAL_RAW_DEST_ROOT if category == "RAW" else config.LOCAL_DEST_ROOT
 
 
 def build_destination_path(source: Path, dcim_folder: Path, destination_base: Path) -> Path:
@@ -1533,7 +1516,7 @@ def copy_one_to_destination(
 
 
 def usb_is_mounted() -> bool:
-    return USB_DEST_VOLUME.is_dir() and USB_DEST_VOLUME.is_mount()
+    return config.USB_DEST_VOLUME.is_dir() and config.USB_DEST_VOLUME.is_mount()
 
 
 def get_volume_identity(volume_path: Path) -> Optional[VolumeIdentity]:
@@ -1564,9 +1547,9 @@ def volume_identity_matches(expected: Optional[VolumeIdentity], current: Optiona
 
 def snapshot_destinations(no_usb: bool = False) -> DestinationSnapshot:
     if no_usb or not usb_is_mounted():
-        return DestinationSnapshot((LOCAL_DEST_ROOT,), False, None)
-    identity = get_volume_identity(USB_DEST_VOLUME)
-    return DestinationSnapshot((LOCAL_DEST_ROOT, USB_DEST_ROOT), True, identity)
+        return DestinationSnapshot((config.LOCAL_DEST_ROOT,), False, None)
+    identity = get_volume_identity(config.USB_DEST_VOLUME)
+    return DestinationSnapshot((config.LOCAL_DEST_ROOT, config.USB_DEST_ROOT), True, identity)
 
 
 def required_source_bytes(files: Dict[str, List[Path]]) -> int:
@@ -1590,7 +1573,7 @@ def validate_destinations(destinations: Sequence[Path], required_bytes: int = 0)
             probe.unlink(missing_ok=True)
             if required_bytes:
                 free = available_bytes(destination)
-                if free < required_bytes + MIN_FREE_SPACE_BUFFER_BYTES:
+                if free < required_bytes + config.MIN_FREE_SPACE_BUFFER_BYTES:
                     raise RuntimeError(
                         f"Insufficient free space at {destination}: {free} bytes available, "
                         f"{required_bytes} bytes required plus safety buffer."
@@ -1678,13 +1661,13 @@ def update_file_catalog() -> Dict[str, int]:
     indexed without a hash until a verification operation computes one.
     """
     roots: List[Path] = []
-    for local_root in (LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT):
+    for local_root in (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT):
         if local_root.is_dir():
             roots.append(local_root)
         else:
             logger.info("Local archive root is not available for catalog update: %s", local_root)
-    if usb_is_mounted() and USB_DEST_ROOT.is_dir():
-        roots.append(USB_DEST_ROOT)
+    if usb_is_mounted() and config.USB_DEST_ROOT.is_dir():
+        roots.append(config.USB_DEST_ROOT)
     else:
         logger.info("USB volume is not mounted; skipping USB catalog refresh.")
 
@@ -1825,7 +1808,7 @@ def update_file_catalog() -> Dict[str, int]:
                                 break
                     if timestamp is None:
                         info = path.stat()
-                        birth = getattr(info, "st_birthtime", None) if USE_FILE_BIRTH_TIME else None
+                        birth = getattr(info, "st_birthtime", None) if config.USE_FILE_BIRTH_TIME else None
                         timestamp = datetime.fromtimestamp(birth if birth is not None else info.st_mtime)
                     month = timestamp.strftime("%Y-%m")
                     model = normalize_camera_model(metadata.get("Make"), metadata.get("Model")) or "Unknown-Camera"
@@ -1884,14 +1867,14 @@ def update_file_catalog() -> Dict[str, int]:
 def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None) -> ImportStats:
     """Copy only missing local archive files to USB; never overwrite mismatches."""
     if not usb_is_mounted():
-        raise RuntimeError(f"USB backup volume is not mounted at {USB_DEST_VOLUME}")
+        raise RuntimeError(f"USB backup volume is not mounted at {config.USB_DEST_VOLUME}")
     if expected_identity is None:
-        expected_identity = get_volume_identity(USB_DEST_VOLUME)
+        expected_identity = get_volume_identity(config.USB_DEST_VOLUME)
     if not usb_is_mounted() or not volume_identity_matches(
-        expected_identity, get_volume_identity(USB_DEST_VOLUME)
+        expected_identity, get_volume_identity(config.USB_DEST_VOLUME)
     ):
         raise RuntimeError("USB backup volume identity changed before backup started.")
-    source_roots = (LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT)
+    source_roots = (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT)
     files: List[Tuple[Path, Path]] = []
     for source_root in source_roots:
         if not source_root.is_dir():
@@ -1903,7 +1886,7 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
                         and not any(part.startswith(".") for part in path.relative_to(source_root).parts)):
                     # Both local trees retain the same YYYY-MM/camera/{Photos,Raws,Movies}
                     # structure, so mirror both into the single consolidated USB root.
-                    files.append((path, USB_DEST_ROOT / path.relative_to(source_root)))
+                    files.append((path, config.USB_DEST_ROOT / path.relative_to(source_root)))
             except OSError as exc:
                 logger.warning("Could not inspect local archive file %s: %s", path, exc)
     files.sort(key=lambda item: str(item[0]).lower())
@@ -1948,7 +1931,7 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
             logger.exception("Could not inspect backup candidate %s", source)
 
     if pending:
-        validate_destinations([USB_DEST_ROOT], sum(item[2].size for item in pending))
+        validate_destinations([config.USB_DEST_ROOT], sum(item[2].size for item in pending))
     global _PROGRESS_STARTED
     _PROGRESS_STARTED = time.monotonic()
     _PROGRESS.update({"state": "copying", "phase": "USB backup", "bytes_done": 0,
@@ -1961,7 +1944,7 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
         if not usb_is_mounted():
             stats.failed += 1
             message = "USB backup volume was disconnected during the backup."
-            stats.errors.append((str(USB_DEST_VOLUME), message))
+            stats.errors.append((str(config.USB_DEST_VOLUME), message))
             logger.error(message)
             break
         update_status(current_file=source.name, current_path=str(source),
@@ -2007,12 +1990,12 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
                     logger.warning("Could not remove temporary backup file %s", temp_path)
 
     if not usb_is_mounted() or not volume_identity_matches(
-        expected_identity, get_volume_identity(USB_DEST_VOLUME)
+        expected_identity, get_volume_identity(config.USB_DEST_VOLUME)
     ):
         stats.failed += 1
         message = "USB backup volume was disconnected or replaced during the backup."
         if not any(existing_message == message for _, existing_message in stats.errors):
-            stats.errors.append((str(USB_DEST_VOLUME), message))
+            stats.errors.append((str(config.USB_DEST_VOLUME), message))
         logger.error(message)
 
     update_status(state="complete" if stats.failed == 0 else "failed",
@@ -2102,8 +2085,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 def _main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    global VERIFY_WITH_SHA256, _PROGRESS_STARTED
-    VERIFY_WITH_SHA256 = args.sha256
+    global _PROGRESS_STARTED
+    config.VERIFY_WITH_SHA256 = args.sha256
     configure_logging(args.verbose)
 
     build_info = load_build_info()
@@ -2148,7 +2131,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
                 backup_stats = copy_local_archive_to_usb()
                 _RUN.update(files=backup_stats.found, copied=backup_stats.destination_copies,
                             skipped=backup_stats.destination_skips, failed=backup_stats.failed)
-                print_summary(LOCAL_DEST_ROOT, [LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT, USB_DEST_ROOT], backup_stats, False, False)
+                print_summary(config.LOCAL_DEST_ROOT, [config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT, config.USB_DEST_ROOT], backup_stats, False, False)
                 if backup_stats.failed:
                     notify("USB Backup Incomplete", f"{backup_stats.failed} backup failure(s).")
                     return 1
@@ -2199,15 +2182,15 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
                             prefetched, time.monotonic() - metadata_started)
 
             usb_expected = not args.no_usb and usb_is_mounted()
-            usb_identity = get_volume_identity(USB_DEST_VOLUME) if usb_expected else None
-            local_destinations = [LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT]
+            usb_identity = get_volume_identity(config.USB_DEST_VOLUME) if usb_expected else None
+            local_destinations = [config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT]
             local_required = {
-                LOCAL_DEST_ROOT: sum(path.stat().st_size for category in ("JPG", "VIDEO", "OTHER") for path in files[category]),
-                LOCAL_RAW_DEST_ROOT: sum(path.stat().st_size for path in files["RAW"]),
+                config.LOCAL_DEST_ROOT: sum(path.stat().st_size for category in ("JPG", "VIDEO", "OTHER") for path in files[category]),
+                config.LOCAL_RAW_DEST_ROOT: sum(path.stat().st_size for path in files["RAW"]),
             }
             for destination in local_destinations:
                 validate_destinations([destination], local_required[destination])
-            logger.info("Stage 1 destinations: %s and %s", LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT)
+            logger.info("Stage 1 destinations: %s and %s", config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT)
             if usb_expected:
                 logger.info("USB backup is mounted; it will be synchronized after the local SSD import.")
             else:
@@ -2241,7 +2224,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             # The card is safe to release as soon as the complete local archive is verified.
             eject_attempted = False
             eject_success = False
-            if EJECT_CARD_AFTER_SUCCESS and not args.no_eject:
+            if config.EJECT_CARD_AFTER_SUCCESS and not args.no_eject:
                 eject_attempted = True
                 eject_success = eject_volume(card_volume)
 
@@ -2249,11 +2232,11 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             _RUN["usb"] = bool(usb_expected)
             if usb_expected:
                 if not usb_is_mounted() or not volume_identity_matches(
-                    usb_identity, get_volume_identity(USB_DEST_VOLUME)
+                    usb_identity, get_volume_identity(config.USB_DEST_VOLUME)
                 ):
                     backup_stats.failed += 1
                     message = "Configured USB backup volume was disconnected or replaced before backup."
-                    backup_stats.errors.append((str(USB_DEST_VOLUME), message))
+                    backup_stats.errors.append((str(config.USB_DEST_VOLUME), message))
                     logger.error(message)
                 else:
                     try:
@@ -2261,14 +2244,14 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
                         _RUN["usb_copied"] = backup_stats.destination_copies
                     except Exception as exc:
                         backup_stats.failed += 1
-                        backup_stats.errors.append((str(USB_DEST_VOLUME), str(exc)))
+                        backup_stats.errors.append((str(config.USB_DEST_VOLUME), str(exc)))
                         logger.exception("USB backup stage failed: %s", exc)
             else:
                 update_status(state="complete", phase="card-to-ssd",
                               message="Mac SSD import complete; USB backup skipped",
                               current_file="", current_path="")
 
-            print_summary(dcim_folder, local_destinations + ([USB_DEST_ROOT] if usb_expected else []),
+            print_summary(dcim_folder, local_destinations + ([config.USB_DEST_ROOT] if usb_expected else []),
                           backup_stats if usb_expected else local_stats, eject_attempted, eject_success)
             if backup_stats.failed:
                 update_status(state="failed", phase="usb-backup",

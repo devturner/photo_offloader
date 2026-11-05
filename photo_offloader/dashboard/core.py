@@ -21,8 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
+from photo_offloader import config
 from photo_offloader import importer as catalog
-from photo_offloader import layout
 from photo_offloader.google_photos import parse_rclone_stats_line
 
 SERVICE_LABEL = "com.user.photooffloader"
@@ -124,20 +124,17 @@ class Paths:
 
     @classmethod
     def default(cls) -> "Paths":
-        support = Path.home() / "Library" / "Application Support"
-        install = Path(os.environ.get("PHOTO_OFFLOADER_INSTALL_DIR", str(support / "PhotoOffloader")))
-        usb = Path("/Volumes/Photos")
+        install = Path(os.environ.get("PHOTO_OFFLOADER_INSTALL_DIR", str(config.INSTALL_DIR)))
         venv_python = install / "venv" / "bin" / "python3"
         return cls(
             install_dir=install,
-            data_dir=catalog.CATALOG_DB_PATH.parent,
+            data_dir=config.CATALOG_DB_PATH.parent,
             volumes_root=Path("/Volumes"),
-            usb_volume=usb,
-            local_archives=(Path.home() / "Pictures" / "CameraImports",
-                            Path.home() / "Pictures" / "CameraImportsRaw"),
-            usb_archives=(usb / "CameraImports",),
+            usb_volume=config.USB_DEST_VOLUME,
+            local_archives=(config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT),
+            usb_archives=(config.USB_DEST_ROOT,),
             python=venv_python if venv_python.exists() else Path(sys.executable),
-            rclone_config=Path(os.environ.get("RCLONE_CONFIG", str(Path.home() / ".config" / "rclone" / "rclone.conf"))),
+            rclone_config=Path(os.environ.get("RCLONE_CONFIG", str(config.RCLONE_CONFIG_PATH))),
         )
 
     # files the importer / trigger / service maintain
@@ -167,12 +164,12 @@ class Paths:
 
     @property
     def import_log_file(self) -> Path:
-        return Path(os.environ.get("PHOTO_OFFLOADER_IMPORT_LOG", str(Path.home() / ".camera_transfer.log")))
+        return Path(os.environ.get("PHOTO_OFFLOADER_IMPORT_LOG", str(config.LOG_FILE_PATH)))
 
     @property
     def trigger_log_file(self) -> Path:
         return Path(os.environ.get("PHOTO_OFFLOADER_TRIGGER_LOG",
-                                   str(Path.home() / ".camera_transfer_trigger.log")))
+                                   str(config.TRIGGER_LOG_PATH)))
 
     @property
     def google_log_file(self) -> Path:
@@ -193,23 +190,23 @@ class Paths:
 
     @property
     def importer_script(self) -> Path:
-        return self.install_dir / layout.IMPORTER
+        return self.install_dir / config.IMPORTER
 
     @property
     def backup_launcher(self) -> Path:
-        return self.install_dir / layout.USB_BACKUP
+        return self.install_dir / config.USB_BACKUP
 
     @property
     def google_script(self) -> Path:
-        return self.install_dir / layout.GOOGLE_SYNC
+        return self.install_dir / config.GOOGLE_SYNC
 
     @property
     def service_script(self) -> Path:
-        return self.install_dir / layout.SERVICE
+        return self.install_dir / config.SERVICE
 
     @property
     def trigger_script(self) -> Path:
-        return self.install_dir / layout.TRIGGER
+        return self.install_dir / config.TRIGGER
 
 
 # ------------------------------------------------------------------------------- the core

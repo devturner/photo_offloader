@@ -9,26 +9,29 @@ The production SQLite catalog, log, and dashboard status files are not modified.
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import time
 from pathlib import Path
 
-from photo_offloader import importer as app
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from photo_offloader import config  # noqa: E402
+from photo_offloader import importer as app  # noqa: E402
 
 
 def main() -> int:
     originals = {
-        "CATALOG_DB_PATH": app.CATALOG_DB_PATH,
-        "_CATALOG_INITIALIZED_PATH": app._CATALOG_INITIALIZED_PATH,
-        "STATUS_FILE_PATH": app.STATUS_FILE_PATH,
-        "LOG_FILE_PATH": app.LOG_FILE_PATH,
+        "CATALOG_DB_PATH": config.CATALOG_DB_PATH,
+        "STATUS_FILE_PATH": config.STATUS_FILE_PATH,
+        "LOG_FILE_PATH": config.LOG_FILE_PATH,
     }
     try:
         with tempfile.TemporaryDirectory(prefix="photo-offloader-benchmark-") as temp:
             temp_root = Path(temp)
-            app.CATALOG_DB_PATH = temp_root / "benchmark.sqlite3"
-            app.STATUS_FILE_PATH = temp_root / "status.json"
-            app.LOG_FILE_PATH = temp_root / "benchmark.log"
+            config.CATALOG_DB_PATH = temp_root / "benchmark.sqlite3"
+            config.STATUS_FILE_PATH = temp_root / "status.json"
+            config.LOG_FILE_PATH = temp_root / "benchmark.log"
             app._CATALOG_INITIALIZED_PATH = None
             results = []
             for label in ("cold_build", "repeat_refresh"):
@@ -52,7 +55,8 @@ def main() -> int:
             }, indent=2))
     finally:
         for name, value in originals.items():
-            setattr(app, name, value)
+            setattr(config, name, value)
+        app._CATALOG_INITIALIZED_PATH = None
     return 0
 
 
