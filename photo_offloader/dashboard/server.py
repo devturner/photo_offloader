@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from dashboard_core import DashboardCore
+from photo_offloader.dashboard.core import DashboardCore
 
 TOKEN_HEADER = "X-Photo-Offloader-Token"
 MAX_BODY_BYTES = 8192

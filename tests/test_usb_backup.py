@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-LAUNCHER = Path(__file__).with_name("photo_offloader_backup_launcher.py")
+LAUNCHER = Path(__file__).resolve().parents[1] / "bin" / "photo-offloader-usb-backup"
 
 
 class TestBackupLauncher(unittest.TestCase):

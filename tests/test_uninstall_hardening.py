@@ -6,9 +6,9 @@ from pathlib import Path
 class TestUninstallHardening(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.root = Path(__file__).resolve().parent
+        cls.root = Path(__file__).resolve().parents[1]
         cls.script = (cls.root / "uninstall.sh").read_text(encoding="utf-8")
-        cls.trigger = (cls.root / "camera_offloader_trigger.sh").read_text(encoding="utf-8")
+        cls.trigger = (cls.root / "scripts" / "trigger.sh").read_text(encoding="utf-8")
         cls.install = (cls.root / "install.sh").read_text(encoding="utf-8")
 
     def test_verbose_dry_run_and_help_options_are_available(self):
@@ -28,13 +28,14 @@ class TestUninstallHardening(unittest.TestCase):
         self.assertIn("Cleanup incomplete", self.script)
 
     def test_uninstall_stops_installed_processes_before_removing_files(self):
-        stop_call = self.script.index('stop_matching_processes "$INSTALL_DIR/camera_offloader_trigger.sh"')
+        stop_call = self.script.index('stop_matching_processes "${program%%|*}"')
         remove_call = self.script.index('rm -rf "$INSTALL_DIR"')
         self.assertLess(stop_call, remove_call)
-        self.assertIn("photo_offloader_import_supervisor.sh", self.script)
-        self.assertIn("camera_offloader_v2.py", self.script)
-        self.assertIn("photo_offloader_ui.py", self.script)
-        self.assertIn("photo_offloader_menubar.py", self.script)
+        for program in ("scripts/trigger.sh", "scripts/import_supervisor.sh", "bin/photo-offloader-import",
+                        "bin/photo-offloader-dashboard", "bin/photo-offloader-menubar",
+                        # an installation from before v2.5 must be cleaned up as well
+                        "camera_offloader_v2.py", "photo_offloader_ui.py", "photo_offloader_menubar.py"):
+            self.assertIn(f'"$INSTALL_DIR/{program}|', self.script)
 
     def test_uninstall_preserves_media_and_catalog(self):
         self.assertNotIn('rm -rf "$DATA_DIR"', self.script)
@@ -65,11 +66,11 @@ class TestUninstallHardening(unittest.TestCase):
         self.assertIn("import_process_running", self.install)
         self.assertIn("shutdown could not be verified", self.install)
         shutdown_check = self.install.index('if [[ "$shutdown_verified" -ne 1 ]]')
-        first_copy = self.install.index('cp "$SCRIPT_DIR/$SCRIPT_NAME" "$SCRIPT_PATH"')
+        first_copy = self.install.index('cp -R "$SCRIPT_DIR/$dir" "$INSTALL_DIR/$dir"')
         self.assertLess(shutdown_check, first_copy)
 
     def test_supervisor_removes_submitted_launchd_job_after_terminal_status(self):
-        supervisor = (self.root / "photo_offloader_import_supervisor.sh").read_text(encoding="utf-8")
+        supervisor = (self.root / "scripts" / "import_supervisor.sh").read_text(encoding="utf-8")
         self.assertIn('IMPORT_WORKER_LABEL="${PHOTO_OFFLOADER_IMPORT_WORKER_LABEL:-com.user.photooffloader.import}"', supervisor)
         self.assertIn('LAUNCHCTL="${PHOTO_OFFLOADER_LAUNCHCTL:-/bin/launchctl}"', supervisor)
         self.assertIn('"$LAUNCHCTL" remove "$IMPORT_WORKER_LABEL"', supervisor)

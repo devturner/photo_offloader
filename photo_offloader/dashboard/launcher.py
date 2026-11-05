@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Photo Offloader dashboard launcher.
 
 Starts (or re-opens) the local dashboard server and shows it in a native window when
@@ -6,7 +5,7 @@ Starts (or re-opens) the local dashboard server and shows it in a native window 
 time: launching again just brings the existing one forward, so the menu bar and the
 auto-open on import can both call this safely.
 
-The page itself lives in ``dashboard_web/``; the state it shows comes from ``dashboard_core``.
+The page itself lives in ``web/``; the state it shows comes from ``core``.
 """
 from __future__ import annotations
 
@@ -18,8 +17,12 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from dashboard_core import DashboardCore, Paths
-from dashboard_server import DashboardServer, find_running_instance, write_instance_file
+from photo_offloader.dashboard.core import DashboardCore, Paths
+from photo_offloader.dashboard.server import (
+    DashboardServer,
+    find_running_instance,
+    write_instance_file,
+)
 
 BROWSER_IDLE_TIMEOUT = 180.0  # tolerant: browsers throttle polling in background tabs
 PAGE_OPEN_WITHIN_SECONDS = 30.0  # a page that polled this recently is considered still open
@@ -62,7 +65,7 @@ def main(
     # window or tab is currently showing it (never steal focus from one that is).
     if_closed = "--if-closed" in (sys.argv[1:] if argv is None else list(argv))
     paths = paths or Paths.default()
-    web_root = web_root or Path(__file__).resolve().parent / "dashboard_web"
+    web_root = web_root or Path(__file__).resolve().parent / "web"
     open_browser = open_browser or webbrowser.open
     activate = activate or _activate_pid
 

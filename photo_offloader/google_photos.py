@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """One-way, filtered uploads from Photo Offloader to Google Photos via rclone."""
 from __future__ import annotations
 
@@ -15,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-import camera_offloader_v2 as catalog
+from photo_offloader import importer as catalog
 
 LOCAL_PHOTOS = Path.home() / "Pictures" / "CameraImports"
 SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
@@ -320,7 +319,7 @@ def _sync() -> int:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args not in ([], ["--sync"]):
-        print("Usage: google_photos_sync.py [--sync]", file=sys.stderr)
+        print("Usage: photo-offloader-google-sync [--sync]", file=sys.stderr)
         return 2
     return run_sync(args)
 

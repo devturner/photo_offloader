@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the dashboard launcher (photo_offloader_ui.py): single instance, window or browser."""
+"""Tests for the dashboard launcher (photo_offloader.dashboard.launcher): single instance, window or browser."""
 import fcntl
 import http.client
 import json
@@ -12,10 +12,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import camera_offloader_v2 as catalog
-import dashboard_core as core
-import dashboard_server as srv
-import photo_offloader_ui as ui
+from photo_offloader import importer as catalog
+from photo_offloader.dashboard import core
+from photo_offloader.dashboard import launcher as ui
+from photo_offloader.dashboard import server as srv
 
 
 class FakeWebview:

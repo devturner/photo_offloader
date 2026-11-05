@@ -9,8 +9,8 @@ set -euo pipefail
 
 INSTALL_DIR="${PHOTO_OFFLOADER_INSTALL_DIR:-$HOME/Library/Application Support/PhotoOffloader}"
 PYTHON="${PHOTO_OFFLOADER_PYTHON:-$INSTALL_DIR/venv/bin/python3}"
-IMPORTER="${PHOTO_OFFLOADER_IMPORTER:-$INSTALL_DIR/camera_offloader_v2.py}"
-DASHBOARD="${PHOTO_OFFLOADER_DASHBOARD:-$INSTALL_DIR/photo_offloader_ui.py}"
+IMPORTER="${PHOTO_OFFLOADER_IMPORTER:-$INSTALL_DIR/bin/photo-offloader-import}"
+DASHBOARD="${PHOTO_OFFLOADER_DASHBOARD:-$INSTALL_DIR/bin/photo-offloader-dashboard}"
 OPEN_DASHBOARD="${PHOTO_OFFLOADER_OPEN_DASHBOARD:-1}"
 LOG="${PHOTO_OFFLOADER_TRIGGER_LOG:-$HOME/.camera_transfer_trigger.log}"
 LOG_MAX_BYTES="${PHOTO_OFFLOADER_LOG_MAX_BYTES:-1048576}"
@@ -120,7 +120,7 @@ PYBUILDINFO
 start_background_import() {
     local source_path="$1"
     local import_log="$HOME/.camera_transfer.log"
-    local supervisor_script="${PHOTO_OFFLOADER_SUPERVISOR:-$INSTALL_DIR/photo_offloader_import_supervisor.sh}"
+    local supervisor_script="${PHOTO_OFFLOADER_SUPERVISOR:-$INSTALL_DIR/scripts/import_supervisor.sh}"
 
     printf '%s\n' "$source_path" > "$STATE_FILE"
     if [[ ! -f "$supervisor_script" ]]; then

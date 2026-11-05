@@ -7,10 +7,10 @@
 # Quitting the menu bar or closing the dashboard leaves the trigger running.
 # This script is the supported way to shut the whole thing down (and back up).
 #
-#   photo_offloader_service.sh status
-#   photo_offloader_service.sh stop [--wait | --force] [--disable] [--keep-ui]
-#   photo_offloader_service.sh start
-#   photo_offloader_service.sh restart
+#   scripts/service.sh status
+#   scripts/service.sh stop [--wait | --force] [--disable] [--keep-ui]
+#   scripts/service.sh start
+#   scripts/service.sh restart
 #
 # `stop` always unloads the trigger first, so no new import can begin. It never
 # interrupts a running transfer unless you pass --force:
@@ -35,13 +35,13 @@ LABEL="com.user.photooffloader"
 UI_LABEL="com.user.photooffloader.menubar"
 IMPORT_LABEL="com.user.photooffloader.import"
 DOMAIN="gui/$(id -u)"
-IMPORTER="$INSTALL_DIR/camera_offloader_v2.py"
-DASHBOARD="$INSTALL_DIR/photo_offloader_ui.py"
+IMPORTER="$INSTALL_DIR/bin/photo-offloader-import"
+DASHBOARD="$INSTALL_DIR/bin/photo-offloader-dashboard"
 PAUSE_FILE="${PHOTO_OFFLOADER_PAUSE_FILE:-$INSTALL_DIR/.paused}"
 
 usage() {
     cat <<'USAGE'
-Usage: photo_offloader_service.sh <command>
+Usage: scripts/service.sh <command>
 
   status                          Show what is running.
   stop [--wait|--force] [--disable] [--keep-ui]
@@ -148,12 +148,12 @@ cmd_stop() {
     fi
 
     if [[ "$keep_ui" -eq 1 ]]; then
-        echo "Photo Offloader stopped. Start it again from the dashboard, the menu bar, or 'photo_offloader_service.sh start'."
+        echo "Photo Offloader stopped. Start it again from the dashboard, the menu bar, or 'scripts/service.sh start'."
     else
         close_dashboards
         # The menu-bar app may be the process that called us, so it goes last.
         unload "$UI_LABEL"
-        echo "Photo Offloader stopped. Run 'photo_offloader_service.sh start' to bring it back."
+        echo "Photo Offloader stopped. Run 'scripts/service.sh start' to bring it back."
     fi
     [[ "$disable" -eq 1 ]] && echo "It will stay off at login until you run 'start'."
     return 0

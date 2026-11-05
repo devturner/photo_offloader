@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Tests for menubar_model: what the menu-bar menu offers in each state."""
+"""Tests for photo_offloader.menubar.model: what the menu-bar menu offers in each state."""
 import unittest
 
-import menubar_model as model
-from menubar_model import Snapshot
+from photo_offloader.menubar import model
+from photo_offloader.menubar.model import Snapshot
 
 
 def keys(snapshot):

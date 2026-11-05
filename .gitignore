@@ -13,7 +13,9 @@ venv/
 
 # Runtime / generated artifacts
 *.log
-camera_offloader_trigger.log
+
+# Personal notes
+scratch/
 
 # Local test artifacts
 .coverage

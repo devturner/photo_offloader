@@ -26,7 +26,7 @@ class Entry:
 
 
 def parse_status(output: str, returncode: int, usb: bool = False) -> Snapshot:
-    """Read the output of ``photo_offloader_service.sh status``."""
+    """Read the output of ``scripts/service.sh status``."""
     fields = {}
     for line in output.splitlines():
         name, _, value = line.partition(":")

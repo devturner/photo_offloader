@@ -21,8 +21,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
-import camera_offloader_v2 as catalog
-from google_photos_sync import parse_rclone_stats_line
+from photo_offloader import importer as catalog
+from photo_offloader import layout
+from photo_offloader.google_photos import parse_rclone_stats_line
 
 SERVICE_LABEL = "com.user.photooffloader"
 LAST_TRANSFER_TTL_SECONDS = 10 * 60   # completed/canceled results fade after this
@@ -58,7 +59,7 @@ IMPORT_STAGES = (("scan", "Scan card"), ("metadata", "Read photo info"),
 THEMES = ("system", "light", "dark")
 SPEED_WINDOW_SAMPLES = 10
 def google_remote_name() -> str:
-    """Same rule as REMOTE_NAME in google_photos_sync.py."""
+    """Same rule as REMOTE_NAME in photo_offloader.google_photos."""
     return os.environ.get("PHOTO_OFFLOADER_GPHOTOS_REMOTE", "gphotos").rstrip(":")
 
 
@@ -192,23 +193,23 @@ class Paths:
 
     @property
     def importer_script(self) -> Path:
-        return self.install_dir / "camera_offloader_v2.py"
+        return self.install_dir / layout.IMPORTER
 
     @property
     def backup_launcher(self) -> Path:
-        return self.install_dir / "photo_offloader_backup_launcher.py"
+        return self.install_dir / layout.USB_BACKUP
 
     @property
     def google_script(self) -> Path:
-        return self.install_dir / "google_photos_sync.py"
+        return self.install_dir / layout.GOOGLE_SYNC
 
     @property
     def service_script(self) -> Path:
-        return self.install_dir / "photo_offloader_service.sh"
+        return self.install_dir / layout.SERVICE
 
     @property
     def trigger_script(self) -> Path:
-        return self.install_dir / "camera_offloader_trigger.sh"
+        return self.install_dir / layout.TRIGGER
 
 
 # ------------------------------------------------------------------------------- the core

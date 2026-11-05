@@ -4,6 +4,13 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Changed (2.5)
+- **Repository and install layout.** Code is now a `photo_offloader/` package (importer, Google Photos, USB backup, `dashboard/`, `menubar/`), with entry points in `bin/` (`photo-offloader-import`, `-dashboard`, `-menubar`, `-google-sync`, `-usb-backup`), shell scripts in `scripts/` (`trigger.sh`, `import_supervisor.sh`, `service.sh`), helpers in `tools/` and tests in `tests/`. The installed app mirrors this layout. Re-running `./install.sh` upgrades an older install in place: it stops old and new processes, removes the old flat files and rewrites the LaunchAgents. `uninstall.sh` handles both layouts. The service script is now `~/Library/Application Support/PhotoOffloader/scripts/service.sh`.
+- CI lints the whole repository (`ruff check .`, configured in `ruff.toml`) instead of a hand-kept file list.
+
+### Removed
+- `bundle_script.sh` and `running_bash.sh` (v2.2 leftovers), the Tk-era tests and helper re-exports, and unused functions.
+
 ### Changed
 - **The dashboard is now a local web app** (`dashboard_web/index.html`, served on `127.0.0.1` by `dashboard_server.py`, state from `dashboard_core.py`) instead of a Tk window. It follows macOS light/dark mode, shows a headline status, a four-step pipeline (card, Mac archive, USB, Google Photos), live progress with a speed graph, and recent activity. Controls are hidden behind a **⋯** menu; Back up/Sync actions appear on a card only when they apply. It opens in a native window when `pywebview` is installed and in the browser otherwise (`PHOTO_OFFLOADER_DASHBOARD_MODE=browser` forces the browser). `photo_offloader_ui.py` is now the single-instance launcher. **tkinter is no longer required** and the installer no longer checks for it.
 - The menu bar is slimmer (Open Dashboard, Copy to USB when a drive is connected, Pause/Resume, Stop, Quit) and refreshes itself every few seconds.

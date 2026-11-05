@@ -155,12 +155,25 @@ if exists_in_launchd "$IMPORT_LABEL"; then
 fi
 bootout_agent "$IMPORT_LABEL" "$AGENTS_DIR/$IMPORT_LABEL.plist"
 
+# Every installed program, as "path|description". Entries after the first five are
+# the flat layout used before v2.5, so an older installation is also cleaned up.
+PROGRAMS=(
+  "$INSTALL_DIR/scripts/trigger.sh|camera trigger"
+  "$INSTALL_DIR/scripts/import_supervisor.sh|import supervisor"
+  "$INSTALL_DIR/bin/photo-offloader-import|Python importer"
+  "$INSTALL_DIR/bin/photo-offloader-dashboard|dashboard"
+  "$INSTALL_DIR/bin/photo-offloader-menubar|menu-bar app"
+  "$INSTALL_DIR/camera_offloader_trigger.sh|camera trigger (old layout)"
+  "$INSTALL_DIR/photo_offloader_import_supervisor.sh|import supervisor (old layout)"
+  "$INSTALL_DIR/camera_offloader_v2.py|Python importer (old layout)"
+  "$INSTALL_DIR/photo_offloader_ui.py|dashboard (old layout)"
+  "$INSTALL_DIR/photo_offloader_menubar.py|menu-bar app (old layout)"
+)
+
 # Stop any installed-script processes that were launched outside launchd.
-stop_matching_processes "$INSTALL_DIR/camera_offloader_trigger.sh" "camera trigger"
-stop_matching_processes "$INSTALL_DIR/photo_offloader_import_supervisor.sh" "import supervisor"
-stop_matching_processes "$INSTALL_DIR/camera_offloader_v2.py" "Python importer"
-stop_matching_processes "$INSTALL_DIR/photo_offloader_ui.py" "dashboard"
-stop_matching_processes "$INSTALL_DIR/photo_offloader_menubar.py" "menu-bar app"
+for program in "${PROGRAMS[@]}"; do
+  stop_matching_processes "${program%%|*}" "${program#*|}"
+done
 
 # Verify both launchd registration and exact installed-script processes before
 # deleting anything. A successful signal/bootout call alone is not proof of exit.
@@ -174,12 +187,8 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
       log DEBUG "Verified unloaded: $label"
     fi
   done
-  for target in \
-    "$INSTALL_DIR/camera_offloader_trigger.sh" \
-    "$INSTALL_DIR/photo_offloader_import_supervisor.sh" \
-    "$INSTALL_DIR/camera_offloader_v2.py" \
-    "$INSTALL_DIR/photo_offloader_ui.py" \
-    "$INSTALL_DIR/photo_offloader_menubar.py"; do
+  for program in "${PROGRAMS[@]}"; do
+    target="${program%%|*}"
     pids="$(find_pids "$target" || true)"
     if [[ -n "$pids" ]]; then
       log WARN "Cleanup incomplete: process(es) still reference $target: $(printf '%s' "$pids" | tr '\\n' ' ')"

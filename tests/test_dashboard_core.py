@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for dashboard_core: the state the dashboard renders and the actions it can run."""
+"""Tests for photo_offloader.dashboard.core: the state the dashboard renders and the actions it can run."""
 import dataclasses
 import json
 import os
@@ -11,8 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-import camera_offloader_v2 as catalog
-import dashboard_core as core
+from photo_offloader import importer as catalog
+from photo_offloader.dashboard import core
 
 
 class Fixture(unittest.TestCase):
@@ -26,9 +26,11 @@ class Fixture(unittest.TestCase):
         self.usb = self.volumes / "Photos"
         for folder in (self.install, self.data, self.volumes):
             folder.mkdir()
-        (self.install / "photo_offloader_service.sh").write_text("#!/bin/bash\n")
-        (self.install / "google_photos_sync.py").write_text("")
-        (self.install / "camera_offloader_trigger.sh").write_text("#!/bin/bash\n")
+        for folder in ("bin", "scripts"):
+            (self.install / folder).mkdir()
+        (self.install / "scripts" / "service.sh").write_text("#!/bin/bash\n")
+        (self.install / "bin" / "photo-offloader-google-sync").write_text("")
+        (self.install / "scripts" / "trigger.sh").write_text("#!/bin/bash\n")
 
         for name, value in (("CATALOG_DB_PATH", self.data / "catalog.sqlite3"),
                             ("LEGACY_CATALOG_DB_PATH", root / "legacy.sqlite3"),
@@ -58,7 +60,7 @@ class Fixture(unittest.TestCase):
             if "print" in argv:
                 return subprocess.CompletedProcess(argv, 0 if self.service_up else 113, "", "")
             if argv[0].endswith("pgrep"):
-                alive = self.google_up if argv[-1].endswith("google_photos_sync.py") else self.importer_up
+                alive = self.google_up if argv[-1].endswith("photo-offloader-google-sync") else self.importer_up
                 return subprocess.CompletedProcess(argv, 0, "4242\n" if alive else "", "")
             return subprocess.CompletedProcess(argv, 0, "ok", "")
 
@@ -146,7 +148,7 @@ class TestHeadline(Fixture):
         result = self.core.act("import_card")
         self.assertTrue(result["ok"], result)
         self.assertFalse((self.install / ".last_camera_source").exists())
-        self.assertTrue(self.spawned[-1][1].endswith("camera_offloader_trigger.sh"))
+        self.assertTrue(self.spawned[-1][1].endswith("scripts/trigger.sh"))
 
     def test_import_now_refuses_while_paused(self):
         self.add_card("NIKON Z 8")
@@ -573,7 +575,7 @@ class TestActions(Fixture):
         self.assertFalse((self.install / ".paused").exists())
         self.assertFalse((self.install / ".last_camera_source").exists())
         self.assertEqual(self.spawned[-1][0], "/bin/bash")
-        self.assertTrue(self.spawned[-1][1].endswith("camera_offloader_trigger.sh"))
+        self.assertTrue(self.spawned[-1][1].endswith("scripts/trigger.sh"))
 
     def test_usb_backup_requires_the_drive(self):
         result = self.core.act("usb_backup")
@@ -582,7 +584,7 @@ class TestActions(Fixture):
         self.usb.mkdir()
         self.core._cache.clear()
         self.assertTrue(self.core.act("usb_backup")["ok"])
-        self.assertTrue(self.spawned[-1][1].endswith("photo_offloader_backup_launcher.py"))
+        self.assertTrue(self.spawned[-1][1].endswith("photo-offloader-usb-backup"))
 
     def test_catalog_update_and_google_sync_start_the_right_programs(self):
         self.core.act("update_catalog")
@@ -591,7 +593,7 @@ class TestActions(Fixture):
         self.assertEqual(self.spawned[-1][-1], "--sync")
 
     def test_google_sync_reports_a_missing_helper(self):
-        (self.install / "google_photos_sync.py").unlink()
+        (self.install / "bin" / "photo-offloader-google-sync").unlink()
         self.assertFalse(self.core.act("google_sync")["ok"])
 
     def test_settings_toggle_on_and_off(self):

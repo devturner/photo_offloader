@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Serialize USB-backup launch requests before they reach the importer."""
 from __future__ import annotations
 
@@ -9,9 +8,11 @@ import sys
 import time
 from pathlib import Path
 
-INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
+from photo_offloader import layout
+
+INSTALL_DIR = layout.INSTALL_DIR
 IMPORTER_SCRIPT = Path(os.environ.get(
-    "PHOTO_OFFLOADER_IMPORTER", str(INSTALL_DIR / "camera_offloader_v2.py")
+    "PHOTO_OFFLOADER_IMPORTER", str(INSTALL_DIR / layout.IMPORTER)
 ))
 LOCK_PATH = Path(os.environ.get(
     "PHOTO_OFFLOADER_USB_REQUEST_LOCK", str(INSTALL_DIR / ".usb-backup-request.lock")

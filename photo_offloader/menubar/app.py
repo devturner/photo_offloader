@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Native macOS menu-bar control for Photo Offloader."""
 from __future__ import annotations
 
@@ -14,15 +13,16 @@ try:
 except ImportError as exc:  # pragma: no cover - dependency is installed by install.sh
     raise SystemExit("Photo Offloader menu-bar UI requires rumps. Re-run ./install.sh.") from exc
 
-from menubar_model import Snapshot, menu_entries, menu_title, parse_status  # noqa: E402
+from photo_offloader import layout
+from photo_offloader.menubar.model import Snapshot, menu_entries, menu_title, parse_status
 
-INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
+INSTALL_DIR = layout.INSTALL_DIR
 PAUSE_FILE = INSTALL_DIR / ".paused"
-TRIGGER_SCRIPT = INSTALL_DIR / "camera_offloader_trigger.sh"
-DASHBOARD_SCRIPT = INSTALL_DIR / "photo_offloader_ui.py"
-IMPORTER_SCRIPT = INSTALL_DIR / "camera_offloader_v2.py"
-SERVICE_SCRIPT = INSTALL_DIR / "photo_offloader_service.sh"
-BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / "photo_offloader_backup_launcher.py"
+TRIGGER_SCRIPT = INSTALL_DIR / layout.TRIGGER
+DASHBOARD_SCRIPT = INSTALL_DIR / layout.DASHBOARD
+IMPORTER_SCRIPT = INSTALL_DIR / layout.IMPORTER
+SERVICE_SCRIPT = INSTALL_DIR / layout.SERVICE
+BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / layout.USB_BACKUP
 USB_VOLUME = Path("/Volumes/Photos")
 UI_LABEL = "com.user.photooffloader.menubar"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
@@ -236,6 +236,11 @@ def log_build_provenance() -> None:
     )
 
 
-if __name__ == "__main__":
+def main() -> int:
     log_build_provenance()
     PhotoOffloaderMenuBar().run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

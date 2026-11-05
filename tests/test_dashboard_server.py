@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for dashboard_server: routes, and the protections that keep other web pages out."""
+"""Tests for photo_offloader.dashboard.server: routes, and the protections that keep other web pages out."""
 import http.client
 import json
 import os
@@ -9,7 +9,7 @@ import time
 import unittest
 from pathlib import Path
 
-import dashboard_server as srv
+from photo_offloader.dashboard import server as srv
 
 
 class FakeCore:
@@ -77,7 +77,7 @@ class TestPage(ServerCase):
         self.assertNotIn("http://", csp.replace("http://127", ""))  # nothing external is allowed
 
     def test_only_the_dashboard_page_is_served_and_paths_cannot_escape(self):
-        for path in ("/index.html", "/../../etc/passwd", "/%2e%2e/%2e%2e/etc/passwd", "/dashboard_core.py"):
+        for path in ("/index.html", "/../../etc/passwd", "/%2e%2e/%2e%2e/etc/passwd", "/core.py"):
             response, _ = self.request("GET", path)
             self.assertEqual(response.status, 404, path)
 

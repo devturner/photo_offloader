@@ -1,22 +1,27 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_NAME="camera_offloader_v2.py"
-TRIGGER_NAME="camera_offloader_trigger.sh"
-UI_NAME="photo_offloader_ui.py"
-MENUBAR_NAME="photo_offloader_menubar.py"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$HOME/Library/Application Support/PhotoOffloader"
 VENV_DIR="$INSTALL_DIR/venv"
-SCRIPT_PATH="$INSTALL_DIR/$SCRIPT_NAME"
-TRIGGER_PATH="$INSTALL_DIR/$TRIGGER_NAME"
+# The installed app mirrors the repository layout (see photo_offloader/layout.py).
+APP_DIRS=(bin scripts photo_offloader)
+APP_FILES=(VERSION requirements.txt requirements-ui.txt)
+SCRIPT_PATH="$INSTALL_DIR/bin/photo-offloader-import"
+TRIGGER_PATH="$INSTALL_DIR/scripts/trigger.sh"
+MENUBAR_PATH="$INSTALL_DIR/bin/photo-offloader-menubar"
+DASHBOARD_PATH="$INSTALL_DIR/bin/photo-offloader-dashboard"
+# Flat layout used before v2.5; removed on upgrade.
+LEGACY_FILES=(camera_offloader_v2.py camera_offloader_trigger.sh photo_offloader_import_supervisor.sh
+  photo_offloader_service.sh dashboard_core.py dashboard_server.py menubar_model.py photo_offloader_ui.py
+  photo_offloader_menubar.py photo_offloader_backup_launcher.py google_photos_sync.py)
 PLIST_PATH="$HOME/Library/LaunchAgents/com.user.photooffloader.plist"
 UI_PLIST_PATH="$HOME/Library/LaunchAgents/com.user.photooffloader.menubar.plist"
 LABEL="com.user.photooffloader"
 UI_LABEL="com.user.photooffloader.menubar"
 
 echo "==========================================="
-echo " Installing Photo Offloader v2.4"
+echo " Installing Photo Offloader v$(cat "$SCRIPT_DIR/VERSION")"
 echo "==========================================="
 
 # Stop and verify any worker submitted by an older trigger before replacing
@@ -32,6 +37,8 @@ fi
 import_process_running() {
   local target
   for target in \
+    "$INSTALL_DIR/scripts/import_supervisor.sh" \
+    "$SCRIPT_PATH" \
     "$INSTALL_DIR/photo_offloader_import_supervisor.sh" \
     "$INSTALL_DIR/camera_offloader_v2.py"; do
     if /usr/bin/pgrep -f -- "$target" >/dev/null 2>&1; then
@@ -69,30 +76,31 @@ fi
 
 mkdir -p "$INSTALL_DIR" "$HOME/Library/LaunchAgents"
 
-for file in "$SCRIPT_NAME" "$TRIGGER_NAME" "photo_offloader_import_supervisor.sh" "photo_offloader_service.sh" "dashboard_core.py" "dashboard_server.py" "menubar_model.py" "dashboard_web/index.html" "$UI_NAME" "$MENUBAR_NAME" "photo_offloader_backup_launcher.py" "google_photos_sync.py" "VERSION" "requirements.txt" "requirements-ui.txt"; do
-  if [[ ! -f "$SCRIPT_DIR/$file" ]]; then
-    echo "Error: $file not found in $SCRIPT_DIR."
+for item in "${APP_DIRS[@]}" "${APP_FILES[@]}"; do
+  if [[ ! -e "$SCRIPT_DIR/$item" ]]; then
+    echo "Error: $item not found in $SCRIPT_DIR."
     exit 1
   fi
 done
 
-cp "$SCRIPT_DIR/$SCRIPT_NAME" "$SCRIPT_PATH"
-cp "$SCRIPT_DIR/$TRIGGER_NAME" "$TRIGGER_PATH"
-cp "$SCRIPT_DIR/photo_offloader_import_supervisor.sh" "$INSTALL_DIR/photo_offloader_import_supervisor.sh"
-cp "$SCRIPT_DIR/photo_offloader_service.sh" "$INSTALL_DIR/photo_offloader_service.sh"
-cp "$SCRIPT_DIR/dashboard_core.py" "$INSTALL_DIR/dashboard_core.py"
-cp "$SCRIPT_DIR/dashboard_server.py" "$INSTALL_DIR/dashboard_server.py"
-cp "$SCRIPT_DIR/menubar_model.py" "$INSTALL_DIR/menubar_model.py"
-mkdir -p "$INSTALL_DIR/dashboard_web"
-cp "$SCRIPT_DIR/dashboard_web/index.html" "$INSTALL_DIR/dashboard_web/index.html"
-cp "$SCRIPT_DIR/$UI_NAME" "$INSTALL_DIR/$UI_NAME"
-cp "$SCRIPT_DIR/$MENUBAR_NAME" "$INSTALL_DIR/$MENUBAR_NAME"
-cp "$SCRIPT_DIR/photo_offloader_backup_launcher.py" "$INSTALL_DIR/photo_offloader_backup_launcher.py"
-cp "$SCRIPT_DIR/google_photos_sync.py" "$INSTALL_DIR/google_photos_sync.py"
-cp "$SCRIPT_DIR/VERSION" "$INSTALL_DIR/VERSION"
-cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
-cp "$SCRIPT_DIR/requirements-ui.txt" "$INSTALL_DIR/requirements-ui.txt"
-chmod +x "$SCRIPT_PATH" "$TRIGGER_PATH" "$INSTALL_DIR/photo_offloader_import_supervisor.sh" "$INSTALL_DIR/photo_offloader_service.sh" "$INSTALL_DIR/$UI_NAME" "$INSTALL_DIR/$MENUBAR_NAME" "$INSTALL_DIR/photo_offloader_backup_launcher.py" "$INSTALL_DIR/google_photos_sync.py"
+# A dashboard left running from the previous version would keep serving old code.
+for dashboard in "$DASHBOARD_PATH" "$INSTALL_DIR/photo_offloader_ui.py"; do
+  /usr/bin/pkill -f -- "$dashboard" 2>/dev/null || true
+done
+
+for dir in "${APP_DIRS[@]}"; do
+  rm -rf "${INSTALL_DIR:?}/$dir"
+  cp -R "$SCRIPT_DIR/$dir" "$INSTALL_DIR/$dir"
+done
+find "$INSTALL_DIR/photo_offloader" -name "__pycache__" -type d -prune -exec rm -rf {} +
+for file in "${APP_FILES[@]}"; do
+  cp "$SCRIPT_DIR/$file" "$INSTALL_DIR/$file"
+done
+for legacy in "${LEGACY_FILES[@]}"; do
+  rm -f "$INSTALL_DIR/$legacy"
+done
+rm -rf "$INSTALL_DIR/dashboard_web" "$INSTALL_DIR/__pycache__"
+chmod +x "$INSTALL_DIR"/bin/* "$INSTALL_DIR"/scripts/*.sh
 
 # Capture provenance at install time so installed logs identify the exact source
 # revision, even though the installed Application Support directory is not a git checkout.
@@ -179,7 +187,7 @@ cat > "$UI_PLIST_PATH" <<EOF
     <key>ProgramArguments</key>
     <array>
         <string>$VENV_DIR/bin/python3</string>
-        <string>$INSTALL_DIR/$MENUBAR_NAME</string>
+        <string>$MENUBAR_PATH</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -218,17 +226,17 @@ fi
 # Explicitly kick the menu-bar agent after loading and open the dashboard so
 # successful installation gives immediate visible feedback.
 launchctl kickstart -k "gui/$(id -u)/$UI_LABEL"
-nohup "$VENV_DIR/bin/python3" "$INSTALL_DIR/$UI_NAME" >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
+nohup "$VENV_DIR/bin/python3" "$DASHBOARD_PATH" >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
 echo "Opened the Photo Offloader dashboard."
 
 echo "Installation complete."
 echo "Importer: $SCRIPT_PATH"
 echo "Trigger:   $TRIGGER_PATH"
-echo "Dashboard: $INSTALL_DIR/$UI_NAME"
-echo "Menu bar:  $INSTALL_DIR/$MENUBAR_NAME"
+echo "Dashboard: $DASHBOARD_PATH"
+echo "Menu bar:  $MENUBAR_PATH"
 echo "Menu bar log: $INSTALL_DIR/menubar.log"
 echo "Menu bar errors: $INSTALL_DIR/menubar-error.log"
 echo "Dashboard log: $INSTALL_DIR/dashboard.log"
 echo "Log:       ~/.camera_transfer.log"
 echo "Trigger log: ~/.camera_transfer_trigger.log"
-echo "Stop / start the service: \"$INSTALL_DIR/photo_offloader_service.sh\" stop | start | status"
+echo "Stop / start the service: \"$INSTALL_DIR/scripts/service.sh\" stop | start | status"

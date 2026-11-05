@@ -12,8 +12,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import camera_offloader_v2 as app
-from camera_offloader_v2 import (
+from photo_offloader import importer as app
+from photo_offloader.importer import (
     ImportStats,
     VolumeIdentity,
 )
@@ -65,7 +65,7 @@ class TestCameraOffloader(unittest.TestCase):
         app._PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
         # Never start the real installed Google Photos sync from a test: an import that
         # succeeds launches it, and it would upload from (and log into) the user's library.
-        app.GOOGLE_PHOTOS_SYNC_PATH = self.root / "not-installed" / "google_photos_sync.py"
+        app.GOOGLE_PHOTOS_SYNC_PATH = self.root / "not-installed" / "photo-offloader-google-sync"
         app.find_exiftool.cache_clear()
         app.logger.handlers.clear()
 
@@ -225,7 +225,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertFalse(args.backup_usb)
         self.assertTrue(app.parse_args(["--backup-usb"]).backup_usb)
 
-    @patch("camera_offloader_v2.subprocess.run")
+    @patch("photo_offloader.importer.subprocess.run")
     def test_notify_nonfatal(self, run):
         run.return_value = MagicMock(returncode=0, stderr="")
         app.notify("T", "B")
@@ -241,7 +241,7 @@ class TestCameraOffloader(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             app.resolve_dcim_path(self.root / "missing")
 
-    @patch("camera_offloader_v2.glob.glob", return_value=[])
+    @patch("photo_offloader.importer.glob.glob", return_value=[])
     def test_find_card_no_match(self, glob):
         with patch("builtins.input", return_value=""), self.assertRaises(RuntimeError):
             app.find_card_dcim()
@@ -256,13 +256,13 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual([p.name for p in found["RAW"]], ["photo.nef"])
         self.assertEqual([p.name for p in found["VIDEO"]], ["clip.mp4"])
 
-    @patch("camera_offloader_v2.find_media_files")
+    @patch("photo_offloader.importer.find_media_files")
     def test_scan_retry(self, scan):
         empty = {"JPG": [], "RAW": [], "VIDEO": []}
         found = {"JPG": [self.dcim / "x.jpg"], "RAW": [], "VIDEO": []}
         scan.side_effect = [empty, found]
         app.WAIT_SECONDS = 30
-        with patch("camera_offloader_v2.time.monotonic", side_effect=[0, 1]), patch("camera_offloader_v2.time.sleep"):
+        with patch("photo_offloader.importer.time.monotonic", side_effect=[0, 1]), patch("photo_offloader.importer.time.sleep"):
             self.assertEqual(app.scan_with_retry(self.dcim), found)
 
     def test_normalize_camera_model(self):
@@ -272,7 +272,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(app.normalize_camera_model("NIKON CORPORATION", "NIKON Z 8"), "NIKON-Z-8")
         self.assertEqual(app.normalize_camera_model(None, None), "Unknown-Camera")
 
-    @patch("camera_offloader_v2.shutil.which", return_value="/opt/homebrew/bin/exiftool")
+    @patch("photo_offloader.importer.shutil.which", return_value="/opt/homebrew/bin/exiftool")
     def test_find_exiftool_caches_discovery(self, which):
         self.assertEqual(app.find_exiftool(), "/opt/homebrew/bin/exiftool")
         self.assertEqual(app.find_exiftool(), "/opt/homebrew/bin/exiftool")
@@ -295,7 +295,7 @@ class TestCameraOffloader(unittest.TestCase):
             self.assertEqual(app.get_camera_model(path), "NIKON-Z-8")
         self.assertEqual(read_metadata.call_count, 2)
 
-    @patch("camera_offloader_v2.catalog_connection")
+    @patch("photo_offloader.importer.catalog_connection")
     def test_catalog_db_closes_connection_after_transaction(self, connect):
         connection = MagicMock()
         connect.return_value = connection
@@ -516,11 +516,11 @@ class TestCameraOffloader(unittest.TestCase):
         fake_image = MagicMock()
         fake_image.__enter__.return_value = fake_image
         fake_image.getexif.return_value = {271: "NIKON", 272: "Z 8"}
-        with patch("camera_offloader_v2.Image.open", return_value=fake_image):
+        with patch("photo_offloader.importer.Image.open", return_value=fake_image):
             self.assertEqual(app.get_camera_model(self.root / "IMG.JPG"), "NIKON-Z-8")
 
-    @patch("camera_offloader_v2.shutil.which", return_value="/opt/homebrew/bin/exiftool")
-    @patch("camera_offloader_v2.subprocess.run")
+    @patch("photo_offloader.importer.shutil.which", return_value="/opt/homebrew/bin/exiftool")
+    @patch("photo_offloader.importer.subprocess.run")
     def test_get_camera_model_from_nef_uses_exiftool(self, run, which):
         run.return_value = MagicMock(
             returncode=0,
@@ -534,8 +534,8 @@ class TestCameraOffloader(unittest.TestCase):
             "/opt/homebrew/bin/exiftool", "-j", "-Make", "-Model", str(path)
         ])
 
-    @patch("camera_offloader_v2.shutil.which", return_value="/opt/homebrew/bin/exiftool")
-    @patch("camera_offloader_v2.subprocess.run")
+    @patch("photo_offloader.importer.shutil.which", return_value="/opt/homebrew/bin/exiftool")
+    @patch("photo_offloader.importer.subprocess.run")
     def test_get_exif_datetime_from_nef_uses_exiftool(self, run, which):
         run.return_value = MagicMock(
             returncode=0,
@@ -554,11 +554,11 @@ class TestCameraOffloader(unittest.TestCase):
         fake_image = MagicMock()
         fake_image.__enter__.return_value = fake_image
         fake_image.getexif.return_value = {}
-        with patch("camera_offloader_v2.Image.open", return_value=fake_image):
+        with patch("photo_offloader.importer.Image.open", return_value=fake_image):
             self.assertEqual(app.get_camera_model(self.root / "IMG.JPG"), "Unknown-Camera")
 
-    @patch("camera_offloader_v2.shutil.which", return_value="/opt/homebrew/bin/exiftool")
-    @patch("camera_offloader_v2.subprocess.run")
+    @patch("photo_offloader.importer.shutil.which", return_value="/opt/homebrew/bin/exiftool")
+    @patch("photo_offloader.importer.subprocess.run")
     def test_get_camera_model_from_mov_metadata(self, run, which):
         run.return_value = MagicMock(
             returncode=0,
@@ -582,10 +582,10 @@ class TestCameraOffloader(unittest.TestCase):
             timeout=5,
         )
 
-    @patch("camera_offloader_v2.os.access", return_value=True)
+    @patch("photo_offloader.importer.os.access", return_value=True)
     @patch.object(Path, "is_file", autospec=True)
-    @patch("camera_offloader_v2.shutil.which", return_value=None)
-    @patch("camera_offloader_v2.subprocess.run")
+    @patch("photo_offloader.importer.shutil.which", return_value=None)
+    @patch("photo_offloader.importer.subprocess.run")
     def test_get_camera_model_from_mov_finds_homebrew_exiftool_without_path(
         self, run, which, is_file, access
     ):
@@ -614,7 +614,7 @@ class TestCameraOffloader(unittest.TestCase):
         )
 
     @patch.object(Path, "is_file", return_value=False)
-    @patch("camera_offloader_v2.shutil.which", return_value=None)
+    @patch("photo_offloader.importer.shutil.which", return_value=None)
     def test_get_camera_model_mov_without_exiftool(self, which, is_file):
         self.assertEqual(app.get_camera_model(self.root / "clip.MOV"), "Unknown-Camera")
         which.assert_called_once_with("exiftool")
@@ -644,14 +644,14 @@ class TestCameraOffloader(unittest.TestCase):
         b.write_bytes(b"abc")
         self.assertTrue(app.files_match(a, b, force_sha256=True))
 
-    @patch("camera_offloader_v2.update_status")
-    @patch("camera_offloader_v2.load_build_info", return_value={
+    @patch("photo_offloader.importer.update_status")
+    @patch("photo_offloader.importer.load_build_info", return_value={
         "version": "2.4", "git_commit": "abc123def456",
         "git_branch": "feature/test", "git_tag": "v2.4",
         "git_dirty": "false", "build_time_utc": "2026-10-21T22:00:00Z",
         "source_path": "/installed/camera_offloader_v2.py",
     })
-    @patch("camera_offloader_v2.import_session_lock",
+    @patch("photo_offloader.importer.import_session_lock",
            side_effect=RuntimeError("Another Photo Offloader import session is already running."))
     def test_duplicate_session_does_not_reset_active_progress(
         self, lock, build_info, update_status
@@ -706,7 +706,7 @@ class TestCameraOffloader(unittest.TestCase):
     def test_install_cross_device(self):
         temp, final = self.root / "tmp", self.root / "final"
         temp.write_bytes(b"data")
-        with patch("camera_offloader_v2.os.link", side_effect=OSError(errno.EXDEV, "cross-device")):
+        with patch("photo_offloader.importer.os.link", side_effect=OSError(errno.EXDEV, "cross-device")):
             self.assertTrue(app.install_without_overwrite(temp, final))
         self.assertEqual(final.read_bytes(), b"data")
 
@@ -776,7 +776,7 @@ class TestCameraOffloader(unittest.TestCase):
             original_copy(src, dst)
             Path(src).write_bytes(b"RAW")  # changes size
 
-        with patch("camera_offloader_v2.copy_file_with_progress", side_effect=mutate):
+        with patch("photo_offloader.importer.copy_file_with_progress", side_effect=mutate):
             with self.assertRaisesRegex(IOError, "Source changed"):
                 app.copy_one_to_destination(source, self.dcim, self.local)
 
@@ -785,7 +785,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(app.required_source_bytes({k: [v] for k, v in files.items()}), 11)
 
     def test_validate_destinations_checks_space(self):
-        with patch("camera_offloader_v2.available_bytes", return_value=10):
+        with patch("photo_offloader.importer.available_bytes", return_value=10):
             with self.assertRaisesRegex(RuntimeError, "Insufficient free space"):
                 app.validate_destinations([self.local], required_bytes=11)
 
@@ -796,7 +796,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertTrue(app.volume_identity_matches(expected, current))
         self.assertFalse(app.volume_identity_matches(expected, replaced))
 
-    @patch("camera_offloader_v2.subprocess.run")
+    @patch("photo_offloader.importer.subprocess.run")
     def test_get_volume_identity(self, run):
         payload = plistlib.dumps({
             "DeviceIdentifier": "disk4s1",
@@ -807,14 +807,14 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(identity.volume_uuid, "uuid-a")
         self.assertEqual(identity.device_identifier, "disk4s1")
 
-    @patch("camera_offloader_v2.usb_is_mounted", return_value=False)
+    @patch("photo_offloader.importer.usb_is_mounted", return_value=False)
     def test_snapshot_local_only(self, mounted):
         snapshot = app.snapshot_destinations()
         self.assertEqual(snapshot.destinations, (self.local,))
         self.assertFalse(snapshot.usb_expected)
 
-    @patch("camera_offloader_v2.usb_is_mounted", return_value=True)
-    @patch("camera_offloader_v2.get_volume_identity")
+    @patch("photo_offloader.importer.usb_is_mounted", return_value=True)
+    @patch("photo_offloader.importer.get_volume_identity")
     def test_snapshot_includes_usb(self, identity, mounted):
         identity.return_value = VolumeIdentity(self.usb_volume.resolve(), "disk4s1", "uuid-a")
         snapshot = app.snapshot_destinations()
@@ -822,7 +822,7 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertTrue(snapshot.usb_expected)
         self.assertEqual(snapshot.usb_identity.volume_uuid, "uuid-a")
 
-    @patch("camera_offloader_v2.subprocess.run")
+    @patch("photo_offloader.importer.subprocess.run")
     def test_eject_success_failure(self, run):
         with patch.object(Path, "is_mount", return_value=True):
             run.return_value = MagicMock(returncode=0, stdout="", stderr="")
@@ -830,65 +830,65 @@ class TestCameraOffloader(unittest.TestCase):
             run.return_value = MagicMock(returncode=1, stdout="", stderr="bad")
             self.assertFalse(app.eject_volume(self.card))
 
-    @patch("camera_offloader_v2.eject_volume", return_value=True)
-    @patch("camera_offloader_v2.usb_is_mounted", return_value=False)
-    @patch("camera_offloader_v2.notify")
+    @patch("photo_offloader.importer.eject_volume", return_value=True)
+    @patch("photo_offloader.importer.usb_is_mounted", return_value=False)
+    @patch("photo_offloader.importer.notify")
     def test_main_success_and_resolved_eject_path(self, notify, mounted, eject):
         self.media()
-        with patch("camera_offloader_v2.time.sleep"):
+        with patch("photo_offloader.importer.time.sleep"):
             result = app.main(["--source", str(self.card)])
         self.assertEqual(result, 0)
         eject.assert_called_once_with(self.card.resolve())
 
-    @patch("camera_offloader_v2.eject_volume", return_value=True)
-    @patch("camera_offloader_v2.usb_is_mounted", return_value=False)
-    @patch("camera_offloader_v2.notify")
+    @patch("photo_offloader.importer.eject_volume", return_value=True)
+    @patch("photo_offloader.importer.usb_is_mounted", return_value=False)
+    @patch("photo_offloader.importer.notify")
     def test_import_reads_card_metadata_in_one_batch(self, notify, mounted, eject):
         exiftool_calls = self.fake_exiftool()
         self.card_files(12)
-        with patch("camera_offloader_v2.time.sleep"):
+        with patch("photo_offloader.importer.time.sleep"):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb"]), 0)
         self.assertEqual(exiftool_calls(), 1)
 
-    @patch("camera_offloader_v2.eject_volume")
-    @patch("camera_offloader_v2.usb_is_mounted", return_value=False)
-    @patch("camera_offloader_v2.notify")
-    @patch("camera_offloader_v2.copy_one_to_destination", side_effect=OSError("copy failure"))
+    @patch("photo_offloader.importer.eject_volume")
+    @patch("photo_offloader.importer.usb_is_mounted", return_value=False)
+    @patch("photo_offloader.importer.notify")
+    @patch("photo_offloader.importer.copy_one_to_destination", side_effect=OSError("copy failure"))
     def test_main_copy_failure_never_ejects(self, copy, notify, mounted, eject):
         self.media()
-        with patch("camera_offloader_v2.time.sleep"):
+        with patch("photo_offloader.importer.time.sleep"):
             self.assertEqual(app.main(["--source", str(self.card)]), 1)
         eject.assert_not_called()
 
-    @patch("camera_offloader_v2.eject_volume", return_value=False)
-    @patch("camera_offloader_v2.usb_is_mounted", return_value=False)
-    @patch("camera_offloader_v2.notify")
+    @patch("photo_offloader.importer.eject_volume", return_value=False)
+    @patch("photo_offloader.importer.usb_is_mounted", return_value=False)
+    @patch("photo_offloader.importer.notify")
     def test_main_eject_failure_returns_2(self, notify, mounted, eject):
         self.media()
-        with patch("camera_offloader_v2.time.sleep"):
+        with patch("photo_offloader.importer.time.sleep"):
             self.assertEqual(app.main(["--source", str(self.card)]), 2)
         eject.assert_called_once_with(self.card.resolve())
 
-    @patch("camera_offloader_v2.eject_volume")
-    @patch("camera_offloader_v2.usb_is_mounted", return_value=True)
-    @patch("camera_offloader_v2.notify")
+    @patch("photo_offloader.importer.eject_volume")
+    @patch("photo_offloader.importer.usb_is_mounted", return_value=True)
+    @patch("photo_offloader.importer.notify")
     def test_main_no_usb(self, notify, mounted, eject):
         self.media()
-        with patch("camera_offloader_v2.get_volume_identity", return_value=None), patch("camera_offloader_v2.time.sleep"):
+        with patch("photo_offloader.importer.get_volume_identity", return_value=None), patch("photo_offloader.importer.time.sleep"):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb", "--no-eject"]), 0)
         self.assertEqual(list(self.usb.rglob("*")), [])
 
-    @patch("camera_offloader_v2.eject_volume")
-    @patch("camera_offloader_v2.notify")
-    @patch("camera_offloader_v2.usb_is_mounted", return_value=True)
-    @patch("camera_offloader_v2.get_volume_identity")
+    @patch("photo_offloader.importer.eject_volume")
+    @patch("photo_offloader.importer.notify")
+    @patch("photo_offloader.importer.usb_is_mounted", return_value=True)
+    @patch("photo_offloader.importer.get_volume_identity")
     def test_main_ejects_after_local_copy_and_reports_usb_replacement(self, identity, mounted, notify, eject):
         self.media()
         identity.side_effect = [
             VolumeIdentity(self.usb_volume.resolve(), "disk4s1", "uuid-a"),
             VolumeIdentity(self.usb_volume.resolve(), "disk5s1", "uuid-b"),
         ]
-        with patch("camera_offloader_v2.time.sleep"):
+        with patch("photo_offloader.importer.time.sleep"):
             self.assertEqual(app.main(["--source", str(self.card)]), 1)
         # Local SSD is verified before ejection; USB replacement is detected
         # afterward, so the card is safely released and backup reports failure.
@@ -913,8 +913,8 @@ class TestCameraOffloader(unittest.TestCase):
             app.copy_category(files[category], self.dcim, [self.local, self.usb], category, stats)
         self.assertEqual((stats.destination_copies, stats.verified_copies, stats.failed), (6, 6, 0))
 
-    @patch("camera_offloader_v2.copy_local_archive_to_usb")
-    @patch("camera_offloader_v2.notify")
+    @patch("photo_offloader.importer.copy_local_archive_to_usb")
+    @patch("photo_offloader.importer.notify")
     def test_standalone_usb_backup_does_not_require_card(self, notify, backup):
         backup.return_value = ImportStats(destination_copies=2, destination_skips=4,
                                           verified_copies=6)
@@ -1008,9 +1008,9 @@ class TestCameraOffloader(unittest.TestCase):
             self.assertIsNone(app.get_exif_datetime(sidecar))
             self.assertEqual(app.get_camera_model(sidecar), "Unknown-Camera")
 
-    @patch("camera_offloader_v2.launch_google_photos_sync")
-    @patch("camera_offloader_v2.notify")
-    @patch("camera_offloader_v2.eject_volume")
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.importer.notify")
+    @patch("photo_offloader.importer.eject_volume")
     def test_full_import_copies_private_video_and_unrecognized_files(self, eject, notify, launch):
         self.media()
         sidecar = self.dcim / "100NIKON" / "CLIP0001.XML"
@@ -1019,7 +1019,7 @@ class TestCameraOffloader(unittest.TestCase):
         private_clip.parent.mkdir(parents=True)
         private_clip.write_bytes(b"private-video")
 
-        with patch("camera_offloader_v2.time.sleep"):
+        with patch("photo_offloader.importer.time.sleep"):
             code = app.main(["--source", str(self.card), "--no-usb", "--no-eject"])
 
         self.assertEqual(code, 0)
@@ -1085,7 +1085,7 @@ class TestCameraOffloader(unittest.TestCase):
             return real_replace(src, dst)
 
         app.update_status(state="copying", bytes_total=10_000_000)
-        with patch("camera_offloader_v2.os.replace", counting_replace):
+        with patch("photo_offloader.importer.os.replace", counting_replace):
             for _ in range(2000):
                 app.add_progress_bytes(1024, transferred=True)
         self.assertLessEqual(len(writes), 5, f"{len(writes)} status.json rewrites for 2000 chunks")
@@ -1144,7 +1144,7 @@ class TestCameraOffloader(unittest.TestCase):
 
     # ------------------------------------------ clean shutdown (service stop)
     def test_sigterm_cancels_the_import_and_publishes_a_canceled_status(self):
-        # `photo_offloader_service.sh stop --force` sends SIGTERM. The importer must
+        # `scripts/service.sh stop --force` sends SIGTERM. The importer must
         # shut down like Ctrl-C: release its lock, report "canceled", exit 130.
         import json
         import subprocess
@@ -1157,7 +1157,7 @@ class TestCameraOffloader(unittest.TestCase):
             from pathlib import Path
             from unittest.mock import patch
             sys.path.insert(0, {str(Path(app.__file__).parent)!r})
-            import camera_offloader_v2 as app
+            from photo_offloader import importer as app
             app.STATUS_FILE_PATH = Path({str(status_path)!r})
             app.LOG_FILE_PATH = Path({str(self.log)!r})
             app.SESSION_LOCK_PATH = Path({str(self.lock)!r})
@@ -1216,11 +1216,11 @@ class TestCameraOffloader(unittest.TestCase):
             app.record_import_run(kind="import", source="x", outcome="complete",
                                   started_at=1.0, finished_at=2.0)  # must not raise
 
-    @patch("camera_offloader_v2.launch_google_photos_sync")
-    @patch("camera_offloader_v2.notify")
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.importer.notify")
     def test_successful_import_is_recorded_in_history(self, notify, launch):
         self.media()
-        with patch("camera_offloader_v2.time.sleep"):
+        with patch("photo_offloader.importer.time.sleep"):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb", "--no-eject"]), 0)
         (run,) = app.list_import_history()
         self.assertEqual((run["kind"], run["outcome"], run["source"]), ("import", "complete", "card"))
@@ -1228,16 +1228,16 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertGreater(run["bytes"], 0)
         self.assertFalse(run["usb"])
 
-    @patch("camera_offloader_v2.launch_google_photos_sync")
-    @patch("camera_offloader_v2.notify")
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.importer.notify")
     def test_history_records_what_this_session_copied_by_type(self, notify, launch):
         # User feedback 2026-11-04: Recent activity should say what this session
         # backed up, not just how many files are on the card.
         media = self.media()
-        with patch("camera_offloader_v2.time.sleep"):
+        with patch("photo_offloader.importer.time.sleep"):
             app.main(["--source", str(self.card), "--no-usb", "--no-eject"])
         media["JPG"].with_name("second.jpg").write_bytes(b"new jpg")
-        with patch("camera_offloader_v2.time.sleep"):
+        with patch("photo_offloader.importer.time.sleep"):
             app.main(["--source", str(self.card), "--no-usb", "--no-eject"])
         second, first = app.list_import_history()
         self.assertEqual(first["details"]["new"], {"JPG": 1, "RAW": 1, "VIDEO": 1})
@@ -1245,8 +1245,8 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(second["details"]["new_bytes"], len(b"new jpg"))
         self.assertEqual(second["files"], 4)
 
-    @patch("camera_offloader_v2.launch_google_photos_sync")
-    @patch("camera_offloader_v2.notify")
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.importer.notify")
     def test_status_reports_stage_and_session_counters(self, notify, launch):
         self.media()
         seen = []
@@ -1255,7 +1255,7 @@ class TestCameraOffloader(unittest.TestCase):
         def spy(**updates):
             real(**updates)
             seen.append(dict(app._PROGRESS))
-        with patch("camera_offloader_v2.time.sleep"), patch.object(app, "update_status", side_effect=spy):
+        with patch("photo_offloader.importer.time.sleep"), patch.object(app, "update_status", side_effect=spy):
             app.main(["--source", str(self.card), "--no-usb", "--no-eject"])
         stages = [s.get("stage") for s in seen]
         self.assertLess(stages.index("scan"), stages.index("copy"))
@@ -1280,10 +1280,10 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(newer["details"], {"new": {"RAW": 2}})
         self.assertEqual(older["details"], {})
 
-    @patch("camera_offloader_v2.notify")
+    @patch("photo_offloader.importer.notify")
     def test_failed_import_is_recorded_with_its_reason(self, notify):
         self.media()
-        with patch("camera_offloader_v2.time.sleep"), \
+        with patch("photo_offloader.importer.time.sleep"), \
                 patch.object(app, "copy_file_with_progress", side_effect=OSError("copy failure")):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb", "--no-eject"]), 1)
         (run,) = app.list_import_history()
@@ -1291,16 +1291,16 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(run["failed"], 3)
         self.assertIn("failure", run["message"].lower())
 
-    @patch("camera_offloader_v2.notify")
+    @patch("photo_offloader.importer.notify")
     def test_canceled_import_is_recorded(self, notify):
         self.media()
-        with patch("camera_offloader_v2.time.sleep"), \
+        with patch("photo_offloader.importer.time.sleep"), \
                 patch.object(app, "scan_with_retry", side_effect=KeyboardInterrupt):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb", "--no-eject"]), 130)
         (run,) = app.list_import_history()
         self.assertEqual((run["outcome"], run["source"]), ("canceled", "card"))
 
-    @patch("camera_offloader_v2.notify")
+    @patch("photo_offloader.importer.notify")
     def test_duplicate_launch_and_missing_card_do_not_create_history(self, notify):
         with patch.object(app, "import_session_lock",
                           side_effect=RuntimeError("Another Photo Offloader import session is already running.")):

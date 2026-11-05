@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
-import camera_offloader_v2 as app
+from photo_offloader import importer as app
 
 
 def main() -> int:

@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import camera_offloader_v2 as catalog
-import google_photos_sync as sync
+from photo_offloader import google_photos as sync
+from photo_offloader import importer as catalog
 
 
 class TestGooglePhotosSync(unittest.TestCase):

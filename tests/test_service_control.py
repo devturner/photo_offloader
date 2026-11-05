@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for photo_offloader_service.sh (start / stop / status of the background service).
+"""Tests for scripts/service.sh (start / stop / status of the background service).
 
 launchctl and pgrep are replaced with stubs: launchctl keeps a "loaded labels"
 directory and records every call, pgrep reports whatever the test says is running.
@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().with_name("photo_offloader_service.sh")
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "service.sh"
 TRIGGER = "com.user.photooffloader"
 MENUBAR = "com.user.photooffloader.menubar"
 IMPORT_WORKER = "com.user.photooffloader.import"
@@ -56,8 +56,8 @@ grep -F -- "$pattern" "{self.running}" | cut -d' ' -f1 | grep .
         kill.write_text(f'#!/bin/bash\necho "$@" >> "{self.killed}"\n')
         kill.chmod(0o755)
         self.launchctl, self.pgrep, self.kill = launchctl, pgrep, kill
-        self.importer = self.install / "camera_offloader_v2.py"
-        self.dashboard = self.install / "photo_offloader_ui.py"
+        self.importer = self.install / "bin" / "photo-offloader-import"
+        self.dashboard = self.install / "bin" / "photo-offloader-dashboard"
 
     def run_service(self, *args, **extra_env):
         env = {

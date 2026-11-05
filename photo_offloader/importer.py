@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Camera Card Offloader v2.4.
+"""Photo Offloader importer.
 
 Conservative macOS media ingestion:
     discover -> lock -> snapshot -> scan -> capacity check -> copy -> verify
@@ -37,6 +36,8 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
+
+from photo_offloader import layout
 
 try:
     from alive_progress import alive_bar
@@ -76,9 +77,9 @@ MIN_FREE_SPACE_BUFFER_BYTES = 100 * 1024 * 1024
 STATUS_FILE_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "status.json"
 CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloaderData" / "catalog.sqlite3"
 LEGACY_CATALOG_DB_PATH = Path.home() / "Library" / "Application Support" / "PhotoOffloader" / "catalog.sqlite3"
-BUILD_INFO_PATH = Path(__file__).resolve().with_name("build_info.json")
-VERSION_PATH = Path(__file__).resolve().with_name("VERSION")
-GOOGLE_PHOTOS_SYNC_PATH = Path(__file__).resolve().with_name("google_photos_sync.py")
+BUILD_INFO_PATH = layout.APP_ROOT / "build_info.json"
+VERSION_PATH = layout.APP_ROOT / "VERSION"
+GOOGLE_PHOTOS_SYNC_PATH = layout.APP_ROOT / layout.GOOGLE_SYNC
 _PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
 _PROGRESS_STARTED: Optional[float] = None
 

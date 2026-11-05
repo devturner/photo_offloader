@@ -7,6 +7,8 @@ import time
 import unittest
 from pathlib import Path
 
+REPO = Path(__file__).resolve().parents[1]
+
 
 class TestCameraOffloaderTrigger(unittest.TestCase):
     def setUp(self):
@@ -24,7 +26,9 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.dcim.mkdir(parents=True)
 
         self.python = self.install / "python3"
-        self.importer = self.install / "camera_offloader_v2.py"
+        (self.install / "bin").mkdir()
+        (self.install / "scripts").mkdir()
+        self.importer = self.install / "bin" / "photo-offloader-import"
         self.background_args = self.root / "background-import-args.txt"
         self.background_path = self.root / "background-import-path.txt"
         self.python.write_text(
@@ -35,10 +39,10 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
             + "exit 0\n"
         )
         self.importer.write_text("#!/bin/bash\nexit 0\n")
-        self.supervisor = self.install / "photo_offloader_import_supervisor.sh"
-        self.supervisor.write_text(Path(__file__).with_name("photo_offloader_import_supervisor.sh").read_text())
+        self.supervisor = self.install / "scripts" / "import_supervisor.sh"
+        self.supervisor.write_text((REPO / "scripts" / "import_supervisor.sh").read_text())
         self.supervisor.chmod(0o755)
-        self.dashboard = self.install / "photo_offloader_ui.py"
+        self.dashboard = self.install / "bin" / "photo-offloader-dashboard"
         self.dashboard.write_text("# dashboard test fixture\n")
         self.python.chmod(0o755)
 
@@ -88,7 +92,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         # Preserve terminal-mode expectations for legacy trigger tests; tests
         # for the new default explicitly remove this opt-in marker.
         (self.install / ".terminal-output-enabled").touch()
-        self.script = Path(__file__).with_name("camera_offloader_trigger.sh")
+        self.script = REPO / "scripts" / "trigger.sh"
 
     def worker_pids(self):
         """PIDs of any stub worker/supervisor still running out of this test's temp dir."""

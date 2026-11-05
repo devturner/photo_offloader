@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import camera_offloader_v2 as app
-from camera_offloader_v2 import (
+from photo_offloader import importer as app
+from photo_offloader.importer import (
     DestinationResult,
     DestinationSnapshot,
     FileFingerprint,
@@ -70,7 +70,7 @@ class TestHardeningRegressions(unittest.TestCase):
             DestinationResult(self.local, "copied", copied_path, "copied and verified"),
         ]
 
-        with patch("camera_offloader_v2.copy_one_to_destination", side_effect=[results[0], OSError("backup unavailable")]):
+        with patch("photo_offloader.importer.copy_one_to_destination", side_effect=[results[0], OSError("backup unavailable")]):
             app.copy_category([self.source], self.root, [self.local, self.usb], "JPG", stats)
 
         self.assertEqual(stats.destination_copies, 1)
