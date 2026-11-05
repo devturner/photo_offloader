@@ -389,6 +389,45 @@ class TestCameraOffloader(unittest.TestCase):
             result = app.copy_one_to_destination(source, self.dcim, self.local, manifest)
         self.assertEqual(result.status, "skipped")
 
+    def shift_mtime(self, path, seconds):
+        st = path.stat()
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + int(seconds * 1_000_000_000)))
+
+    def test_dst_shifted_card_timestamps_keep_cached_hashes(self):
+        # User log 2026-11-04: after DST ended, exFAT/FAT local-time stamps all read
+        # one hour later; 2346 files counted as "changed" and the card was re-hashed.
+        source = self.media()["RAW"]
+        destination = app.build_destination_path(source, self.dcim, self.local)
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(source.read_bytes())
+        digest = app.sha256_file(source)
+        manifest = {}
+        app.update_card_manifest_entry(manifest, source, self.dcim, digest)
+        app.catalog_record(destination, sha256=digest)
+        self.shift_mtime(source, 3600)
+        with patch.object(app, "sha256_file", side_effect=AssertionError("must reuse cached hashes")):
+            result = app.copy_one_to_destination(source, self.dcim, self.local, manifest)
+        self.assertEqual(result.status, "skipped")
+
+    def test_dst_shift_keeps_cached_capture_metadata(self):
+        source = self.media()["RAW"]
+        app.catalog_record(source, capture_month="2026-10", camera_model="NIKON-Z-8")
+        self.shift_mtime(source, 3600)
+        with patch.object(app, "get_exiftool_metadata", side_effect=AssertionError("must reuse metadata")):
+            self.assertEqual(app.get_camera_model(source), "NIKON-Z-8")
+            self.assertEqual(app.get_month_folder(source), "2026-10")
+        self.shift_mtime(source, 1)  # not a whole-hour shift: cache must miss
+        self.assertIsNone(app.catalog_row(source))
+
+    def test_reconcile_treats_whole_hour_shift_as_unchanged_but_not_other_shifts(self):
+        media = self.media()
+        app.save_card_manifest(self.dcim, {})
+        app.reconcile_card_manifest(self.dcim, {"RAW": [media["RAW"]], "JPG": [media["JPG"]]})
+        self.shift_mtime(media["RAW"], -3600)   # DST
+        self.shift_mtime(media["JPG"], 1800)    # a real change
+        counts = app.reconcile_card_manifest(self.dcim, {"RAW": [media["RAW"]], "JPG": [media["JPG"]]})
+        self.assertEqual((counts["unchanged_manifest_files"], counts["changed_files"]), (1, 1))
+
     def test_google_photos_upload_record_tracks_current_fingerprint(self):
         path = self.local / "uploaded.jpg"
         path.write_bytes(b"photo")

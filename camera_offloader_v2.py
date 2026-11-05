@@ -479,7 +479,8 @@ def catalog_row(path: Path, fingerprint: Optional[FileFingerprint] = None) -> Op
                 "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
                 "FROM file_locations WHERE path = ?", (str(path.resolve()),)
             ).fetchone()
-        if row and row[:3] == (fingerprint.size, fingerprint.mtime_ns, fingerprint.inode):
+        if (row and row[2] == fingerprint.inode
+                and card_fingerprint_unchanged({"size": row[0], "mtime_ns": row[1]}, fingerprint)):
             return row
     except (OSError, sqlite3.Error) as exc:
         logger.debug("Catalog lookup failed for %s: %s", path, exc)
@@ -548,6 +549,27 @@ def catalog_hash_matches(source: Path, destination: Path) -> Optional[bool]:
 
 CARD_MANIFEST_DIR = ".photo-offloader"
 CARD_MANIFEST_NAME = "manifest-v1.json"
+
+
+_HOUR_NS = 3600 * 1_000_000_000
+
+
+def card_fingerprint_unchanged(entry: object, fingerprint: "FileFingerprint") -> bool:
+    """Same size and mtime, allowing an exact whole-hour mtime shift (up to 24 h).
+
+    Cameras write FAT/exFAT timestamps in local time, so after a DST change or a
+    time-zone change macOS reports every file on the card N hours off, to the
+    nanosecond. Treating that as "changed" re-hashes the whole card. A genuine
+    edit that keeps the size and moves mtime by an exact multiple of 3600.000 s
+    does not happen in practice; anything else still counts as changed.
+    """
+    if not isinstance(entry, dict) or entry.get("size") != fingerprint.size:
+        return False
+    recorded = entry.get("mtime_ns")
+    if not isinstance(recorded, int):
+        return False
+    delta = abs(fingerprint.mtime_ns - recorded)
+    return delta % _HOUR_NS == 0 and delta <= 24 * _HOUR_NS
 
 
 def card_relative_key(source: Path, dcim_folder: Path) -> str:
@@ -631,7 +653,7 @@ def reconcile_card_manifest(
             if not isinstance(previous, dict):
                 new_files += 1
                 entry = {}
-            elif previous.get("size") != fingerprint.size or previous.get("mtime_ns") != fingerprint.mtime_ns:
+            elif not card_fingerprint_unchanged(previous, fingerprint):
                 changed_files += 1
                 entry = dict(previous)
                 # Invalidate stale hashes; a changed file must be hashed and verified again.
@@ -687,9 +709,7 @@ def card_manifest_entry(
         relative = card_relative_key(source, dcim_folder)
         entry = manifest.get(relative)
         fingerprint = file_fingerprint(source)
-        if (isinstance(entry, dict) and entry.get("size") == fingerprint.size
-                and entry.get("mtime_ns") == fingerprint.mtime_ns
-                and isinstance(entry.get("sha256"), str)):
+        if card_fingerprint_unchanged(entry, fingerprint) and isinstance(entry.get("sha256"), str):
             return entry["sha256"]
     except (OSError, ValueError):
         pass
