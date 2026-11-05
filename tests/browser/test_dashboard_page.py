@@ -68,13 +68,14 @@ class TestFixedPanel(PageTestCase):
     """One panel of one size for the whole run; nothing below it moves."""
 
     def test_the_panel_has_one_height_in_every_state(self):
-        for window, height in ((NATIVE_WINDOW, 262), (NARROW, 306)):
+        for window in (NATIVE_WINDOW, NARROW):
+            heights = {}
             for state in SCENARIOS:
-                if state == "stopped":
-                    continue
-                with self.subTest(state=state, width=window["width"]):
+                if state != "stopped":
                     self.show(state, **window)
-                    self.assertEqual(self.page.locator("#hero").bounding_box()["height"], height)
+                    heights[state] = self.page.locator("#hero").bounding_box()["height"]
+            with self.subTest(width=window["width"]):
+                self.assertEqual(len(set(heights.values())), 1, heights)
 
     def test_nothing_moves_while_one_page_follows_a_whole_run(self):
         self.show("idle", **NATIVE_WINDOW)
@@ -196,8 +197,13 @@ class TestStepStrip(PageTestCase):
 class TestNothingTruncated(PageTestCase):
     """Every slot and step fits; each of these was once cut off with an ellipsis."""
 
-    CUT_OFF = """() => [...document.querySelectorAll('.slot .k, .slot .v, .stages span')]
-        .filter(e => e.scrollWidth > e.clientWidth).map(e => e.textContent)"""
+    # Too wide for its box, or wrapped onto more lines than the box can show.
+    CUT_OFF = """() => [...document.querySelectorAll('.slot .k, .slot .v, .stages span')].filter(e => {
+        const text = document.createRange();
+        text.selectNodeContents(e);
+        return e.scrollWidth > e.clientWidth
+            || text.getBoundingClientRect().bottom > e.getBoundingClientRect().bottom;
+    }).map(e => e.textContent)"""
 
     def assert_nothing_cut_off(self, window) -> None:
         for state in TRANSFER_STATES + SUMMARY_STATES:
@@ -207,6 +213,9 @@ class TestNothingTruncated(PageTestCase):
 
     def test_in_the_native_window(self):
         self.assert_nothing_cut_off(NATIVE_WINDOW)
+
+    def test_at_the_narrowest_layout(self):
+        self.assert_nothing_cut_off(NARROW)
 
 
 class TestMenu(PageTestCase):

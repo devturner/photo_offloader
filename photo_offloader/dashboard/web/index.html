@@ -195,9 +195,15 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
 @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 @media (max-width: 560px) {
-  :root { --hero-h: 306px; }
+  :root { --hero-h: 316px; }
   .wrap { padding: 16px; } .hero { padding: 18px; } .brand small { display: none; }
-  .slots { grid-template-columns: minmax(0, 1.3fr) minmax(0, .8fr) minmax(0, 1.4fr); }
+  /* Five step labels don't fit on one line here, so they wrap onto two. */
+  .stages { height: 40px; }
+  .stages span { white-space: normal; align-items: flex-start; line-height: 1.25; }
+  /* The two long values share the first row; the three short ones share the second. */
+  .slots { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .slot { grid-column: span 2; }
+  .slot:nth-child(1), .slot:nth-child(3) { grid-column: span 3; order: -1; }
 }
 </style>
 </head>
