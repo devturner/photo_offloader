@@ -54,7 +54,9 @@ def parse_display_bytes(value: str) -> float:
 
 CATEGORY_LABELS = {"JPG": "JPG", "RAW": "RAW", "VIDEO": "Video", "OTHER": "Other"}
 IMPORT_STAGES = (("scan", "Scan card"), ("metadata", "Read photo info"),
-                 ("copy", "Copy new files"), ("usb", "Back up to USB"))
+                 ("copy", "Copy new files"), ("usb", "Back up to USB"),
+                 ("upload", "Upload to Google Photos"))
+UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60   # an upload this soon after an import continues its steps
 THEMES = ("system", "light", "dark")
 SPEED_WINDOW_SAMPLES = 10
 def google_remote_name() -> str:
@@ -79,7 +81,8 @@ def activity_stage(status: Dict[str, Any]) -> str:
     return "scan"
 
 
-def import_stages(status: Dict[str, Any], stage: str) -> Optional[List[Dict[str, str]]]:
+def import_stages(status: Dict[str, Any], stage: str,
+                  upload_planned: bool = False) -> Optional[List[Dict[str, str]]]:
     """The steps of a card import with done/active/pending/skipped, or None for other runs."""
     if "usb_planned" not in status or stage not in dict(IMPORT_STAGES):
         return None
@@ -87,12 +90,20 @@ def import_stages(status: Dict[str, Any], stage: str) -> Optional[List[Dict[str,
     current = order.index(stage)
     steps = []
     for index, (step_id, label) in enumerate(IMPORT_STAGES):
-        if step_id == "usb" and not status.get("usb_planned"):
+        if (step_id == "usb" and not status.get("usb_planned")) or (step_id == "upload" and not upload_planned):
             state = "skipped"
         else:
             state = "done" if index < current else "active" if index == current else "pending"
         steps.append({"id": step_id, "label": label, "state": state})
     return steps
+
+
+def parse_timestamp(value: object) -> Optional[float]:
+    """Epoch seconds from an ISO 8601 timestamp written by the importer or the sync, or None."""
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except (TypeError, ValueError, OSError):
+        return None
 
 
 def plural(count: int, noun: str) -> str:
@@ -225,6 +236,7 @@ class DashboardCore:
         self._cache: Dict[str, Tuple[float, Any]] = {}
         self._samples: Deque[float] = deque(maxlen=SPEED_SAMPLES)
         self._last_sample: Optional[Tuple[float, int, str]] = None
+        self._upload_files: Optional[Tuple[int, int]] = None
 
     # ---- tiny TTL cache so a 1 s poll doesn't fork or hit SQLite every time
     def _cached(self, key: str, ttl: float, produce: Callable[[], Any]) -> Any:
@@ -321,10 +333,8 @@ class DashboardCore:
 
     @staticmethod
     def _status_age(status: Dict[str, Any], now: float) -> Optional[float]:
-        try:
-            return max(now - datetime.fromisoformat(str(status["updated_at"])).timestamp(), 0.0)
-        except (KeyError, ValueError, OSError):
-            return None
+        stamp = parse_timestamp(status.get("updated_at"))
+        return None if stamp is None else max(now - stamp, 0.0)
 
     def _stale(self, status: Dict[str, Any], now: float) -> bool:
         """An 'active' status nobody is updating any more (importer crashed or was killed)."""
@@ -340,11 +350,26 @@ class DashboardCore:
         return self._stale(status, now) and (
             self._status_stamp(status) != self._dashboard_state().get("dismissed_status_stamp"))
 
-    def _activity(self, status: Dict[str, Any], now: float) -> Optional[Dict[str, Any]]:
-        state = str(status.get("state", "idle"))
-        if state not in ("scanning", "copying") or self._stale(status, now):
+    def _sample_speed(self, run_key: str, transferred: int, now: float) -> None:
+        """Add one throughput sample to the graph; a new run (or a counter reset) starts a new graph."""
+        last = self._last_sample
+        if last and last[2] == run_key and transferred >= last[1] and now > last[0]:
+            self._samples.append((transferred - last[1]) / (now - last[0]))
+        elif last is None or last[2] != run_key or transferred < last[1]:
+            self._samples.clear()
+        self._last_sample = (now, transferred, run_key)
+
+    def _end_graph(self, unless: Optional[str] = None) -> None:
+        """Forget the speed graph, except one that belongs to the ``unless`` run."""
+        if unless is None or not self._last_sample or self._last_sample[2] != unless:
             self._samples.clear()
             self._last_sample = None
+
+    def _activity(self, status: Dict[str, Any], now: float,
+                  upload_planned: bool = False) -> Optional[Dict[str, Any]]:
+        state = str(status.get("state", "idle"))
+        if state not in ("scanning", "copying") or self._stale(status, now):
+            self._end_graph("upload")   # an upload running now keeps its own graph
             return None
 
         stage = activity_stage(status)
@@ -381,15 +406,9 @@ class DashboardCore:
         run_key = f"{kind}|{status.get('source', '')}"
         transferred = int(status.get("bytes_transferred", 0) or 0)
         if stage in ("copy", "usb"):
-            last = self._last_sample
-            if last and last[2] == run_key and transferred >= last[1] and now > last[0]:
-                self._samples.append((transferred - last[1]) / (now - last[0]))
-            elif last is None or last[2] != run_key or transferred < last[1]:
-                self._samples.clear()  # new transfer: start a fresh graph
-            self._last_sample = (now, transferred, run_key)
+            self._sample_speed(run_key, transferred, now)
         else:
-            self._samples.clear()
-            self._last_sample = None
+            self._end_graph()
 
         # Average over ~10 s of polls: between copies (checking unchanged files) no bytes
         # move, and a shorter window would make the speed blink to nothing and back.
@@ -409,7 +428,7 @@ class DashboardCore:
             "elapsed_seconds": float(status.get("elapsed_seconds", 0) or 0),
             "source": str(status.get("source", "") or ""),
             "speed_history": [round(sample) for sample in self._samples],
-            "stages": import_stages(status, stage),
+            "stages": import_stages(status, stage, upload_planned),
         }
 
     # ---- catalog ------------------------------------------------------------------------
@@ -463,6 +482,8 @@ class DashboardCore:
             info["state"], info["message"] = "interrupted", "The last upload was interrupted."
         elif state == "running":
             info["progress"] = self._upload_progress()
+            # A running sync writes its status once, when it starts.
+            info["started_at"] = parse_timestamp(status.get("updated_at"))
         return info
 
     @staticmethod
@@ -489,23 +510,38 @@ class DashboardCore:
                 return False
         return self._cached("rclone", 30.0, probe)
 
-    def _upload_activity(self, google: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _upload_activity(self, google: Dict[str, Any], status: Dict[str, Any],
+                         now: float) -> Optional[Dict[str, Any]]:
         if google["state"] != "running":
+            self._upload_files = None
             return None
-        progress = google["progress"]
-        if not progress:
-            return {"kind": "upload", "title": "Uploading to Google Photos", "detail": "Preparing upload",
-                    "percent": None, "indeterminate": True, "bytes_done": 0, "bytes_total": 0,
-                    "speed_bps": 0.0, "eta_seconds": None, "elapsed_seconds": 0.0, "source": "",
-                    "speed_history": []}
-        return {"kind": "upload", "title": "Uploading to Google Photos",
-                "detail": f"{progress['transferred']} of {progress['total']}",
-                "percent": progress["percent"], "indeterminate": False,
-                "bytes_done": int(parse_display_bytes(str(progress["transferred"]))),
-                "bytes_total": int(parse_display_bytes(str(progress["total"]))),
-                "speed_bps": parse_display_bytes(str(progress["speed"] or "").replace("/s", "")),
-                "eta_seconds": self._eta_seconds(progress["eta"]), "elapsed_seconds": 0.0,
-                "source": "", "speed_history": []}
+        progress = google["progress"] or {}
+        # Right after an import the upload is that import's last step: keep its steps and card.
+        follows_import = (status.get("state") == "complete" and "usb_planned" in status
+                          and (self._status_age(status, now) or 0) < UPLOAD_FOLLOWS_IMPORT_SECONDS)
+        source = str(status.get("source", "") or "").rsplit("/", 1)[-1] if follows_import else ""
+        files_done, files_total = progress.get("files_done"), progress.get("files_total")
+        if files_total:
+            what = f"{files_done:,} of {plural(files_total, 'file')}"
+        else:
+            what = "Finishing upload" if progress.get("finalizing") else "Preparing upload"
+        done = int(parse_display_bytes(str(progress.get("transferred") or "")))
+        total = int(parse_display_bytes(str(progress.get("total") or "")))
+        if progress:
+            self._sample_speed("upload", done, now)
+        started = google.get("started_at")
+        recent = list(self._samples)[-SPEED_WINDOW_SAMPLES:]
+        speed = (sum(recent) / len(recent) if recent
+                 else parse_display_bytes(str(progress.get("speed") or "").replace("/s", "")))
+        return {"kind": "upload", "stage": "upload", "title": "Uploading to Google Photos",
+                "detail": " · ".join(part for part in (source, what) if part),
+                "percent": progress.get("percent"), "indeterminate": not progress,
+                "bytes_done": done, "bytes_total": total, "speed_bps": speed,
+                "eta_seconds": self._eta_seconds(progress.get("eta")),
+                "elapsed_seconds": max(now - started, 0.0) if started else 0.0,
+                "files_done": files_done or 0, "files_total": files_total or 0, "new_files": 0,
+                "source": "", "speed_history": [round(sample) for sample in self._samples],
+                "stages": import_stages(status, "upload", True) if follows_import else None}
 
     def _upload_progress(self) -> Optional[Dict[str, Any]]:
         try:
@@ -522,8 +558,14 @@ class DashboardCore:
         if not parsed:
             return None
         percent = min(100.0, max(0.0, float(parsed["percent"])))
+        if parsed.get("files_total"):
+            self._upload_files = (int(parsed["files_done"]), int(parsed["files_total"]))
+        elif percent >= 100.0 and self._upload_files:
+            self._upload_files = (self._upload_files[1], self._upload_files[1])   # rclone drops the count at 100%
+        files_done, files_total = self._upload_files or (None, None)
         return {"percent": percent, "transferred": parsed.get("transferred"), "total": parsed.get("total"),
-                "speed": parsed.get("speed"), "eta": parsed.get("eta"), "finalizing": percent >= 100.0}
+                "speed": parsed.get("speed"), "eta": parsed.get("eta"), "finalizing": percent >= 100.0,
+                "files_done": files_done, "files_total": files_total}
 
     # ---- last transfer & history --------------------------------------------------------
     @staticmethod
@@ -598,14 +640,14 @@ class DashboardCore:
         running = self.service_running()
         paused = self.paths.pause_file.exists()
         card = self.mounted_card()
-        import_activity = self._activity(status, now)
+        google = self._google(now)
+        import_activity = self._activity(status, now, google["configured"])
         interrupted = self._interrupted(status, now)
         last = self._last_transfer(now)
         counts = self.archive_counts()
-        google = self._google(now)
         usb_mounted = self.usb_mounted()
         busy = import_activity is not None          # the importer is working (uploads don't block it)
-        activity = import_activity or self._upload_activity(google)
+        activity = import_activity or self._upload_activity(google, status, now)
 
         handled = self.card_handled(card)
         headline = self._headline(running, paused, card, activity, interrupted, last, status, google, handled)

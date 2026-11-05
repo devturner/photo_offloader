@@ -256,10 +256,11 @@ class TestActivity(Fixture):
         self.checking(usb_planned=False)
         stages = self.core.state()["activity"]["stages"]
         self.assertEqual([(s["id"], s["state"]) for s in stages],
-                         [("scan", "done"), ("metadata", "done"), ("copy", "active"), ("usb", "skipped")])
+                         [("scan", "done"), ("metadata", "done"), ("copy", "active"), ("usb", "skipped"),
+                          ("upload", "skipped")])
         self.copying(stage="usb", phase="USB backup", usb_planned=True)
         stages = self.core.state()["activity"]["stages"]
-        self.assertEqual([s["state"] for s in stages], ["done", "done", "done", "active"])
+        self.assertEqual([s["state"] for s in stages], ["done", "done", "done", "active", "skipped"])
 
     def test_usb_backup_is_recognised_by_phase(self):
         self.importer_up = True
@@ -523,12 +524,58 @@ class TestPipeline(Fixture):
         (self.install / "google_photos_sync.log").write_text(
             "2026/10/21 22:24:49 INFO  : 4.998 GiB / 17.703 GiB, 28%, 8.387 MiB/s, ETA 25m51s (xfr#649/1520)\n")
         state = self.core.state()
+        # The progress slots show the bytes; the subtitle says what is being uploaded.
         self.assertEqual(state["headline"], {"tone": "active", "title": "Uploading to Google Photos",
-                                             "detail": "4.998 GiB of 17.703 GiB"})
+                                             "detail": "649 of 1,520 files"})
         activity = state["activity"]
         self.assertEqual((activity["kind"], activity["percent"], activity["eta_seconds"]), ("upload", 28.0, 1551.0))
         self.assertAlmostEqual(activity["speed_bps"], 8.387 * 1024**2, delta=10)
         self.assertFalse(state["busy"], "an upload must not block backups or catalog updates")
+
+    def start_upload(self, started_seconds_ago=30, line=None):
+        self.google_up = True
+        started = datetime.fromtimestamp(self.now - started_seconds_ago).astimezone().isoformat(timespec="seconds")
+        (self.install / "google_photos_status.json").write_text(
+            json.dumps({"state": "running", "updated_at": started}))
+        (self.install / "google_photos_sync.log").write_text(line or (
+            "2026/11/04 18:50:05 INFO  :   175.183 MiB / 267.950 MiB, 65%, 8.800 MiB/s, ETA 10s (xfr#8/18)\n"))
+
+    def test_upload_reports_files_and_elapsed_time(self):
+        # User screenshot 2026-11-04: Files and Elapsed were blank during the upload.
+        self.start_upload(started_seconds_ago=42)
+        activity = self.core.state()["activity"]
+        self.assertEqual((activity["files_done"], activity["files_total"]), (8, 18))
+        self.assertEqual(activity["elapsed_seconds"], 42)
+
+    def test_upload_speed_is_graphed(self):
+        self.start_upload()
+        self.core.state()
+        for line in ("2026/11/04 18:50:10 INFO  :   204.131 MiB / 267.950 MiB, 76%, 8.059 MiB/s, ETA 7s (xfr#12/18)\n",
+                     "2026/11/04 18:50:15 INFO  :   237.655 MiB / 267.950 MiB, 89%, 7.590 MiB/s, ETA 3s (xfr#12/18)\n"):
+            self.advance(5)
+            (self.install / "google_photos_sync.log").write_text(line)
+            activity = self.core.state()["activity"]
+        self.assertEqual(len(activity["speed_history"]), 2)
+
+    def test_upload_right_after_an_import_continues_the_same_steps(self):
+        # User feedback 2026-11-04: the upload should be a step of the import, not a new view.
+        (self.data / "preferences.json").write_text(json.dumps({"google_photos": {"configured": True}}))
+        self.write_status(state="complete", phase="usb-backup", stage="usb", usb_planned=True,
+                          source=str(self.volumes / "NIKON Z 8"))
+        self.start_upload()
+        state = self.core.state()
+        self.assertEqual([(s["id"], s["state"]) for s in state["activity"]["stages"]],
+                         [("scan", "done"), ("metadata", "done"), ("copy", "done"), ("usb", "done"),
+                          ("upload", "active")])
+        self.assertEqual(state["headline"]["detail"], "NIKON Z 8 · 8 of 18 files")
+
+    def test_an_import_lists_the_upload_as_a_later_step_when_google_photos_is_set_up(self):
+        self.importer_up = True
+        self.write_status(state="copying", phase="copy", stage="copy", usb_planned=False, bytes_done=1, bytes_total=4)
+        self.assertEqual(self.core.state()["activity"]["stages"][-1]["state"], "skipped")
+        (self.data / "preferences.json").write_text(json.dumps({"google_photos": {"configured": True}}))
+        self.assertEqual(self.core.state()["activity"]["stages"][-1],
+                         {"id": "upload", "label": "Upload to Google Photos", "state": "pending"})
 
     def test_an_importer_run_takes_precedence_over_an_upload_in_the_hero(self):
         self.google_up = self.importer_up = True

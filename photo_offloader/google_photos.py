@@ -46,18 +46,21 @@ def parse_rclone_stats_line(line: str) -> Optional[dict[str, object]]:
     match = re.search(
         r"(?:Transferred:\s*)?([\d.]+\s+\w+)\s*/\s*([\d.]+\s+\w+),\s*"
         r"([\d.]+)%,\s*([\d.]+\s+\w+/s),\s*ETA\s+(.+?)"
-        r"(?:\s+\(xfr#|$)",
+        r"(?:\s+\(xfr#(\d+)/(\d+)\))?\s*$",
         line,
     )
     if not match:
         return None
-    transferred, total, percent, speed, eta = match.groups()
+    transferred, total, percent, speed, eta, files_done, files_total = match.groups()
     return {
         "transferred": transferred,
         "total": total,
         "percent": float(percent),
         "speed": speed,
         "eta": eta.strip(),
+        # rclone leaves the file count off once every byte is sent.
+        "files_done": int(files_done) if files_done else None,
+        "files_total": int(files_total) if files_total else None,
     }
 
 

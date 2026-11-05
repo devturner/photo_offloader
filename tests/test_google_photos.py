@@ -37,6 +37,14 @@ class TestGooglePhotosSync(unittest.TestCase):
         self.assertEqual(parsed["speed"], "8.387 MiB/s")
         self.assertEqual(parsed["eta"], "25m51s")
 
+    def test_parse_rclone_stats_line_reads_file_counts(self):
+        parsed = sync.parse_rclone_stats_line(
+            "2026/11/04 18:50:05 INFO  :   175.183 MiB / 267.950 MiB, 65%, 8.800 MiB/s, ETA 10s (xfr#8/18)")
+        self.assertEqual((parsed["files_done"], parsed["files_total"]), (8, 18))
+        done = sync.parse_rclone_stats_line(
+            "2026/11/04 18:50:20 INFO  :   267.950 MiB / 267.950 MiB, 100%, 7.107 MiB/s, ETA 0s")
+        self.assertEqual((done["files_done"], done["files_total"]), (None, None))
+
     def test_parse_rclone_stats_line_without_eta(self):
         self.assertIsNone(sync.parse_rclone_stats_line("rclone starting upload"))
 
