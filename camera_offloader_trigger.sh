@@ -327,16 +327,13 @@ log "Recognized camera source: $camera_dcim"
 log "Build provenance: $(build_provenance)"
 printf '%s\n' "$camera_identity" > "$IDENTITY_FILE"
 
-# Open one dashboard window when an import starts. LaunchAgent jobs run in the
-# logged-in user's GUI session, so the Tk window is visible without a Terminal
-# command. This is best-effort: a UI failure must never block a safe copy.
+# Ask for the dashboard when an import starts. LaunchAgent jobs run in the logged-in user's
+# GUI session, so the window is visible without a Terminal command. The launcher is
+# single-instance and `--if-closed` makes it a no-op while a window or tab is already showing
+# the dashboard. Best-effort: a UI failure must never block a safe copy.
 if [[ "$OPEN_DASHBOARD" == "1" && -f "$DASHBOARD" ]]; then
-    if ! "$PGREP" -f "$DASHBOARD" >/dev/null 2>&1; then
-        nohup "$PYTHON" "$DASHBOARD" >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
-        log "Opened progress dashboard for: $camera_dcim"
-    else
-        log "Progress dashboard is already running."
-    fi
+    nohup "$PYTHON" "$DASHBOARD" --if-closed >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
+    log "Requested progress dashboard for: $camera_dcim"
 fi
 
 # Keep the import attached to the dashboard/status file by default; Terminal output is

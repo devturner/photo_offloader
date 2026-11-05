@@ -8,7 +8,7 @@
 # This script is the supported way to shut the whole thing down (and back up).
 #
 #   photo_offloader_service.sh status
-#   photo_offloader_service.sh stop [--wait | --force] [--disable]
+#   photo_offloader_service.sh stop [--wait | --force] [--disable] [--keep-ui]
 #   photo_offloader_service.sh start
 #   photo_offloader_service.sh restart
 #
@@ -17,6 +17,8 @@
 #   --wait     let the current transfer finish, then stop the menu bar too
 #   --force    cancel the transfer (the importer shuts down cleanly on SIGTERM)
 #   --disable  also keep the agents from starting at the next login
+#   --keep-ui  stop only the trigger: leave the menu bar and dashboards running so they
+#              can show "stopped" and offer Start (this is what their Stop buttons use)
 # Without --disable, a stopped service comes back at next login or on `start`.
 set -uo pipefail
 
@@ -42,10 +44,11 @@ usage() {
 Usage: photo_offloader_service.sh <command>
 
   status                          Show what is running.
-  stop [--wait|--force] [--disable]
+  stop [--wait|--force] [--disable] [--keep-ui]
                                   Stop the service and menu bar. A running transfer
                                   is never interrupted unless --force is given;
-                                  --wait lets it finish first.
+                                  --wait lets it finish first. --keep-ui leaves the
+                                  menu bar and dashboards open so you can start again.
   start                           Start the service and menu bar.
   restart                         Stop (after any running transfer) and start again.
 USAGE
@@ -96,11 +99,12 @@ cmd_status() {
 }
 
 cmd_stop() {
-    local mode="" disable=0 arg
+    local mode="" disable=0 keep_ui=0 arg
     for arg in "$@"; do
         case "$arg" in
             --wait|--force) mode="$arg" ;;
             --disable) disable=1 ;;
+            --keep-ui) keep_ui=1 ;;
             *) echo "Unknown option for stop: $arg" >&2; usage >&2; return 2 ;;
         esac
     done
@@ -110,7 +114,7 @@ cmd_stop() {
         "$LAUNCHCTL" disable "$DOMAIN/$UI_LABEL" >/dev/null 2>&1 || true
     fi
 
-    if ! is_loaded "$LABEL" && ! is_loaded "$UI_LABEL"; then
+    if ! is_loaded "$LABEL" && { [[ "$keep_ui" -eq 1 ]] || ! is_loaded "$UI_LABEL"; }; then
         echo "Photo Offloader is already stopped."
         return 0
     fi
@@ -143,10 +147,14 @@ cmd_stop() {
         fi
     fi
 
-    close_dashboards
-    # The menu-bar app may be the process that called us, so it goes last.
-    unload "$UI_LABEL"
-    echo "Photo Offloader stopped. Run 'photo_offloader_service.sh start' to bring it back."
+    if [[ "$keep_ui" -eq 1 ]]; then
+        echo "Photo Offloader stopped. Start it again from the dashboard, the menu bar, or 'photo_offloader_service.sh start'."
+    else
+        close_dashboards
+        # The menu-bar app may be the process that called us, so it goes last.
+        unload "$UI_LABEL"
+        echo "Photo Offloader stopped. Run 'photo_offloader_service.sh start' to bring it back."
+    fi
     [[ "$disable" -eq 1 ]] && echo "It will stay off at login until you run 'start'."
     return 0
 }

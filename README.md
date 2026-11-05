@@ -32,13 +32,26 @@ Besides `DCIM`, the importer scans `PRIVATE` and `MP_ROOT`, where Sony, Canon an
 
 ### 🖥️ Menu-bar dashboard and pause control
 
-The installer launches a native macOS menu-bar item and opens the dashboard window at the end of installation. When a camera import starts, the dashboard is opened automatically (or reused if already running). Select **Open Dashboard** from the menu-bar item at any time to view the current source, file being processed, copy progress and speed, a rolling copy-speed graph, and estimated time remaining. The dashboard has separate Copy and Google Photos Upload cards, each with its own progress percentage, elapsed timer, current speed, rolling throughput graph, and ETA. The Copy card title identifies whether media is being imported to the internal HD or backed up to USB. Use **Copy to USB Drive** in the menu bar or dashboard to run a USB-only sync without a camera card. Both controls use a shared launch lock, so repeated clicks cannot start overlapping USB backup requests. A 15-second debounce also suppresses duplicate requests if a very fast backup finishes before a second click. The importer acquires its session lock before changing dashboard status; duplicate launches are ignored cleanly and do not overwrite the active session's progress.
+The installer starts a menu-bar item and opens the dashboard. When a camera import starts, the dashboard is opened automatically (or brought forward if it is already open). Choose **Open Dashboard** from the menu-bar item at any time.
+
+The dashboard is a small local web app, served only on `127.0.0.1`, shown in a native window when `pywebview` is installed (the installer tries to install it) and in your default browser otherwise. It follows macOS light/dark mode and shows:
+
+- **A headline** describing what matters right now: *Ready*, *Importing from NIKON Z 8*, *Imported from NIKON Z 8*, *Automatic imports are paused*, *Photo Offloader is stopped*, or what needs attention.
+- **Four cards**: Camera card, Mac archive, USB backup and Google Photos, each with its state and a one-line detail. Contextual actions such as **Back up now** or **Sync now** appear on a card only when they apply.
+- **Live progress** while something is running: percentage, bytes, speed, ETA, the file being copied and a rolling speed graph. Google Photos uploads use the same hero when the importer is idle.
+- **Recent activity**: the last imports, USB backups and catalog updates, stored in the persistent catalog so they survive restarts and reinstalls (the latest 500 runs are kept).
+
+Everything else is hidden behind the **⋯** menu: pause/resume automatic imports, update the file catalog, back up to USB, sync Google Photos, *Eject card after import*, *Show Terminal during imports*, and Stop/Start. The result of the last transfer fades after 10 minutes; a failed transfer stays until you dismiss it with **×**. **Clear** in Recent activity deletes the stored history after a confirming second click. If an import or upload process dies mid-transfer, the dashboard reports it as *interrupted* instead of showing "copying" forever.
+
+Use **Copy to USB Drive** in the menu bar or dashboard to run a USB-only sync without a camera card. Both controls use a shared launch lock, so repeated clicks cannot start overlapping USB backup requests. A 15-second debounce also suppresses duplicate requests if a very fast backup finishes before a second click. The importer acquires its session lock before changing dashboard status; duplicate launches are ignored cleanly and do not overwrite the active session's progress.
+
+**Security.** Because the dashboard can start backups and stop the service, its local server accepts only requests that carry a random per-session token (passed in the URL fragment, so it is never sent to a server or logged), a `Host` header naming the server (DNS-rebinding protection), a same-origin `Origin` for writes, and `application/json` bodies. It never grants CORS access, serves a single fixed page with a strict Content-Security-Policy, and exits on its own a few minutes after its browser tab is closed.
 
 Use **Pause Automatic Imports** before inserting a card when you do not want automatic copying to start. Pausing prevents new automatic import sessions; it does not interrupt a copy already in progress. Choose **Resume Automatic Imports** to re-enable the service and immediately re-check any camera card that is already mounted.
 
 ### Stopping and starting the service
 
-Photo Offloader runs as two LaunchAgents: the **trigger** (watches for cards) and the **menu-bar app**. **Quit Menu Bar (Service Keeps Running)** only closes the menu-bar app; the trigger keeps watching for cards. To shut everything down, choose **Stop Photo Offloader…** from the menu bar, or use the command line:
+Photo Offloader runs as two LaunchAgents: the **trigger** (watches for cards) and the **menu-bar app**. The menu bar stays alive whether or not the service is running. **Stop Photo Offloader…** (menu bar or dashboard **⋯** menu) stops the trigger, after which the menu bar shows *stopped* with a **Start Photo Offloader** item and the dashboard shows a **Start** button. **Quit Menu Bar (Service Keeps Running)** only closes the menu-bar app. From the command line:
 
 ```bash
 ~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh status
@@ -49,15 +62,13 @@ Photo Offloader runs as two LaunchAgents: the **trigger** (watches for cards) an
 ~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh start
 ```
 
-`stop` unloads the trigger first so no new import can begin, closes open dashboards, and unloads the menu-bar app last. A transfer is never interrupted unless you pass `--force`; the importer treats the stop request like Ctrl-C, so the dashboard shows "canceled" rather than a stuck "copying" state. Without `--disable`, the service comes back at your next login.
+`stop` unloads the trigger first so no new import can begin, closes open dashboards, and unloads the menu-bar app last. Add `--keep-ui` to stop only the trigger and leave the menu bar and dashboards open (this is what their Stop buttons use). A transfer is never interrupted unless you pass `--force`; the importer treats the stop request like Ctrl-C, so the dashboard shows "canceled" rather than a stuck "copying" state. Without `--disable`, the service comes back at your next login.
 
-The menu-bar controller uses `rumps`; the dashboard uses Python's `tkinter` UI. The menu-bar dependency is declared in `requirements-ui.txt` and installed by `install.sh`.
-
-Some Homebrew Python installations package Tk support separately. If the installer reports that `tkinter` is missing, install the matching formula, for example `brew install python-tk@3.14` for Python 3.14, then rerun `./install.sh`.
+The menu-bar controller uses `rumps` (declared in `requirements-ui.txt` and installed by `install.sh`). The dashboard needs nothing beyond the standard library; `pywebview` is an optional extra that gives it a native window instead of a browser tab. Set `PHOTO_OFFLOADER_DASHBOARD_MODE=browser` to force the browser even when `pywebview` is installed.
 
 ### ☁️ Google Photos upload via rclone
 - Optional one-way upload of JPG/JPEG photos and supported video formats to a dedicated Google Photos album named `Photo Offloader`. Successful uploads are recorded per file in the SQLite catalog with timestamp, remote/album, and the uploaded file fingerprint. Changed files no longer show as uploaded until synced again.
-- Upload starts automatically after a successful camera import and can be retried manually with **Sync Google Photos** in the dashboard. Live upload percentage, transfer speed, and ETA appear in the Google Photos Upload card while rclone is running. When transfers reach 100% but rclone is still committing uploads, the card explicitly shows “Finalizing…”; the sync log records a clear success message after rclone exits successfully and per-file catalog updates finish.
+- Upload starts automatically after a successful camera import and can be retried manually with **Sync now** on the Google Photos card (or **Sync Google Photos now** in the **⋯** menu). Live upload percentage, transfer speed, and ETA appear in the dashboard while rclone is running. When transfers reach 100% but rclone is still committing uploads, the card shows “Finishing upload”; the sync log records a clear success message after rclone exits successfully and per-file catalog updates finish.
 - RAW files are excluded by extension and remain in `~/Pictures/CameraImportsRaw`; the USB archive remains consolidated at `/Volumes/Photos/CameraImports`.
 - Requires rclone and a Google Photos remote named `gphotos`; see setup steps below. The OAuth token stays in rclone's own config. After a successful remote/album connection check, Photo Offloader saves only the remote name and last-check timestamp in `~/Library/Application Support/PhotoOffloaderData/preferences.json`, outside the replaceable install directory, so the dashboard can remember the setup after reinstalling. No credentials or tokens are copied into this preferences file. Cloud failures never invalidate a completed local/USB import.
 
@@ -225,7 +236,7 @@ The SQLite file catalog is stored at:
 ~/Library/Application Support/PhotoOffloaderData/catalog.sqlite3
 ```
 
-The catalog is updated automatically as files are scanned and copied. Use **Update File Catalog** in the menu bar or dashboard, or run `python3 camera_offloader_v2.py --update-catalog`, to explicitly initialize or refresh it. The dashboard's **Database Status** section shows separate internal-SSD and backup-USB catalog counts, last successful refresh times, and whether a refresh is currently running. A USB drive that is not mounted is clearly marked and its previous catalog records are preserved. This scans the Mac archive and the USB archive if the USB volume is mounted, updates file locations and cached capture-month/camera metadata, and removes stale entries for roots it successfully scans. It does not hash every file; verified hashes are preserved for unchanged files and generated by copy/verification workflows as needed. If the USB volume is not mounted, its existing catalog entries are preserved.
+The catalog is updated automatically as files are scanned and copied. Use **Update file catalog** in the dashboard's **⋯** menu, or run `python3 camera_offloader_v2.py --update-catalog`, to explicitly initialize or refresh it. The dashboard's Mac archive and USB backup cards show the indexed file counts, and the headline shows when a refresh is running. A USB drive that is not mounted is clearly marked and its previous catalog records are preserved. This scans the Mac archive and the USB archive if the USB volume is mounted, updates file locations and cached capture-month/camera metadata, and removes stale entries for roots it successfully scans. It does not hash every file; verified hashes are preserved for unchanged files and generated by copy/verification workflows as needed. If the USB volume is not mounted, its existing catalog entries are preserved.
 
 The database is stored separately from the install directory, so it survives normal application upgrades and `./uninstall.sh`. The first run after this update automatically migrates an existing database from the former `~/Library/Application Support/PhotoOffloader/catalog.sqlite3` location. If the database is missing or unreadable, the importer falls back to normal filesystem and metadata checks; it never relies on catalog data to overwrite files.
 
@@ -335,7 +346,7 @@ python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8" --sha256
 1. Install rclone (for example, `brew install rclone`).
 2. Follow [rclone’s Google Photos setup guide](https://rclone.org/googlephotos/) and create a remote named `gphotos`. In 2026, configure your own Google OAuth client ID/secret; the shared rclone client ID is being retired. Enable the Photos Library API as described by rclone.
 3. Run `rclone config` and complete browser authentication. Photo Offloader does not store Google credentials itself; rclone stores its token in its own config.
-4. Use **Sync Google Photos** in the dashboard to test the upload. The first run creates/uses the `Photo Offloader` album. After each successful camera import, the app launches the same upload in the background.
+4. Use **Sync now** on the dashboard's Google Photos card to test the upload. The first run creates/uses the `Photo Offloader` album. After each successful camera import, the app launches the same upload in the background.
 
 Uploads are original-quality and count against your Google account storage. This is a one-way upload only: it does not delete items from Google Photos or import your existing library, and RAW extensions are excluded. The Google Photos API has limitations; rclone can only download items it uploaded, and its existence checks are not a full content-hash comparison. See [rclone’s documented limitations](https://rclone.org/googlephotos/).
 

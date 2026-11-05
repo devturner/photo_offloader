@@ -291,6 +291,23 @@ def catalog_connection() -> sqlite3.Connection:
                 status TEXT NOT NULL
             )
         """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS import_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at REAL NOT NULL,
+                finished_at REAL NOT NULL,
+                kind TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                outcome TEXT NOT NULL,
+                files INTEGER NOT NULL DEFAULT 0,
+                copied INTEGER NOT NULL DEFAULT 0,
+                skipped INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0,
+                bytes INTEGER NOT NULL DEFAULT 0,
+                usb INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT ''
+            )
+        """)
         connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_root ON file_locations(root)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_relative ON file_locations(root, relative_path)")
         connection.commit()
@@ -307,6 +324,93 @@ def catalog_db() -> Iterator[sqlite3.Connection]:
             yield connection
     finally:
         connection.close()
+
+
+IMPORT_HISTORY_MAX_ROWS = 500
+
+
+def record_import_run(*, kind: str, outcome: str, started_at: float, finished_at: float,
+                      source: str = "", files: int = 0, copied: int = 0, skipped: int = 0,
+                      failed: int = 0, bytes: int = 0, usb: bool = False,  # noqa: A002
+                      message: str = "") -> None:
+    """Persist one finished run so the dashboard can show history across restarts.
+
+    History is a convenience: any database problem is logged and swallowed so it
+    can never fail or hide a real import.
+    """
+    try:
+        with catalog_db() as db:
+            db.execute(
+                """INSERT INTO import_history
+                   (started_at, finished_at, kind, source, outcome, files, copied, skipped,
+                    failed, bytes, usb, message)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (float(started_at), float(finished_at), kind, source, outcome, int(files),
+                 int(copied), int(skipped), int(failed), int(bytes), int(bool(usb)),
+                 str(message)[:500]),
+            )
+            db.execute(
+                """DELETE FROM import_history WHERE id NOT IN
+                   (SELECT id FROM import_history ORDER BY id DESC LIMIT ?)""",
+                (IMPORT_HISTORY_MAX_ROWS,),
+            )
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("Could not record import history: %s", exc)
+
+
+def list_import_history(limit: int = 20) -> List[Dict[str, object]]:
+    """Most recent runs first."""
+    try:
+        with catalog_db() as db:
+            rows = db.execute(
+                """SELECT id, started_at, finished_at, kind, source, outcome, files, copied,
+                          skipped, failed, bytes, usb, message
+                   FROM import_history ORDER BY id DESC LIMIT ?""",
+                (int(limit),),
+            ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        logger.debug("Could not read import history: %s", exc)
+        return []
+    return [
+        {"id": r[0], "started_at": r[1], "finished_at": r[2],
+         "duration_seconds": max(r[2] - r[1], 0.0), "kind": r[3], "source": r[4],
+         "outcome": r[5], "files": r[6], "copied": r[7], "skipped": r[8], "failed": r[9],
+         "bytes": r[10], "usb": bool(r[11]), "message": r[12]}
+        for r in rows
+    ]
+
+
+def clear_import_history() -> int:
+    """Delete all recorded runs; returns how many were removed."""
+    try:
+        with catalog_db() as db:
+            return db.execute("DELETE FROM import_history").rowcount
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("Could not clear import history: %s", exc)
+        return 0
+
+
+# What the current run has learned so far; turned into a history row by main().
+_RUN: Dict[str, object] = {}
+
+
+def _finish_run_record(exit_code: int) -> None:
+    kind = _RUN.get("kind")
+    if not kind:
+        return  # duplicate launch, or it never got as far as owning a session
+    if kind == "import" and not _RUN.get("source"):
+        return  # no card was ever resolved, so there is nothing worth recording
+    outcome = {0: "complete", 2: "complete", 130: "canceled"}.get(exit_code, "failed")
+    message = str(_PROGRESS.get("message", "") or "")
+    if exit_code == 2 and not message:
+        message = "Copies completed, but the card could not be ejected."
+    record_import_run(
+        kind=str(kind), outcome=outcome, source=str(_RUN.get("source", "")),
+        started_at=float(_RUN.get("started_at", time.time())), finished_at=time.time(),
+        files=int(_RUN.get("files", 0)), copied=int(_RUN.get("copied", 0)),
+        skipped=int(_RUN.get("skipped", 0)), failed=int(_RUN.get("failed", 0)),
+        bytes=int(_RUN.get("bytes", 0)), usb=bool(_RUN.get("usb", False)), message=message,
+    )
 
 
 def mark_google_photos_uploaded_many(paths: Sequence[Path], remote: str, album: str) -> int:
@@ -1820,11 +1924,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         previous = signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
     except ValueError:  # not the main thread (e.g. called from a test harness)
         pass
+    _RUN.clear()
     try:
-        return _main(argv)
+        exit_code = _main(argv)
     finally:
         if previous is not None:
             signal.signal(signal.SIGTERM, previous)
+    _finish_run_record(exit_code)
+    return exit_code
 
 
 def _main(argv: Optional[Sequence[str]] = None) -> int:
@@ -1852,6 +1959,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             # Do not reset shared dashboard status until this process owns the
             # session lock; a duplicate launch must not hide the active session.
             logger.info("--- Starting new photo offloader session run_id=%s ---", run_id)
+            _RUN.update(kind="import", started_at=time.time())
             _PROGRESS_STARTED = time.monotonic()
             _PROGRESS.update({"state": "scanning", "phase": "startup", "bytes_done": 0,
                               "bytes_total": 0, "bytes_transferred": 0, "current_file": "",
@@ -1859,6 +1967,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             update_status()
 
             if args.update_catalog:
+                _RUN["kind"] = "catalog"
                 logger.info("Starting explicit file catalog update.")
                 catalog_stats = update_file_catalog()
                 logger.info("Catalog update summary: %s", catalog_stats)
@@ -1868,8 +1977,11 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
                 return 0
 
             if args.backup_usb:
+                _RUN.update(kind="usb_backup", usb=True)
                 logger.info("Starting independent local-to-USB backup.")
                 backup_stats = copy_local_archive_to_usb()
+                _RUN.update(files=backup_stats.found, copied=backup_stats.destination_copies,
+                            skipped=backup_stats.destination_skips, failed=backup_stats.failed)
                 print_summary(LOCAL_DEST_ROOT, [LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT, USB_DEST_ROOT], backup_stats, False, False)
                 if backup_stats.failed:
                     notify("USB Backup Incomplete", f"{backup_stats.failed} backup failure(s).")
@@ -1883,6 +1995,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             else:
                 dcim_folder = find_card_dcim()
             card_volume = dcim_folder.parent.resolve()
+            _RUN["source"] = card_volume.name
             logger.info("Source card volume: %s", card_volume)
             update_status(source=str(card_volume), state="scanning", phase="card-to-ssd",
                           message="Scanning camera card")
@@ -1895,6 +2008,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             total_found = sum(len(items) for items in files.values())
             source_bytes = required_source_bytes(files)
             local_stats = ImportStats(found=total_found, source_bytes=source_bytes)
+            _RUN.update(files=total_found, bytes=source_bytes)
             logger.info("Scan complete: %d files (%d JPG, %d RAW, %d VIDEO, %d other)",
                         total_found, len(files["JPG"]), len(files["RAW"]), len(files["VIDEO"]),
                         len(files["OTHER"]))
@@ -1936,6 +2050,8 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
                 category_root = local_root_for_category(category)
                 copy_category(files[category], dcim_folder, [category_root], category, local_stats)
 
+            _RUN.update(copied=local_stats.destination_copies, skipped=local_stats.destination_skips,
+                        failed=local_stats.failed)
             if local_stats.failed:
                 print_summary(dcim_folder, local_destinations, local_stats, False, False)
                 update_status(state="failed", phase="card-to-ssd",
@@ -1957,6 +2073,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
                 eject_success = eject_volume(card_volume)
 
             backup_stats = ImportStats()
+            _RUN["usb"] = bool(usb_expected)
             if usb_expected:
                 if not usb_is_mounted() or not volume_identity_matches(
                     usb_identity, get_volume_identity(USB_DEST_VOLUME)

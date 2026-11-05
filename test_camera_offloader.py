@@ -1015,6 +1015,85 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(result.returncode, 130, result.stdout + result.stderr)
         self.assertEqual(json.loads(status_path.read_text())["state"], "canceled")
 
+    # ------------------------------------------- persistent import history
+    def test_import_history_records_and_lists_newest_first(self):
+        app.record_import_run(kind="import", source="NIKON Z 8", outcome="complete",
+                              files=10, copied=10, skipped=0, failed=0, bytes=1234,
+                              started_at=100.0, finished_at=160.0, message="ok")
+        app.record_import_run(kind="usb_backup", source="", outcome="failed", failed=2,
+                              started_at=200.0, finished_at=205.0, message="USB error")
+        runs = app.list_import_history(limit=10)
+        self.assertEqual([r["kind"] for r in runs], ["usb_backup", "import"])
+        self.assertEqual(runs[1]["source"], "NIKON Z 8")
+        self.assertEqual(runs[1]["files"], 10)
+        self.assertEqual(runs[1]["bytes"], 1234)
+        self.assertAlmostEqual(runs[1]["duration_seconds"], 60.0)
+
+    def test_import_history_survives_reopening_the_catalog(self):
+        app.record_import_run(kind="import", source="card", outcome="complete",
+                              started_at=1.0, finished_at=2.0)
+        app._CATALOG_INITIALIZED_PATH = None  # what a fresh process looks like
+        self.assertEqual(len(app.list_import_history()), 1)
+
+    def test_import_history_can_be_cleared(self):
+        for index in range(3):
+            app.record_import_run(kind="import", source=f"c{index}", outcome="complete",
+                                  started_at=float(index), finished_at=float(index) + 1)
+        self.assertEqual(app.clear_import_history(), 3)
+        self.assertEqual(app.list_import_history(), [])
+
+    def test_import_history_is_bounded(self):
+        with patch.object(app, "IMPORT_HISTORY_MAX_ROWS", 5):
+            for index in range(8):
+                app.record_import_run(kind="import", source=f"c{index}", outcome="complete",
+                                      started_at=float(index), finished_at=float(index) + 1)
+        runs = app.list_import_history(limit=50)
+        self.assertEqual([r["source"] for r in runs], ["c7", "c6", "c5", "c4", "c3"])
+
+    def test_recording_history_never_breaks_an_import(self):
+        with patch.object(app, "catalog_db", side_effect=app.sqlite3.OperationalError("locked")):
+            app.record_import_run(kind="import", source="x", outcome="complete",
+                                  started_at=1.0, finished_at=2.0)  # must not raise
+
+    @patch("camera_offloader_v2.launch_google_photos_sync")
+    @patch("camera_offloader_v2.notify")
+    def test_successful_import_is_recorded_in_history(self, notify, launch):
+        self.media()
+        with patch("camera_offloader_v2.time.sleep"):
+            self.assertEqual(app.main(["--source", str(self.card), "--no-usb", "--no-eject"]), 0)
+        (run,) = app.list_import_history()
+        self.assertEqual((run["kind"], run["outcome"], run["source"]), ("import", "complete", "card"))
+        self.assertEqual((run["files"], run["copied"], run["failed"]), (3, 3, 0))
+        self.assertGreater(run["bytes"], 0)
+        self.assertFalse(run["usb"])
+
+    @patch("camera_offloader_v2.notify")
+    def test_failed_import_is_recorded_with_its_reason(self, notify):
+        self.media()
+        with patch("camera_offloader_v2.time.sleep"), \
+                patch.object(app, "copy_file_with_progress", side_effect=OSError("copy failure")):
+            self.assertEqual(app.main(["--source", str(self.card), "--no-usb", "--no-eject"]), 1)
+        (run,) = app.list_import_history()
+        self.assertEqual(run["outcome"], "failed")
+        self.assertEqual(run["failed"], 3)
+        self.assertIn("failure", run["message"].lower())
+
+    @patch("camera_offloader_v2.notify")
+    def test_canceled_import_is_recorded(self, notify):
+        self.media()
+        with patch("camera_offloader_v2.time.sleep"), \
+                patch.object(app, "scan_with_retry", side_effect=KeyboardInterrupt):
+            self.assertEqual(app.main(["--source", str(self.card), "--no-usb", "--no-eject"]), 130)
+        (run,) = app.list_import_history()
+        self.assertEqual((run["outcome"], run["source"]), ("canceled", "card"))
+
+    @patch("camera_offloader_v2.notify")
+    def test_duplicate_launch_and_missing_card_do_not_create_history(self, notify):
+        with patch.object(app, "import_session_lock",
+                          side_effect=RuntimeError("Another Photo Offloader import session is already running.")):
+            self.assertEqual(app.main(["--source", str(self.card), "--no-usb"]), 0)
+        self.assertEqual(app.list_import_history(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

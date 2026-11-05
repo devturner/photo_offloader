@@ -4,6 +4,19 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Changed
+- **The dashboard is now a local web app** (`dashboard_web/index.html`, served on `127.0.0.1` by `dashboard_server.py`, state from `dashboard_core.py`) instead of a Tk window. It follows macOS light/dark mode, shows a headline status, a four-step pipeline (card, Mac archive, USB, Google Photos), live progress with a speed graph, and recent activity. Controls are hidden behind a **⋯** menu; Back up/Sync actions appear on a card only when they apply. It opens in a native window when `pywebview` is installed and in the browser otherwise (`PHOTO_OFFLOADER_DASHBOARD_MODE=browser` forces the browser). `photo_offloader_ui.py` is now the single-instance launcher. **tkinter is no longer required** and the installer no longer checks for it.
+- The menu bar is slimmer (Open Dashboard, Copy to USB when a drive is connected, Pause/Resume, Stop, Quit) and refreshes itself every few seconds.
+
+### Added
+- **Persistent import history.** Every import, USB backup and catalog update is recorded in the catalog (`import_history`, latest 500 runs), so history survives restarts and reinstalls. The result of the last transfer fades after 10 minutes; failures stay until dismissed; **Clear** deletes the history.
+- Dashboard server hardening: per-session token in a custom header, `Host` and `Origin` validation, JSON-only writes, single-file static serving with a Content-Security-Policy, no CORS, and idle shutdown. The launcher is single-instance and serialised by a lock.
+- `photo_offloader_service.sh stop --keep-ui` stops only the trigger and leaves the menu bar and dashboards running.
+
+### Fixed
+- **Stopping Photo Offloader from the menu bar left no way to start it again.** The Stop action unloaded the menu-bar agent itself, so the menu was torn down while on screen (greyed out, including Quit) and nothing offered Start. The menu bar and dashboard now stay alive in a *stopped* state with a **Start** item/button.
+- The dashboard no longer shows "copying" forever when the importer dies: an active status that nobody is updating is reported as *interrupted*. A Google Photos sync that died mid-upload is likewise reported as interrupted instead of "uploading" indefinitely.
+
 ### Fixed
 - **A second card with the same volume name was never imported.** The trigger kept successful handled-state across unmount keyed only on the `/Volumes/<name>/DCIM` path, so every later card from the same camera body (same volume name) was suppressed as "already handled". Handled-state now records the card's volume UUID, and a different card at the same path starts a new import.
 - **Files outside the recognised extension list were silently left on the card while the import reported success.** The scan now covers `PRIVATE` and `MP_ROOT` (Sony/Canon/Panasonic video) as well as `DCIM`, recognises more formats (`.hif`, `.x3f`, `.crw`, `.mxf`, ...; `RAW_EXTENSIONS` and the import filter had drifted apart and are now a single definition), and copies every other file to an `Other` folder, logging the unrecognised extensions. `Other` files are included in USB backup.

@@ -164,7 +164,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
     def test_import_start_requests_dashboard_open(self):
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Opened progress dashboard", self.log.read_text())
+        self.assertIn("Requested progress dashboard", self.log.read_text())
 
     def test_default_import_runs_without_opening_terminal(self):
         (self.install / ".terminal-output-enabled").unlink()

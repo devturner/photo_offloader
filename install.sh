@@ -69,7 +69,7 @@ fi
 
 mkdir -p "$INSTALL_DIR" "$HOME/Library/LaunchAgents"
 
-for file in "$SCRIPT_NAME" "$TRIGGER_NAME" "photo_offloader_import_supervisor.sh" "photo_offloader_service.sh" "$UI_NAME" "$MENUBAR_NAME" "photo_offloader_backup_launcher.py" "google_photos_sync.py" "VERSION" "requirements.txt" "requirements-ui.txt"; do
+for file in "$SCRIPT_NAME" "$TRIGGER_NAME" "photo_offloader_import_supervisor.sh" "photo_offloader_service.sh" "dashboard_core.py" "dashboard_server.py" "menubar_model.py" "dashboard_web/index.html" "$UI_NAME" "$MENUBAR_NAME" "photo_offloader_backup_launcher.py" "google_photos_sync.py" "VERSION" "requirements.txt" "requirements-ui.txt"; do
   if [[ ! -f "$SCRIPT_DIR/$file" ]]; then
     echo "Error: $file not found in $SCRIPT_DIR."
     exit 1
@@ -80,6 +80,11 @@ cp "$SCRIPT_DIR/$SCRIPT_NAME" "$SCRIPT_PATH"
 cp "$SCRIPT_DIR/$TRIGGER_NAME" "$TRIGGER_PATH"
 cp "$SCRIPT_DIR/photo_offloader_import_supervisor.sh" "$INSTALL_DIR/photo_offloader_import_supervisor.sh"
 cp "$SCRIPT_DIR/photo_offloader_service.sh" "$INSTALL_DIR/photo_offloader_service.sh"
+cp "$SCRIPT_DIR/dashboard_core.py" "$INSTALL_DIR/dashboard_core.py"
+cp "$SCRIPT_DIR/dashboard_server.py" "$INSTALL_DIR/dashboard_server.py"
+cp "$SCRIPT_DIR/menubar_model.py" "$INSTALL_DIR/menubar_model.py"
+mkdir -p "$INSTALL_DIR/dashboard_web"
+cp "$SCRIPT_DIR/dashboard_web/index.html" "$INSTALL_DIR/dashboard_web/index.html"
 cp "$SCRIPT_DIR/$UI_NAME" "$INSTALL_DIR/$UI_NAME"
 cp "$SCRIPT_DIR/$MENUBAR_NAME" "$INSTALL_DIR/$MENUBAR_NAME"
 cp "$SCRIPT_DIR/photo_offloader_backup_launcher.py" "$INSTALL_DIR/photo_offloader_backup_launcher.py"
@@ -127,14 +132,12 @@ PYBUILD
 
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/python3" -m pip install --quiet --upgrade pip
-if ! "$VENV_DIR/bin/python3" -c "import tkinter" >/dev/null 2>&1; then
-  PYTHON_MINOR="$("$VENV_DIR/bin/python3" -c 'import sys; print("%s.%s" % sys.version_info[:2])')"
-  echo "Error: tkinter is missing from this Python installation."
-  echo "For Homebrew Python, try: brew install python-tk@$PYTHON_MINOR"
-  exit 1
-fi
 "$VENV_DIR/bin/python3" -m pip install --quiet -r "$INSTALL_DIR/requirements.txt"
 "$VENV_DIR/bin/python3" -m pip install --quiet -r "$INSTALL_DIR/requirements-ui.txt"
+# Optional: a native dashboard window. Without it the dashboard opens in your browser.
+if ! "$VENV_DIR/bin/python3" -m pip install --quiet "pywebview>=5.0" >/dev/null 2>&1; then
+  echo "Note: pywebview could not be installed; the dashboard will open in your web browser instead."
+fi
 
 cat > "$PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

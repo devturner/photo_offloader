@@ -193,6 +193,66 @@ grep -F -- "$pattern" "{self.running}" | cut -d' ' -f1 | grep .
         self.assertFalse([c for c in self.launchctl_calls() if c.startswith("bootstrap")],
                          "an already-loaded agent must not be bootstrapped again")
 
+    # ------------------------------------------------ --keep-ui (menu bar / dashboard Stop)
+    def test_stop_keep_ui_leaves_the_menu_bar_and_dashboards_running(self):
+        # The menu bar's Stop used to unload the menu bar itself, stranding the user with a
+        # dead, greyed-out menu and no way to start the service again.
+        self.pretend_running(777, self.dashboard)
+        result = self.run_service("stop", "--keep-ui")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.loaded / TRIGGER).exists(), "the trigger must still be stopped")
+        self.assertTrue((self.loaded / MENUBAR).exists(), "the menu bar must stay loaded")
+        self.assertFalse(self.killed.exists(), "dashboards must stay open")
+        self.assertIn("start", result.stdout.lower())
+
+    def test_after_a_keep_ui_stop_status_shows_a_stopped_service_with_a_live_menu_bar(self):
+        self.run_service("stop", "--keep-ui")
+        status = self.run_service("status")
+        self.assertEqual(status.returncode, 3)
+        self.assertRegex(status.stdout, r"Service:\s+stopped")
+        self.assertRegex(status.stdout, r"Menu bar:\s+running")
+
+    def test_start_after_a_keep_ui_stop_only_needs_to_load_the_trigger(self):
+        self.run_service("stop", "--keep-ui")
+        self.calls.unlink()
+        result = self.run_service("start")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.loaded / TRIGGER).exists())
+        bootstraps = [c for c in self.launchctl_calls() if c.startswith("bootstrap")]
+        self.assertEqual(len(bootstraps), 1)
+        self.assertTrue(bootstraps[0].endswith(f"{TRIGGER}.plist"))
+
+    def test_keep_ui_still_refuses_to_interrupt_a_transfer_by_default(self):
+        self.pretend_running(4242, self.importer)
+        result = self.run_service("stop", "--keep-ui")
+        self.assertEqual(result.returncode, 3)
+        self.assertTrue((self.loaded / TRIGGER).exists())
+
+    def test_keep_ui_force_cancels_the_transfer_and_keeps_the_ui(self):
+        self.pretend_running(4242, self.importer)
+        self.pretend_running(777, self.dashboard)
+        result = self.run_service("stop", "--keep-ui", "--force")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        killed = self.killed.read_text()
+        self.assertIn("-TERM 4242", killed)
+        self.assertNotIn("777", killed, "the dashboard must not be closed")
+        self.assertTrue((self.loaded / MENUBAR).exists())
+
+    def test_keep_ui_wait_finishes_the_transfer_then_stops_without_touching_the_ui(self):
+        self.pretend_running(4242, self.importer)
+        finisher = subprocess.Popen(["/bin/bash", "-c", f'sleep 0.5; : > "{self.running}"'])
+        self.addCleanup(finisher.wait)
+        result = self.run_service("stop", "--keep-ui", "--wait")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.loaded / TRIGGER).exists())
+        self.assertTrue((self.loaded / MENUBAR).exists())
+
+    def test_keep_ui_on_an_already_stopped_service_is_a_no_op(self):
+        self.run_service("stop", "--keep-ui")
+        again = self.run_service("stop", "--keep-ui")
+        self.assertEqual(again.returncode, 0)
+        self.assertIn("already stopped", again.stdout.lower())
+
     # ---------------------------------------------------------------- usage
     def test_unknown_command_prints_usage(self):
         result = self.run_service("explode")

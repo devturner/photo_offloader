@@ -7,11 +7,14 @@ import os
 import signal
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 try:
     import rumps
 except ImportError as exc:  # pragma: no cover - dependency is installed by install.sh
     raise SystemExit("Photo Offloader menu-bar UI requires rumps. Re-run ./install.sh.") from exc
+
+from menubar_model import Snapshot, menu_entries, menu_title, parse_status  # noqa: E402
 
 INSTALL_DIR = Path.home() / "Library" / "Application Support" / "PhotoOffloader"
 PAUSE_FILE = INSTALL_DIR / ".paused"
@@ -26,20 +29,44 @@ PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 
 
 class PhotoOffloaderMenuBar(rumps.App):
+    """The menu bar stays alive whether or not the service runs, so it can always offer Start."""
+
     def __init__(self) -> None:
         super().__init__("Photo Offloader", title="📷", quit_button=None)
-        self.pause_item = rumps.MenuItem(self.pause_title(), callback=self.toggle_pause)
-        self.backup_item = rumps.MenuItem("Copy to USB Drive", callback=self.copy_to_usb)
-        self.catalog_item = rumps.MenuItem("Update File Catalog", callback=self.update_catalog)
-        self.menu = [
-            rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
-            self.backup_item,
-            self.catalog_item,
-            self.pause_item,
-            None,
-            rumps.MenuItem("Stop Photo Offloader…", callback=self.stop_service),
-            rumps.MenuItem("Quit Menu Bar (Service Keeps Running)", callback=self.quit_app),
-        ]
+        self.handlers = {
+            "open_dashboard": self.open_dashboard, "copy_usb": self.copy_to_usb,
+            "pause": self.toggle_pause, "stop": self.stop_service,
+            "start": self.start_service, "quit": self.quit_app,
+        }
+        self._snapshot: Optional[Snapshot] = None
+        self.refresh()
+        # Pick up changes made elsewhere (the dashboard, the command line, a crash).
+        self._timer = rumps.Timer(self.refresh, 3)
+        self._timer.start()
+
+    @staticmethod
+    def read_snapshot() -> Snapshot:
+        usb = USB_VOLUME.is_mount()
+        try:
+            result = subprocess.run(["/bin/bash", str(SERVICE_SCRIPT), "status"], check=False,
+                                    capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            return Snapshot(running=False, usb=usb)
+        return parse_status(result.stdout, result.returncode, usb=usb)
+
+    def refresh(self, _sender: object = None) -> None:
+        snapshot = self.read_snapshot()
+        if snapshot == self._snapshot:
+            return  # rebuilding an open menu would close it under the user's cursor
+        self._snapshot = snapshot
+        self.title = menu_title(snapshot)
+        self.menu.clear()
+        for entry in menu_entries(snapshot):
+            if entry.key is None:
+                self.menu.add(rumps.separator)
+            else:
+                handler = self.handlers.get(entry.key) if entry.enabled else None
+                self.menu.add(rumps.MenuItem(entry.title, callback=handler))
 
     def copy_to_usb(self, _sender: object = None) -> None:
         if not USB_VOLUME.is_mount():
@@ -55,20 +82,6 @@ class PhotoOffloaderMenuBar(rumps.App):
         except OSError as exc:
             rumps.notification("Photo Offloader", "Could not start USB backup", str(exc))
 
-    def update_catalog(self, _sender: object = None) -> None:
-        try:
-            subprocess.Popen([str(PYTHON), str(IMPORTER_SCRIPT), "--update-catalog"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.open_dashboard()
-            rumps.notification("Photo Offloader", "Catalog update started",
-                               "Scanning the Mac archive and mounted USB backup.")
-        except OSError as exc:
-            rumps.notification("Photo Offloader", "Could not update catalog", str(exc))
-
-    @staticmethod
-    def pause_title() -> str:
-        return "Resume Automatic Imports" if PAUSE_FILE.exists() else "Pause Automatic Imports"
-
     def open_dashboard(self, _sender: object = None) -> None:
         subprocess.Popen([str(PYTHON), str(DASHBOARD_SCRIPT)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -80,7 +93,6 @@ class PhotoOffloaderMenuBar(rumps.App):
             except OSError as exc:
                 rumps.notification("Photo Offloader", "Could not resume", str(exc))
                 return
-            self.pause_item.title = self.pause_title()
             rumps.notification("Photo Offloader", "Automatic imports resumed",
                                "Checking for a camera card now.")
             # Reset trigger deduplication: a card may have been inserted while paused.
@@ -91,6 +103,7 @@ class PhotoOffloaderMenuBar(rumps.App):
                 pass
             subprocess.Popen(["/bin/bash", str(TRIGGER_SCRIPT)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.refresh()
         else:
             try:
                 INSTALL_DIR.mkdir(parents=True, exist_ok=True)
@@ -98,9 +111,9 @@ class PhotoOffloaderMenuBar(rumps.App):
             except OSError as exc:
                 rumps.notification("Photo Offloader", "Could not pause", str(exc))
                 return
-            self.pause_item.title = self.pause_title()
             rumps.notification("Photo Offloader", "Automatic imports paused",
                                "Already-running copies will continue safely.")
+            self.refresh()
 
     @staticmethod
     def transfer_running() -> bool:
@@ -112,11 +125,10 @@ class PhotoOffloaderMenuBar(rumps.App):
         return bool(result.stdout.strip())
 
     def stop_service(self, _sender: object = None) -> None:
-        """Shut down the whole background service (trigger + menu bar), not just this UI.
+        """Stop the background service (the trigger that watches for cards).
 
-        Quitting the menu bar leaves the trigger agent polling for cards. This asks
-        photo_offloader_service.sh to stop everything; a running transfer is only
-        interrupted if the user explicitly chooses to cancel it.
+        The menu bar and any open dashboard stay alive so they can show "stopped" and offer
+        Start. A running transfer is only interrupted if the user explicitly chooses to cancel it.
         """
         flags: list[str] = []
         if self.transfer_running():
@@ -138,12 +150,30 @@ class PhotoOffloaderMenuBar(rumps.App):
         ) != 1:
             return
         try:
-            # Detached: the script unloads this menu-bar agent as its final step.
-            subprocess.Popen(["/bin/bash", str(SERVICE_SCRIPT), "stop", *flags],
+            # --keep-ui: only the trigger stops. This menu bar stays alive (showing "stopped"
+            # with a Start item) instead of being torn down along with the service.
+            subprocess.Popen(["/bin/bash", str(SERVICE_SCRIPT), "stop", "--keep-ui", *flags],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)
         except OSError as exc:
             rumps.notification("Photo Offloader", "Could not stop the service", str(exc))
+            return
+        self.refresh()
+
+    def start_service(self, _sender: object = None) -> None:
+        try:
+            result = subprocess.run(["/bin/bash", str(SERVICE_SCRIPT), "start"], check=False,
+                                    capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            rumps.notification("Photo Offloader", "Could not start the service", str(exc))
+            return
+        if result.returncode != 0:
+            rumps.notification("Photo Offloader", "Could not start the service",
+                               (result.stderr or result.stdout).strip()[:200])
+        else:
+            rumps.notification("Photo Offloader", "Photo Offloader started",
+                               "Camera cards will be imported again.")
+        self.refresh()
 
     def quit_app(self, _sender: object = None) -> None:
         """Stop the dashboard and unload the KeepAlive menu-bar agent before exiting."""
