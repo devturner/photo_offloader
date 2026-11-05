@@ -140,6 +140,14 @@ class TestSlots(PageTestCase):
                                         "Files": "18 new · 2,378 on card", "Took": "1m 40s",
                                         "Remaining": "Done"})
 
+    def test_a_run_that_did_not_finish_is_not_called_done(self):
+        self.show("failed")
+        self.assertEqual(self.slots()["Remaining"], "—")
+        sandbox = self.load("idle")
+        sandbox.record(outcome="canceled")
+        self.open_page()
+        self.assertEqual(self.slots()["Remaining"], "—")
+
     def test_a_resting_panel_has_no_slots_or_steps(self):
         for state in RESTING_STATES:
             with self.subTest(state=state):

@@ -410,7 +410,7 @@ function renderHero(s) {
         slot(f ? "Average speed" : "Speed", v.speed_bps > 0 ? fmtBytes(v.speed_bps) + "/s" : null),
         slot("Files", files),
         slot(f ? "Took" : "Elapsed", v.elapsed_seconds > 0 ? fmtDuration(v.elapsed_seconds) : null),
-        slot("Remaining", f ? "Done" : (v.eta_seconds != null ? fmtDuration(v.eta_seconds) : null)))));
+        slot("Remaining", f ? (p === 100 ? "Done" : null) : (v.eta_seconds != null ? fmtDuration(v.eta_seconds) : null)))));
     const svg = document.createElementNS(SVGNS, "svg");
     svg.setAttribute("class", "spark"); svg.setAttribute("viewBox", "0 0 600 44"); svg.setAttribute("preserveAspectRatio", "none"); svg.setAttribute("aria-hidden", "true");
     const sp = sparkPaths(v.speed_history, 600, 44);
