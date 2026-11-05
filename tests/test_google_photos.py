@@ -89,6 +89,25 @@ class TestGooglePhotosSync(unittest.TestCase):
             self.assertEqual(payload["last_success"], success)
             self.assertEqual(payload["state"], "failed")
 
+    def test_running_is_published_before_contacting_rclone_and_keeps_its_start_time(self):
+        # User report 2026-11-04: the dashboard fell back to the import result while the
+        # sync was still talking to rclone, because "running" was only published later.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            photos = self.sync_environment(root)
+            (photos / "a.jpg").write_bytes(b"a")
+            seen = []
+            run, _ = self.fake_rclone()
+
+            def watching_run(argv, *args, **kwargs):
+                seen.append(json.loads(config.GOOGLE_STATUS_PATH.read_text()))
+                return run(argv, *args, **kwargs)
+            with patch.object(sync.subprocess, "run", watching_run):
+                self.assertEqual(sync.run_sync(), 0)
+            self.assertEqual(seen[0]["state"], "running")
+            self.assertEqual({entry["started_at"] for entry in seen if entry["state"] == "running"},
+                             {seen[0]["started_at"]})
+
     def test_missing_rclone_reports_not_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -64,7 +64,7 @@ def parse_rclone_stats_line(line: str) -> Optional[dict[str, object]]:
     }
 
 
-def publish_status(state: str, message: str) -> None:
+def publish_status(state: str, message: str, new_run: bool = False) -> None:
     config.INSTALL_DIR.mkdir(parents=True, exist_ok=True)
     try:
         previous = json.loads(config.GOOGLE_STATUS_PATH.read_text(encoding="utf-8"))
@@ -79,6 +79,11 @@ def publish_status(state: str, message: str) -> None:
     }
     if state == "complete":
         payload["last_success"] = payload["updated_at"]
+    if state == "running":
+        # One sync publishes "running" more than once; the dashboard times it from the first.
+        # ``new_run`` restarts the clock, even over a "running" left behind by a crash.
+        continuing = previous.get("state") == "running" and not new_run
+        payload["started_at"] = (previous.get("started_at") if continuing else None) or payload["updated_at"]
 
     temporary = config.GOOGLE_STATUS_PATH.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -197,6 +202,8 @@ def _sync() -> int:
         log_sync_event("Google Photos sync skipped: no new JPG/video files to upload.")
         publish_status("complete", f"Google Photos is up to date for album '{ALBUM_NAME}'.")
         return 0
+    # Say so before the slower rclone checks, so the dashboard shows the upload straight away.
+    publish_status("running", f"Preparing to upload {len(pending):,} JPG/video file(s).", new_run=True)
 
     try:
         remotes = subprocess.run(

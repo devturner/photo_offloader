@@ -96,6 +96,9 @@ class Fixture(unittest.TestCase):
                            " VALUES (?, ?, ?, 1, 1, ?, 1)",
                            (f"u{index}", str(self.paths.usb_archives[0].resolve()), f"u{index}", index))
 
+    def action_ids(self, step_id):
+        return [action["id"] for action in self.pipeline(step_id)["actions"]]
+
     def pipeline(self, step_id):
         return next(s for s in self.core.state()["pipeline"] if s["id"] == step_id)
 
@@ -129,7 +132,7 @@ class TestHeadline(Fixture):
         head = self.core.state()["headline"]
         self.assertEqual(head["title"], "NIKON Z 8 was already imported")
         self.assertNotIn("Waiting", head["detail"])
-        self.assertEqual(self.pipeline("card")["action"], {"id": "import_card", "label": "Import now"})
+        self.assertIn({"id": "import_card", "label": "Import now"}, self.pipeline("card")["actions"])
 
     def test_import_now_is_hidden_while_the_importer_is_busy(self):
         self.add_card("NIKON Z 8")
@@ -137,7 +140,7 @@ class TestHeadline(Fixture):
         self.importer_up = True
         self.write_status(state="copying", source=str(self.volumes / "NIKON Z 8" / "DCIM"),
                           files_done=1, files_total=10)
-        self.assertIsNone(self.pipeline("card")["action"])
+        self.assertEqual(self.pipeline("card")["actions"], [])
 
     def test_import_now_forgets_the_handled_card_and_rechecks(self):
         self.add_card("NIKON Z 8")
@@ -428,6 +431,93 @@ class TestLogs(Fixture):
         self.assertEqual(self.spawned, [])
 
 
+class TestEject(Fixture):
+    # User request 2026-11-04: eject the card and the USB drive from their cards.
+    def test_a_mounted_card_offers_eject_and_ejects_it(self):
+        self.add_card("NIKON Z 8")
+        self.assertIn({"id": "eject_card", "label": "Eject"}, self.pipeline("card")["actions"])
+        result = self.core.act("eject_card")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.ran[-1], ["/usr/sbin/diskutil", "eject", str(self.volumes / "NIKON Z 8")])
+
+    def test_the_card_cannot_be_ejected_while_it_is_being_imported(self):
+        self.add_card("NIKON Z 8")
+        self.importer_up = True
+        self.write_status(state="copying", phase="copy", stage="copy", bytes_done=1, bytes_total=4)
+        self.assertEqual(self.pipeline("card")["actions"], [])
+        ran_before = list(self.ran)
+        self.assertFalse(self.core.act("eject_card")["ok"])
+        self.assertFalse(any("eject" in argv for argv in self.ran[len(ran_before):]))
+
+    def test_the_usb_drive_can_be_ejected_when_nothing_is_using_it(self):
+        self.usb.mkdir()
+        self.assertTrue(self.core.act("eject_usb")["ok"])
+        self.assertEqual(self.ran[-1], ["/usr/sbin/diskutil", "eject", str(self.usb)])
+        self.importer_up = True
+        self.write_status(state="copying", phase="USB backup", stage="usb", bytes_done=1, bytes_total=4)
+        self.core._cache.clear()
+        self.assertFalse(self.core.act("eject_usb")["ok"])
+
+    def test_nothing_to_eject_says_so(self):
+        self.assertFalse(self.core.act("eject_card")["ok"])
+        self.assertFalse(self.core.act("eject_usb")["ok"])
+
+
+class TestRunFlow(Fixture):
+    # User feedback 2026-11-04: the panel fell back to the "Imported" screen between
+    # copying and uploading; it should stay on the transfer and end with a summary.
+    def google_configured(self):
+        (self.data / "preferences.json").write_text(json.dumps({"google_photos": {"configured": True}}))
+
+    def google_status(self, state, seconds_ago):
+        stamp = datetime.fromtimestamp(self.now - seconds_ago).astimezone().isoformat(timespec="seconds")
+        (self.install / "google_photos_status.json").write_text(json.dumps({"state": state, "updated_at": stamp}))
+
+    def finished_import(self, seconds_ago=3):
+        self.record(started_at=self.now - seconds_ago - 95, finished_at=self.now - seconds_ago, files=2378,
+                    copied=18, details={"new": {"JPG": 9, "RAW": 9}, "new_bytes": 400 * 1024**2})
+
+    def test_the_moment_before_the_upload_starts_stays_in_the_transfer_view(self):
+        self.google_configured()
+        self.google_status("complete", seconds_ago=600)      # last sync was before this import
+        self.finished_import(seconds_ago=2)
+        state = self.core.state()
+        activity = state["activity"]
+        self.assertEqual((activity["kind"], activity["title"]), ("upload", "Starting upload to Google Photos"))
+        self.assertEqual([s["state"] for s in activity["stages"]][-1], "active")
+        self.assertEqual(state["headline"]["tone"], "active")
+
+    def test_a_finished_run_ends_with_a_summary_in_the_same_panel(self):
+        self.google_configured()
+        self.finished_import(seconds_ago=60)
+        self.google_status("complete", seconds_ago=30)       # uploaded after the import
+        state = self.core.state()
+        self.assertIsNone(state["activity"])
+        finished = state["finished"]
+        self.assertEqual(finished["title"], "Imported from NIKON Z 8")
+        self.assertEqual([(s["id"], s["state"]) for s in finished["stages"]],
+                         [("scan", "done"), ("metadata", "done"), ("copy", "done"), ("usb", "skipped"),
+                          ("upload", "done")])
+        self.assertEqual((finished["percent"], finished["files_done"], finished["files_total"]), (100.0, 18, 2378))
+        self.assertEqual(finished["elapsed_seconds"], 95)
+        self.assertEqual(finished["bytes_done"], 400 * 1024**2)
+
+    def test_the_summary_fades_like_the_result_and_can_be_dismissed(self):
+        self.finished_import(seconds_ago=60)
+        self.assertIsNotNone(self.core.state()["finished"])
+        self.core.act("dismiss_last")
+        self.assertIsNone(self.core.state()["finished"])
+        self.finished_import(seconds_ago=60)
+        self.advance(core.LAST_TRANSFER_TTL_SECONDS + 1)
+        self.assertIsNone(self.core.state()["finished"])
+
+    def test_a_failed_upload_marks_its_step(self):
+        self.google_configured()
+        self.finished_import(seconds_ago=60)
+        self.google_status("failed", seconds_ago=30)
+        self.assertEqual(self.core.state()["finished"]["stages"][-1]["state"], "error")
+
+
 class TestTheme(Fixture):
     # User feedback 2026-11-04: no way to switch light/dark from the dashboard.
     def test_theme_defaults_to_following_the_system(self):
@@ -455,19 +545,19 @@ class TestPipeline(Fixture):
         self.assertEqual(self.pipeline("usb")["detail"], "2 files backed up")
 
     def test_usb_offers_a_backup_only_when_it_is_connected_and_nothing_is_running(self):
-        self.assertIsNone(self.pipeline("usb")["action"])
+        self.assertEqual(self.pipeline("usb")["actions"], [])
         self.usb.mkdir()
         self.advance(10)
-        self.assertEqual(self.pipeline("usb")["action"]["id"], "usb_backup")
+        self.assertEqual(self.action_ids("usb"), ["usb_backup", "eject_usb"])
         self.importer_up = True
         self.write_status(state="copying", phase="card-to-ssd", source="/Volumes/X")
         self.advance(10)
-        self.assertIsNone(self.pipeline("usb")["action"])
-        self.assertIsNone(self.pipeline("cloud")["action"])
+        self.assertEqual(self.pipeline("usb")["actions"], [])
+        self.assertEqual(self.pipeline("cloud")["actions"], [])
 
     def test_catalog_maintenance_is_never_a_permanent_button(self):
-        self.assertTrue(all(step["action"] is None or step["action"]["id"] != "update_catalog"
-                            for step in self.core.state()["pipeline"]))
+        self.assertTrue(all(action["id"] != "update_catalog"
+                            for step in self.core.state()["pipeline"] for action in step["actions"]))
 
     def test_google_photos_not_configured(self):
         step = self.pipeline("cloud")
@@ -476,7 +566,7 @@ class TestPipeline(Fixture):
     def test_google_photos_configured_and_idle(self):
         (self.data / "preferences.json").write_text(json.dumps({"google_photos": {"configured": True}}))
         step = self.pipeline("cloud")
-        self.assertEqual((step["state"], step["action"]["id"]), ("ok", "google_sync"))
+        self.assertEqual((step["state"], step["actions"][0]["id"]), ("ok", "google_sync"))
 
     def rclone_config(self, text):
         config = Path(self.tmp.name) / "rclone.conf"
@@ -488,7 +578,7 @@ class TestPipeline(Fixture):
         # Google Photos again although rclone still had the gphotos remote.
         self.rclone_config("[other]\ntype = drive\n\n[gphotos]\ntype = google photos\ntoken = {\"secret\": 1}\n")
         step = self.pipeline("cloud")
-        self.assertEqual((step["state"], step["action"]["id"]), ("ok", "google_sync"))
+        self.assertEqual((step["state"], step["actions"][0]["id"]), ("ok", "google_sync"))
 
     def test_another_rclone_remote_alone_is_not_google_photos(self):
         self.rclone_config("[gphotos-old]\ntype = drive\n[drive]\ntype = drive\n")
@@ -560,8 +650,7 @@ class TestPipeline(Fixture):
     def test_upload_right_after_an_import_continues_the_same_steps(self):
         # User feedback 2026-11-04: the upload should be a step of the import, not a new view.
         (self.data / "preferences.json").write_text(json.dumps({"google_photos": {"configured": True}}))
-        self.write_status(state="complete", phase="usb-backup", stage="usb", usb_planned=True,
-                          source=str(self.volumes / "NIKON Z 8"))
+        self.record(usb=True, started_at=self.now - 200, finished_at=self.now - 60)
         self.start_upload()
         state = self.core.state()
         self.assertEqual([(s["id"], s["state"]) for s in state["activity"]["stages"]],
@@ -592,7 +681,7 @@ class TestPipeline(Fixture):
         state = self.core.state()
         self.assertIsNone(state["activity"])
         step = self.pipeline("cloud")
-        self.assertEqual((step["state"], step["headline"], step["action"]["label"]),
+        self.assertEqual((step["state"], step["headline"], step["actions"][0]["label"]),
                          ("error", "Upload interrupted", "Resume"))
 
     def test_a_failed_or_interrupted_upload_is_raised_to_the_headline(self):
@@ -606,7 +695,7 @@ class TestPipeline(Fixture):
         (self.install / "google_photos_status.json").write_text(
             json.dumps({"state": "failed", "message": "rclone exited with status 7"}))
         step = self.pipeline("cloud")
-        self.assertEqual((step["state"], step["action"]["label"]), ("error", "Retry"))
+        self.assertEqual((step["state"], step["actions"][0]["label"]), ("error", "Retry"))
 
 
 class TestActions(Fixture):

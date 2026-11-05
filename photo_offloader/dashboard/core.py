@@ -19,7 +19,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 
 from photo_offloader import catalog, config
 from photo_offloader.google_photos import parse_rclone_stats_line
@@ -57,6 +57,7 @@ IMPORT_STAGES = (("scan", "Scan card"), ("metadata", "Read photo info"),
                  ("copy", "Copy new files"), ("usb", "Back up to USB"),
                  ("upload", "Upload to Google Photos"))
 UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60   # an upload this soon after an import continues its steps
+UPLOAD_START_GRACE_SECONDS = 30           # importer done, sync process still starting
 THEMES = ("system", "light", "dark")
 SPEED_WINDOW_SAMPLES = 10
 def google_remote_name() -> str:
@@ -104,6 +105,18 @@ def parse_timestamp(value: object) -> Optional[float]:
         return datetime.fromisoformat(str(value)).timestamp()
     except (TypeError, ValueError, OSError):
         return None
+
+
+def stages_after_import(row: Dict[str, Any], upload_state: str) -> List[Dict[str, str]]:
+    """Import steps for a finished (history) run, with the Google Photos step as given."""
+    outcome, usb, message = row["outcome"], bool(row["usb"]), str(row.get("message") or "")
+    usb_failed = outcome == "failed" and usb and "USB" in message
+    copy_state = "done" if outcome == "complete" or usb_failed else (
+        "error" if outcome == "failed" else "skipped")
+    states = {"scan": "done", "metadata": "done", "copy": copy_state,
+              "usb": "error" if usb_failed else ("done" if usb and outcome == "complete" else "skipped"),
+              "upload": upload_state if outcome == "complete" else "skipped"}
+    return [{"id": step_id, "label": label, "state": states[step_id]} for step_id, label in IMPORT_STAGES]
 
 
 def plural(count: int, noun: str) -> str:
@@ -475,6 +488,7 @@ class DashboardCore:
         info: Dict[str, Any] = {
             "configured": configured, "state": state, "message": str(status.get("message", "") or ""),
             "last_success": status.get("last_success"), "progress": None,
+            "updated_at": parse_timestamp(status.get("updated_at")),
         }
         if state == "running" and not self.google_running():
             # The sync only writes status on state changes, so age says nothing; a missing
@@ -482,8 +496,7 @@ class DashboardCore:
             info["state"], info["message"] = "interrupted", "The last upload was interrupted."
         elif state == "running":
             info["progress"] = self._upload_progress()
-            # A running sync writes its status once, when it starts.
-            info["started_at"] = parse_timestamp(status.get("updated_at"))
+            info["started_at"] = parse_timestamp(status.get("started_at") or status.get("updated_at"))
         return info
 
     @staticmethod
@@ -510,16 +523,28 @@ class DashboardCore:
                 return False
         return self._cached("rclone", 30.0, probe)
 
-    def _upload_activity(self, google: Dict[str, Any], status: Dict[str, Any],
+    def _upload_state_after(self, row: Dict[str, Any], google: Dict[str, Any], now: float) -> str:
+        """Where the Google Photos step stands for the import in ``row``."""
+        if not google["configured"] or row["outcome"] != "complete":
+            return "skipped"
+        if google["state"] == "running":
+            return "active"
+        if google["updated_at"] is None or google["updated_at"] < float(row["finished_at"]) - 1:
+            # Not run since this import: the importer launches it as its last step.
+            starting = now - float(row["finished_at"]) < UPLOAD_START_GRACE_SECONDS
+            return "starting" if starting else "skipped"
+        return "error" if google["state"] in ("failed", "error", "interrupted") else "done"
+
+    def _upload_activity(self, google: Dict[str, Any], row: Optional[Dict[str, Any]],
                          now: float) -> Optional[Dict[str, Any]]:
-        if google["state"] != "running":
+        follows_import = (row is not None and row["kind"] == "import" and row["outcome"] == "complete"
+                          and now - float(row["finished_at"]) < UPLOAD_FOLLOWS_IMPORT_SECONDS)
+        upload_state = self._upload_state_after(row, google, now) if follows_import else ""
+        if google["state"] != "running" and upload_state != "starting":
             self._upload_files = None
             return None
         progress = google["progress"] or {}
-        # Right after an import the upload is that import's last step: keep its steps and card.
-        follows_import = (status.get("state") == "complete" and "usb_planned" in status
-                          and (self._status_age(status, now) or 0) < UPLOAD_FOLLOWS_IMPORT_SECONDS)
-        source = str(status.get("source", "") or "").rsplit("/", 1)[-1] if follows_import else ""
+        source = str(row.get("source") or "") if follows_import else ""
         files_done, files_total = progress.get("files_done"), progress.get("files_total")
         if files_total:
             what = f"{files_done:,} of {plural(files_total, 'file')}"
@@ -533,15 +558,35 @@ class DashboardCore:
         recent = list(self._samples)[-SPEED_WINDOW_SAMPLES:]
         speed = (sum(recent) / len(recent) if recent
                  else parse_display_bytes(str(progress.get("speed") or "").replace("/s", "")))
-        return {"kind": "upload", "stage": "upload", "title": "Uploading to Google Photos",
+        starting = upload_state == "starting"
+        return {"kind": "upload", "stage": "upload",
+                "title": "Starting upload to Google Photos" if starting else "Uploading to Google Photos",
                 "detail": " · ".join(part for part in (source, what) if part),
                 "percent": progress.get("percent"), "indeterminate": not progress,
                 "bytes_done": done, "bytes_total": total, "speed_bps": speed,
                 "eta_seconds": self._eta_seconds(progress.get("eta")),
-                "elapsed_seconds": max(now - started, 0.0) if started else 0.0,
+                "elapsed_seconds": max(now - started, 0.0) if started and not starting else 0.0,
                 "files_done": files_done or 0, "files_total": files_total or 0, "new_files": 0,
                 "source": "", "speed_history": [round(sample) for sample in self._samples],
-                "stages": import_stages(status, "upload", True) if follows_import else None}
+                "stages": stages_after_import(row, "active") if follows_import else None}
+
+    def _finished(self, last: Optional[Dict[str, Any]], google: Dict[str, Any],
+                  now: float) -> Optional[Dict[str, Any]]:
+        """The end of an import, shown in the transfer panel until it fades or is dismissed."""
+        if last is None or last["kind"] != "import":
+            return None
+        details = last.get("details") or {}
+        new_files = sum(int(v) for v in (details.get("new") or {}).values()) if "new" in details \
+            else int(last["copied"])
+        new_bytes = int(details.get("new_bytes") or 0)
+        duration = float(last["duration_seconds"])
+        upload_state = self._upload_state_after(last, google, now)
+        return {"title": last["title"], "detail": last["summary"], "tone": last["tone"],
+                "percent": 100.0 if last["outcome"] == "complete" else None,
+                "bytes_done": new_bytes, "bytes_total": new_bytes,
+                "speed_bps": new_bytes / duration if duration > 0 else 0.0,
+                "files_done": new_files, "files_total": int(last["files"]), "elapsed_seconds": duration,
+                "stages": stages_after_import(last, "pending" if upload_state == "starting" else upload_state)}
 
     def _upload_progress(self) -> Optional[Dict[str, Any]]:
         try:
@@ -621,11 +666,9 @@ class DashboardCore:
     def history(self, limit: int = 15) -> List[Dict[str, Any]]:
         return [self.describe_run(row) for row in catalog.list_import_history(limit=limit)]
 
-    def _last_transfer(self, now: float) -> Optional[Dict[str, Any]]:
-        rows = catalog.list_import_history(limit=1)
-        if not rows:
+    def _last_transfer(self, now: float, row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if row is None:
             return None
-        row = rows[0]
         if int(row["id"]) <= int(self._dashboard_state().get("dismissed_history_id", 0) or 0):
             return None
         # Failures stay until dismissed; everything else fades after a while.
@@ -643,11 +686,13 @@ class DashboardCore:
         google = self._google(now)
         import_activity = self._activity(status, now, google["configured"])
         interrupted = self._interrupted(status, now)
-        last = self._last_transfer(now)
+        rows = catalog.list_import_history(limit=1)
+        latest = rows[0] if rows else None
+        last = self._last_transfer(now, latest)
         counts = self.archive_counts()
         usb_mounted = self.usb_mounted()
         busy = import_activity is not None          # the importer is working (uploads don't block it)
-        activity = import_activity or self._upload_activity(google, status, now)
+        activity = import_activity or self._upload_activity(google, latest, now)
 
         handled = self.card_handled(card)
         headline = self._headline(running, paused, card, activity, interrupted, last, status, google, handled)
@@ -661,6 +706,7 @@ class DashboardCore:
             "activity": activity,
             "interrupted": interrupted,
             "last_transfer": last,
+            "finished": None if activity else self._finished(last, google, now),
             "pipeline": self._pipeline(card, import_activity, counts, usb_mounted, google, busy, now,
                                        handled and running and not paused),
             "upload": google["progress"],
@@ -714,16 +760,21 @@ class DashboardCore:
         usb = counts["usb"] if counts else None
 
         def step(step_id: str, label: str, state: str, headline: str, detail: str,
-                 action: Optional[Dict[str, str]] = None, percent: Optional[float] = None) -> Dict[str, Any]:
+                 actions: Sequence[Dict[str, str]] = (), percent: Optional[float] = None) -> Dict[str, Any]:
             return {"id": step_id, "label": label, "state": state, "headline": headline,
-                    "detail": detail, "action": action, "percent": percent}
+                    "detail": detail, "actions": list(actions), "percent": percent}
+
+        def action(action_id: str, label: str) -> Dict[str, str]:
+            return {"id": action_id, "label": label}
 
         stage = activity.get("stage") if activity else None
         if kind == "import" and stage in ("scan", "metadata"):
             card_step = step("card", "Camera card", "active", card.name if card else "Card", activity["title"])
         elif card:
+            card_actions = [] if busy else (
+                [action("import_card", "Import now")] if can_reimport else []) + [action("eject_card", "Eject")]
             card_step = step("card", "Camera card", "ok", card.name, "Already imported" if can_reimport else "Mounted",
-                             {"id": "import_card", "label": "Import now"} if can_reimport and not busy else None)
+                             card_actions)
         else:
             card_step = step("card", "Camera card", "off", "No card", "Insert a card to begin")
 
@@ -736,15 +787,15 @@ class DashboardCore:
         if kind == "import" and stage == "copy":
             archive_detail = activity["detail"] or archive_detail
         archive_step = step("archive", "Mac archive", archive_state, archive_head, archive_detail,
-                            None, activity["percent"] if kind == "import" and stage == "copy" else None)
+                            (), activity["percent"] if kind == "import" and stage == "copy" else None)
 
         if kind == "usb_backup":
             usb_step = step("usb", "USB backup", "active", "Backing up", activity["detail"],
-                            None, activity["percent"])
+                            (), activity["percent"])
         elif usb_mounted:
             usb_step = step("usb", "USB backup", "ok", "Connected",
                             f"{usb:,} files backed up" if usb else "Ready to back up",
-                            None if busy else {"id": "usb_backup", "label": "Back up now"})
+                            [] if busy else [action("usb_backup", "Back up now"), action("eject_usb", "Eject")])
         else:
             usb_step = step("usb", "USB backup", "off", "Not connected", "Plug in the backup drive")
 
@@ -756,18 +807,18 @@ class DashboardCore:
             cloud_step = step("cloud", "Google Photos", "active",
                               "Finishing upload" if progress and progress["finalizing"] else "Uploading",
                               f"{progress['transferred']} of {progress['total']}" if progress else "Preparing",
-                              None, progress["percent"] if progress else None)
+                              (), progress["percent"] if progress else None)
         elif gstate == "interrupted":
             cloud_step = step("cloud", "Google Photos", "error", "Upload interrupted",
-                              "It stopped before finishing", {"id": "google_sync", "label": "Resume"})
+                              "It stopped before finishing", [action("google_sync", "Resume")])
         elif gstate in ("failed", "error"):
             cloud_step = step("cloud", "Google Photos", "error", "Upload failed", google["message"] or "See the log",
-                              {"id": "google_sync", "label": "Retry"})
+                              [action("google_sync", "Retry")])
         else:
             uploaded = counts["uploaded"] if counts else 0
             cloud_step = step("cloud", "Google Photos", "ok", "Up to date",
                               f"{uploaded:,} files uploaded" if uploaded else "Nothing uploaded yet",
-                              None if busy else {"id": "google_sync", "label": "Sync now"})
+                              [] if busy else [action("google_sync", "Sync now")])
         return [card_step, archive_step, usb_step, cloud_step]
 
     # ---- actions ---------------------------------------------------------------------------
@@ -779,7 +830,8 @@ class DashboardCore:
         params = params or {}
         handlers: Dict[str, Callable[[], Dict[str, Any]]] = {
             "pause": self._pause, "resume": self._resume,
-            "import_card": self._import_card, "usb_backup": self._usb_backup, "update_catalog": self._update_catalog,
+            "import_card": self._import_card, "usb_backup": self._usb_backup,
+            "eject_card": self._eject_card, "eject_usb": self._eject_usb, "update_catalog": self._update_catalog,
             "google_sync": self._google_sync,
             "toggle_auto_eject": lambda: self._toggle(self.paths.auto_eject_file, "Auto-eject"),
             "toggle_terminal_output": lambda: self._toggle(self.paths.terminal_output_file, "Terminal windows"),
@@ -835,6 +887,29 @@ class DashboardCore:
             return {"ok": False, "message": f"Unknown appearance: {theme}"}
         self._save_dashboard_state(theme=theme)
         return {"ok": True, "theme": theme}
+
+    def _eject(self, volume: Path, what: str) -> Dict[str, Any]:
+        result = self._run(["/usr/sbin/diskutil", "eject", str(volume)], capture_output=True, text=True, timeout=60)
+        self._invalidate("card", "usb")
+        if result.returncode != 0:
+            reason = (result.stderr or result.stdout or "").strip() or "it may be in use"
+            return {"ok": False, "message": f"Could not eject the {what}: {reason}"}
+        return {"ok": True, "message": f"{volume.name} was ejected. You can remove it now."}
+
+    def _eject_card(self) -> Dict[str, Any]:
+        card = self.mounted_card()
+        if card is None:
+            return {"ok": False, "message": "No camera card is mounted."}
+        if self.importer_running():
+            return {"ok": False, "message": "The card is being imported. Eject it when the import has finished."}
+        return self._eject(card, "card")
+
+    def _eject_usb(self) -> Dict[str, Any]:
+        if not self.usb_mounted():
+            return {"ok": False, "message": "The backup drive is not connected."}
+        if self.importer_running():
+            return {"ok": False, "message": "A transfer is using the drive. Eject it when it has finished."}
+        return self._eject(self.paths.usb_volume, "backup drive")
 
     def _import_card(self) -> Dict[str, Any]:
         if self.paths.pause_file.exists():
