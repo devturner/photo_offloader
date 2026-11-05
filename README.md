@@ -37,11 +37,11 @@ The installer starts a menu-bar item and opens the dashboard. When a camera impo
 The dashboard is a small local web app, served only on `127.0.0.1`, shown in a native window when `pywebview` is installed (the installer tries to install it) and in your default browser otherwise. It follows macOS light/dark mode unless you choose **Light** or **Dark** under *Appearance* in the **⋯** menu (the choice is remembered), and shows:
 
 - **A headline** describing what matters right now: *Ready*, the step an import is on (*Scanning card*, *Reading photo info*, *Checking for new files*, *Copying new files*, *Backing up to USB*, *Updating file index*), *Imported from NIKON Z 8*, *Automatic imports are paused*, *Photo Offloader is stopped*, or what needs attention.
-- **Four cards**: Camera card, Mac archive, USB backup and Google Photos, each with its state and a one-line detail. Contextual actions such as **Back up now** or **Sync now** appear on a card only when they apply.
+- **Four cards**: Camera card, Mac archive, USB backup and Google Photos, each with its state and a one-line detail. Contextual actions such as **Back up now**, **Sync now** or **Eject** appear on a card only when they apply (Eject is hidden while a transfer is using that volume).
 - **Live progress** while something is running: the import's steps, a progress bar, and fixed slots for progress, speed, files (checked of total, and how many are new), elapsed and remaining time, plus a one-minute speed graph. The panel keeps one size in every state, and a value that is not known yet shows a dash instead of disappearing. Google Photos uploads use the same panel when the importer is idle.
 - **Recent activity**: the last imports (what that session copied, by type and size, then the card total), USB backups and catalog updates, stored in the persistent catalog so they survive restarts and reinstalls (the latest 500 runs are kept).
 
-Everything else is hidden behind the **⋯** menu: pause/resume automatic imports, update the file catalog, back up to USB, sync Google Photos, *Eject card after import*, *Show Terminal during imports*, *Appearance*, *View logs* (import, card detection or Google Photos log, opened in Console so it updates live), and Stop/Start. Switches and *Appearance* leave the menu open so you can see the change. The menu bar also has **View Import Log**. The dashboard window has a fixed size; Recent activity scrolls inside it (the latest 100 runs). The result of the last transfer fades after 10 minutes; a failed transfer stays until you dismiss it with **×**. **Clear** in Recent activity deletes the stored history after a confirming second click. If an import or upload process dies mid-transfer, the dashboard reports it as *interrupted* instead of showing "copying" forever.
+Everything else is hidden behind the **⋯** menu: pause/resume automatic imports, update the file catalog, back up to USB, sync Google Photos, *Eject card after import*, *Show Terminal during imports*, *Appearance*, *View logs* (import, card detection, Google Photos, or the dashboard's own log of what it showed and why; opened in Console so it updates live), and Stop/Start. Switches and *Appearance* leave the menu open so you can see the change. The menu bar also has **View Import Log**. The dashboard window has a fixed size; Recent activity scrolls inside it (the latest 100 runs). The result of the last transfer fades after 10 minutes; a failed transfer stays until you dismiss it with **×**. **Clear** in Recent activity deletes the stored history after a confirming second click. If an import or upload process dies mid-transfer, the dashboard reports it as *interrupted* instead of showing "copying" forever.
 
 Use **Copy to USB Drive** in the menu bar or dashboard to run a USB-only sync without a camera card. Both controls use a shared launch lock, so repeated clicks cannot start overlapping USB backup requests. A 15-second debounce also suppresses duplicate requests if a very fast backup finishes before a second click. The importer acquires its session lock before changing dashboard status; duplicate launches are ignored cleanly and do not overwrite the active session's progress.
 
@@ -54,12 +54,12 @@ Use **Pause Automatic Imports** before inserting a card when you do not want aut
 Photo Offloader runs as two LaunchAgents: the **trigger** (watches for cards) and the **menu-bar app**. The menu bar stays alive whether or not the service is running. **Stop Photo Offloader…** (menu bar or dashboard **⋯** menu) stops the trigger, after which the menu bar shows *stopped* with a **Start Photo Offloader** item and the dashboard shows a **Start** button. **Quit Menu Bar (Service Keeps Running)** only closes the menu-bar app. From the command line:
 
 ```bash
-~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh status
-~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh stop            # refuses while a transfer is running
-~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh stop --wait     # finish the current transfer, then stop
-~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh stop --force    # cancel the transfer and stop now
-~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh stop --disable  # also stay off at next login
-~/Library/Application\ Support/PhotoOffloader/photo_offloader_service.sh start
+~/Library/Application\ Support/PhotoOffloader/scripts/service.sh status
+~/Library/Application\ Support/PhotoOffloader/scripts/service.sh stop            # refuses while a transfer is running
+~/Library/Application\ Support/PhotoOffloader/scripts/service.sh stop --wait     # finish the current transfer, then stop
+~/Library/Application\ Support/PhotoOffloader/scripts/service.sh stop --force    # cancel the transfer and stop now
+~/Library/Application\ Support/PhotoOffloader/scripts/service.sh stop --disable  # also stay off at next login
+~/Library/Application\ Support/PhotoOffloader/scripts/service.sh start
 ```
 
 `stop` unloads the trigger first so no new import can begin, closes open dashboards, and unloads the menu-bar app last. Add `--keep-ui` to stop only the trigger and leave the menu bar and dashboards open (this is what their Stop buttons use). A transfer is never interrupted unless you pass `--force`; the importer treats the stop request like Ctrl-C, so the dashboard shows "canceled" rather than a stuck "copying" state. Without `--disable`, the service comes back at your next login.
@@ -122,7 +122,7 @@ Once the local SSD stage has succeeded, the camera card can be ejected while the
 Use `--no-usb` to skip USB backup during a camera import. USB backup can also be run independently at any time with the drive mounted, even when no camera card is connected:
 
 ```bash
-python3 camera_offloader_v2.py --backup-usb
+bin/photo-offloader-import --backup-usb
 ```
 
 The USB-only mode scans the local archive, verifies existing same-name files by SHA-256, copies missing files, and never overwrites a differing existing file.
@@ -236,7 +236,7 @@ The SQLite file catalog is stored at:
 ~/Library/Application Support/PhotoOffloaderData/catalog.sqlite3
 ```
 
-The catalog is updated automatically as files are scanned and copied. Use **Update file catalog** in the dashboard's **⋯** menu, or run `python3 camera_offloader_v2.py --update-catalog`, to explicitly initialize or refresh it. The dashboard's Mac archive and USB backup cards show the indexed file counts, and the headline shows when a refresh is running. A USB drive that is not mounted is clearly marked and its previous catalog records are preserved. This scans the Mac archive and the USB archive if the USB volume is mounted, updates file locations and cached capture-month/camera metadata, and removes stale entries for roots it successfully scans. It does not hash every file; verified hashes are preserved for unchanged files and generated by copy/verification workflows as needed. If the USB volume is not mounted, its existing catalog entries are preserved.
+The catalog is updated automatically as files are scanned and copied. Use **Update file catalog** in the dashboard's **⋯** menu, or run `bin/photo-offloader-import --update-catalog`, to explicitly initialize or refresh it. The dashboard's Mac archive and USB backup cards show the indexed file counts, and the headline shows when a refresh is running. A USB drive that is not mounted is clearly marked and its previous catalog records are preserved. This scans the Mac archive and the USB archive if the USB volume is mounted, updates file locations and cached capture-month/camera metadata, and removes stale entries for roots it successfully scans. It does not hash every file; verified hashes are preserved for unchanged files and generated by copy/verification workflows as needed. If the USB volume is not mounted, its existing catalog entries are preserved.
 
 The database is stored separately from the install directory, so it survives normal application upgrades and `./uninstall.sh`. The first run after this update automatically migrates an existing database from the former `~/Library/Application Support/PhotoOffloader/catalog.sqlite3` location. If the database is missing or unreadable, the importer falls back to normal filesystem and metadata checks; it never relies on catalog data to overwrite files.
 
@@ -305,41 +305,63 @@ python -m unittest discover -v
 Run Ruff:
 
 ```bash
-python -m ruff check camera_offloader_v2.py test_camera_offloader.py test_hardening_regressions.py test_camera_offloader_trigger.py
+python -m ruff check .
 ```
 
 The test suite includes filesystem-level copy tests, catalog caching/invalidation, hardening regressions, lock behavior, USB identity checks, video camera metadata detection, and trigger tests covering volume names with spaces and repeated `/Volumes` events.
+
+## 🗂️ Repository layout
+
+```text
+bin/              entry points (photo-offloader-import, -dashboard, -menubar, -google-sync, -usb-backup)
+photo_offloader/  the Python package:
+                    config        every path and setting
+                    importer      command line (bin/photo-offloader-import)
+                    card          media types, card scanning, card manifest
+                    media_info    EXIF/ExifTool, camera model, archive folder
+                    transfer      copy decisions, copying a card, USB backup
+                    catalog       SQLite catalog, history, upload records
+                    catalog_refresh, fileops, volumes, progress, logs
+                    google_photos, usb_backup
+                    dashboard/ (core, server, launcher, web/), menubar/ (model, app)
+scripts/          trigger.sh (launchd), import_supervisor.sh, service.sh (start/stop/status)
+tools/            benchmark and one-off migration scripts
+tests/            unittest suite: python -m unittest discover
+install.sh        installs the same layout into ~/Library/Application Support/PhotoOffloader
+```
+
+Run the entry points from a checkout the same way they run installed, e.g. `bin/photo-offloader-import --help`.
 
 ## ⚙️ Manual operation
 
 Import a specific camera volume (copy to the Mac SSD, then sync missing files to USB if mounted):
 
 ```bash
-python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8"
+bin/photo-offloader-import --source "/Volumes/NIKON Z 8"
 ```
 
 Sync the Mac archive to USB without a camera card:
 
 ```bash
-python3 camera_offloader_v2.py --backup-usb
+bin/photo-offloader-import --backup-usb
 ```
 
 Import without the USB destination:
 
 ```bash
-python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8" --no-usb
+bin/photo-offloader-import --source "/Volumes/NIKON Z 8" --no-usb
 ```
 
 Do not eject after a successful import:
 
 ```bash
-python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8" --no-eject
+bin/photo-offloader-import --source "/Volumes/NIKON Z 8" --no-eject
 ```
 
 Enable SHA-256 verification:
 
 ```bash
-python3 camera_offloader_v2.py --source "/Volumes/NIKON Z 8" --sha256
+bin/photo-offloader-import --source "/Volumes/NIKON Z 8" --sha256
 ```
 
 ## ☁️ Google Photos setup (optional)
@@ -354,14 +376,13 @@ Set `PHOTO_OFFLOADER_GPHOTOS_REMOTE` to change the remote name or `PHOTO_OFFLOAD
 
 ## 🔧 Configuration
 
-The main configuration constants are at the top of `camera_offloader_v2.py`:
+Paths and import settings are all in `photo_offloader/config.py` (archive locations, USB volume, logs, catalog, tunables); camera media types are in `photo_offloader/card.py`:
 
 - `CARD_VOLUME_GLOBS`
 - `LOCAL_DEST_ROOT`
 - `USB_DEST_VOLUME`
 - `USB_DEST_ROOT`
 - `VERIFY_WITH_SHA256`
-- `PRESERVE_CAMERA_SUBFOLDERS`
 - `USE_FILE_BIRTH_TIME`
 - `MIN_FREE_SPACE_BUFFER_BYTES`
 - `EJECT_CARD_AFTER_SUCCESS`
@@ -369,7 +390,7 @@ The main configuration constants are at the top of `camera_offloader_v2.py`:
 The installed copy lives at:
 
 ```text
-~/Library/Application Support/PhotoOffloader/camera_offloader_v2.py
+~/Library/Application Support/PhotoOffloader/photo_offloader/config.py
 ```
 
 ### Trigger configuration

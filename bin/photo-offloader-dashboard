@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Open the Photo Offloader dashboard (single instance)."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from photo_offloader.dashboard.launcher import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())

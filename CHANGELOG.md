@@ -4,6 +4,14 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Changed (2.5)
+- **Repository and install layout.** Code is now a `photo_offloader/` package (importer, Google Photos, USB backup, `dashboard/`, `menubar/`), with entry points in `bin/` (`photo-offloader-import`, `-dashboard`, `-menubar`, `-google-sync`, `-usb-backup`), shell scripts in `scripts/` (`trigger.sh`, `import_supervisor.sh`, `service.sh`), helpers in `tools/` and tests in `tests/`. The installed app mirrors this layout. Re-running `./install.sh` upgrades an older install in place: it stops old and new processes, removes the old flat files and rewrites the LaunchAgents. `uninstall.sh` handles both layouts. The service script is now `~/Library/Application Support/PhotoOffloader/scripts/service.sh`.
+- **The 2,300-line importer is split into focused modules** (`config`, `logs`, `progress`, `fileops`, `catalog`, `card`, `media_info`, `volumes`, `transfer`, `catalog_refresh`; `importer` is now only the command line). Every path and tunable lives in `photo_offloader/config.py`, and `tests/support.py` redirects all of them for tests.
+- CI lints the whole repository (`ruff check .`, configured in `ruff.toml`) instead of a hand-kept file list.
+
+### Removed
+- `bundle_script.sh` and `running_bash.sh` (v2.2 leftovers), the Tk-era tests and helper re-exports, and unused functions.
+
 ### Changed
 - **The dashboard is now a local web app** (`dashboard_web/index.html`, served on `127.0.0.1` by `dashboard_server.py`, state from `dashboard_core.py`) instead of a Tk window. It follows macOS light/dark mode, shows a headline status, a four-step pipeline (card, Mac archive, USB, Google Photos), live progress with a speed graph, and recent activity. Controls are hidden behind a **⋯** menu; Back up/Sync actions appear on a card only when they apply. It opens in a native window when `pywebview` is installed and in the browser otherwise (`PHOTO_OFFLOADER_DASHBOARD_MODE=browser` forces the browser). `photo_offloader_ui.py` is now the single-instance launcher. **tkinter is no longer required** and the installer no longer checks for it.
 - The menu bar is slimmer (Open Dashboard, Copy to USB when a drive is connected, Pause/Resume, Stop, Quit) and refreshes itself every few seconds.
@@ -14,6 +22,13 @@ All notable changes to Photo Offloader are documented here.
 - `photo_offloader_service.sh stop --keep-ui` stops only the trigger and leaves the menu bar and dashboards running.
 
 ### Changed
+- **One transfer panel from start to finish.** The dashboard no longer drops back to the import result between copying and uploading: the sync reports itself as soon as it has files to send (its elapsed time counts from then), and the moment before it starts shows *Starting upload*. When everything is done, the same panel shows a summary (all steps, new files, size, average speed, total time) until it fades after 10 minutes or is dismissed.
+- The importer's last second no longer drops the panel to the card headline ("already imported"): an import status that has just turned *complete* before the run reaches the history shows as *Finishing import*.
+- **Dashboard log** (`dashboard_events.log`, **View logs › Dashboard**): one line each time what the dashboard shows changes, with the importer, upload and card state behind it.
+- **Eject** buttons on the Camera card and USB backup cards (hidden while a transfer is using that volume).
+- **The Google Photos upload is the last step of an import**, not a separate view: the step strip reads Scan card › Read photo info › Copy new files › Back up to USB › Upload to Google Photos, and an upload that starts right after an import keeps the import's steps and card name. During the upload, Files (from rclone's transfer count) and Elapsed are filled in and the speed graph runs, instead of showing dashes; the subtitle names the card and files rather than repeating the byte count.
+- **Update file catalog is faster**: each folder is walked once, read from the catalog in one query and written back in one transaction (2,781 files: 1.8 s instead of 4.9 s). Videos are now dated by file time there too, the same rule an import uses.
+- **USB backup compares the archive with the drive using one catalog read and one write** instead of three catalog round trips per file: 2,784 files in 0.08 s instead of about 5 s, and it no longer grows with the archive. A missing hash is computed only for the side that lacks one.
 - **The dashboard says what an import is actually doing and no longer jumps around.** The headline names the step (*Scanning card*, *Reading photo info*, *Checking for new files*, *Copying new files*, *Backing up to USB*, *Updating file index*) above a step strip. The progress panel has one fixed size; progress, speed, files (checked, total, new), elapsed and remaining time have fixed slots that show a dash when unknown; progress uses one overall measure; and the speed graph is a steady one-minute window. Previously every file flipped the status between checking and copying, so the title, bar, timers and graph flashed and the panel resized.
 - **Recent activity shows what each session backed up**: new files by type and size, then the card total, and USB copies.
 - **View logs** in the dashboard **⋯** menu (import, card detection, Google Photos) and **View Import Log** in the menu bar open the log in Console, which follows it live. Only those three logs can be opened.
