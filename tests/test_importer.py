@@ -349,6 +349,60 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(row[5], "NIKON-Z-8")
         self.assertEqual(row[6], "Photos")
 
+    def archive_photos(self, count, folder="Photos", suffix=".jpg"):
+        target = config.LOCAL_DEST_ROOT / "2026-10" / "NIKON-Z-8" / folder
+        target.mkdir(parents=True, exist_ok=True)
+        for index in range(count):
+            (target / f"refresh{index}{suffix}").write_bytes(b"photo %d" % index)
+        return target
+
+    def refresh_catalog(self, batch_calls=None):
+        def fake_batch(paths, tags):
+            if batch_calls is not None:
+                batch_calls.append(len(paths))
+            return {str(p.resolve()): {"Make": "NIKON", "Model": "Z 8", "DateTimeOriginal": "2020:01:02 03:04:05"}
+                    for p in paths}
+        with patch.object(volumes, "usb_is_mounted", return_value=False), \
+                patch.object(media_info, "get_exiftool_metadata_batch", side_effect=fake_batch), \
+                patch.object(logs, "notify"):
+            return catalog_refresh.update_file_catalog()
+
+    def connections_during_refresh(self):
+        opened = []
+        real_connect = sqlite3.connect
+        catalog.catalog_connection().close()
+
+        def counting_connect(*args, **kwargs):
+            opened.append(args)
+            return real_connect(*args, **kwargs)
+        with patch.object(catalog.sqlite3, "connect", counting_connect):
+            self.refresh_catalog()
+        return len(opened)
+
+    def test_catalog_refresh_uses_the_catalog_in_bulk_not_per_file(self):
+        self.archive_photos(5)
+        small = self.connections_during_refresh()
+        self.archive_photos(50)
+        large = self.connections_during_refresh()
+        self.assertEqual(small, large, "catalog connections must not grow with the archive")
+
+    def test_repeat_catalog_refresh_asks_exiftool_for_nothing(self):
+        self.archive_photos(6)
+        self.assertEqual(self.refresh_catalog()["scanned"], 6)
+        calls = []
+        self.assertEqual(self.refresh_catalog(batch_calls=calls)["scanned"], 6)
+        self.assertEqual(sum(calls), 0)
+
+    def test_catalog_refresh_dates_video_like_an_import_does(self):
+        # Video months come from file time on import (get_exif_datetime skips video),
+        # so the refresh must cache the same month rather than an EXIF date.
+        clip = self.archive_photos(1, folder="Movies", suffix=".mov") / "refresh0.mov"
+        self.refresh_catalog()
+        self.assertEqual(catalog.catalog_row(clip)[4], media_info._month_from_file_time(clip))
+        photo = self.archive_photos(1) / "refresh0.jpg"
+        self.refresh_catalog()
+        self.assertEqual(catalog.catalog_row(photo)[4], "2020-01")
+
     def test_exiftool_batch_metadata_is_keyed_by_resolved_source_path(self):
         media = self.local / "batch-test.NEF"
         media.write_bytes(b"raw bytes")

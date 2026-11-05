@@ -260,6 +260,24 @@ def get_month_folder(source: Path) -> str:
 EXIF_DATE_TAGS = ("DateTimeOriginal", "CreateDate", "DateTimeDigitized", "ModifyDate")
 
 
+def month_and_model(path: Path, record: Dict[str, object]) -> Tuple[str, str]:
+    """Archive month and camera folder from one ExifTool record, by the import's rules.
+
+    Same result as get_month_folder/get_camera_model: video is dated by file time
+    (get_exif_datetime skips video), everything else by its EXIF date when it has one.
+    """
+    timestamp = None
+    if path.suffix.lower() not in card.VIDEO_EXTENSIONS:
+        for tag in EXIF_DATE_TAGS:
+            value = record.get(tag)
+            if isinstance(value, str):
+                timestamp = _parse_exif_datetime_value(value)
+                if timestamp:
+                    break
+    month = timestamp.strftime("%Y-%m") if timestamp else _month_from_file_time(path)
+    return month, normalize_camera_model(record.get("Make"), record.get("Model"))
+
+
 def prefetch_card_metadata(files: Dict[str, List[Path]]) -> int:
     """Read capture month and camera for uncached RAW/video files in batched ExifTool runs.
 
@@ -286,20 +304,11 @@ def prefetch_card_metadata(files: Dict[str, List[Path]]) -> int:
         record = metadata.get(str(path.resolve()))
         if not record:
             continue
-        timestamp = None
-        if path.suffix.lower() in card.RAW_EXTENSIONS:
-            for tag in EXIF_DATE_TAGS:
-                value = record.get(tag)
-                if isinstance(value, str):
-                    timestamp = _parse_exif_datetime_value(value)
-                    if timestamp:
-                        break
         try:
-            month = timestamp.strftime("%Y-%m") if timestamp else _month_from_file_time(path)
+            month, model = month_and_model(path, record)
         except OSError:
             continue
-        entries.append((path, {"capture_month": month,
-                               "camera_model": normalize_camera_model(record.get("Make"), record.get("Model"))}))
+        entries.append((path, {"capture_month": month, "camera_model": model}))
     return catalog.catalog_record_many(entries)
 
 
