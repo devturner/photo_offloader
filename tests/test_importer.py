@@ -647,7 +647,7 @@ class TestCameraOffloader(unittest.TestCase):
         "source_path": "/installed/camera_offloader_v2.py",
     })
     @patch("photo_offloader.importer.import_session_lock",
-           side_effect=RuntimeError("Another Photo Offloader import session is already running."))
+           side_effect=app.SessionBusyError("Another Photo Offloader import session is already running."))
     def test_duplicate_session_does_not_reset_active_progress(
         self, lock, build_info, update_status
     ):
@@ -1346,7 +1346,7 @@ class TestCameraOffloader(unittest.TestCase):
     @patch("photo_offloader.logs.notify")
     def test_duplicate_launch_and_missing_card_do_not_create_history(self, notify):
         with patch.object(app, "import_session_lock",
-                          side_effect=RuntimeError("Another Photo Offloader import session is already running.")):
+                          side_effect=app.SessionBusyError("Another Photo Offloader import session is already running.")):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb"]), 0)
         self.assertEqual(catalog.list_import_history(), [])
 
