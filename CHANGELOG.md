@@ -15,6 +15,8 @@ All notable changes to Photo Offloader are documented here.
 
 ### Fixed
 - **Re-inserting the same card after shooting more never imported the new photos.** The dashboard said "waiting to start import" but the trigger kept the card's successful handled-state across the unmount indefinitely. The trigger now records when the card disappeared; if the same card returns after the grace period (20 s, `PHOTO_OFFLOADER_REMOUNT_GRACE_SECONDS`) it starts a new session, which copies only new files. A card that is already imported is shown as such, with an **Import now** action, instead of "waiting".
+- **Every import left another `NC_FLLST__conflict-N.DAT` in `Other`, and USB backup then failed on it.** Nikon rewrites `NC_FLLST.DAT` on every shoot. Camera index files (`NC_FLLST.DAT`, `MEDIAPRO.XML`) now replace their previous copy locally and on USB; other changed files still get conflict copies. Earlier `NC_FLLST__conflict-*.DAT` files can be deleted.
+- Log lines written during an import no longer start with `on <n>:`. The progress bar is only drawn on a terminal and no longer rewrites log output.
 - **Stopping Photo Offloader from the menu bar left no way to start it again.** The Stop action unloaded the menu-bar agent itself, so the menu was torn down while on screen (greyed out, including Quit) and nothing offered Start. The menu bar and dashboard now stay alive in a *stopped* state with a **Start** item/button.
 - The dashboard no longer shows "copying" forever when the importer dies: an active status that nobody is updating is reported as *interrupted*. A Google Photos sync that died mid-upload is likewise reported as interrupted instead of "uploading" indefinitely.
 

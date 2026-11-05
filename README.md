@@ -28,7 +28,7 @@ The importer also accepts a volume or `DCIM` path through `--source`.
 
 ### Everything on the card is copied
 
-Besides `DCIM`, the importer scans `PRIVATE` and `MP_ROOT`, where Sony, Canon and Panasonic cameras store video (`PRIVATE/M4ROOT/CLIP`, `PRIVATE/AVCHD`, ...). Known photo, RAW and video formats go to `Photos`, `Raws` and `Movies`. **Any other file** (clip sidecar XML, thumbnails, an unfamiliar RAW format) is copied to an `Other` folder instead of being ignored, and the log lists the unrecognised extensions, so nothing is silently left on a card that you then format. Hidden files (including macOS `._*` files) are skipped.
+Besides `DCIM`, the importer scans `PRIVATE` and `MP_ROOT`, where Sony, Canon and Panasonic cameras store video (`PRIVATE/M4ROOT/CLIP`, `PRIVATE/AVCHD`, ...). Known photo, RAW and video formats go to `Photos`, `Raws` and `Movies`. **Any other file** (clip sidecar XML, thumbnails, an unfamiliar RAW format) is copied to an `Other` folder instead of being ignored, and the log lists the unrecognised extensions, so nothing is silently left on a card that you then format. Hidden files (including macOS `._*` files) are skipped. A file that differs from an earlier copy with the same name is kept alongside it as `name__conflict-N`, except for index files the camera rewrites on every shoot (`NC_FLLST.DAT`, `MEDIAPRO.XML`), where the newest version replaces the old one on the Mac and on USB.
 
 ### 🖥️ Menu-bar dashboard and pause control
 

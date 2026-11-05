@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 try:
     from alive_progress import alive_bar
@@ -1002,6 +1002,27 @@ def _same_file(first: Path, second: Path) -> bool:
         return False
 
 
+# Index/database files the camera itself rewrites on every shoot. They never match
+# the previous copy, so keeping conflict copies would pile up one per import; the
+# newest version replaces the old one instead (locally and on USB).
+CAMERA_INDEX_FILE_NAMES = frozenset({
+    "NC_FLLST.DAT",   # Nikon file list
+    "MEDIAPRO.XML",   # Sony clip index (PRIVATE/M4ROOT)
+})
+
+
+def is_camera_index_file(path: Path) -> bool:
+    return path.name.upper() in CAMERA_INDEX_FILE_NAMES
+
+
+def install_file(temp_path: Path, final_path: Path, replace: bool = False) -> bool:
+    """Install a verified temp file; only camera index files may replace an existing file."""
+    if replace:
+        os.replace(temp_path, final_path)  # same directory, so atomic
+        return True
+    return install_without_overwrite(temp_path, final_path)
+
+
 def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
     try:
         os.link(temp_path, final_path)
@@ -1319,6 +1340,7 @@ def copy_one_to_destination(
                   decision_files_total=int(_PROGRESS.get("decision_files_total", 0)))
     final_path = build_destination_path(source, dcim_folder, destination_base)
     final_path.parent.mkdir(parents=True, exist_ok=True)
+    replace_existing = False
 
     if final_path.exists() and final_path.is_file():
         try:
@@ -1333,15 +1355,19 @@ def copy_one_to_destination(
                                          "already exists and matches cached/verified hash")
         except OSError as exc:
             logger.warning("Could not verify existing file %s: %s", final_path, exc)
-        stem, suffix = final_path.stem, final_path.suffix
-        counter = 1
-        while True:
-            candidate = final_path.with_name(f"{stem}__conflict-{counter}{suffix}")
-            if not candidate.exists():
-                final_path = candidate
-                break
-            counter += 1
-        logger.warning("Filename conflict for %s; using %s", source, final_path.name)
+        if is_camera_index_file(source):
+            replace_existing = True
+            logger.info("Camera index file changed; replacing the previous copy: %s", final_path)
+        else:
+            stem, suffix = final_path.stem, final_path.suffix
+            counter = 1
+            while True:
+                candidate = final_path.with_name(f"{stem}__conflict-{counter}{suffix}")
+                if not candidate.exists():
+                    final_path = candidate
+                    break
+                counter += 1
+            logger.warning("Filename conflict for %s; using %s", source, final_path.name)
 
     update_status(state="copying", phase="copy", current_file=source.name,
                   current_path=str(source), message=f"Copying {source.name}")
@@ -1360,7 +1386,7 @@ def copy_one_to_destination(
         # from the card (cache-bypassing read where the OS supports it).
         if sha256_file(temp_path, nocache=True) != source_hash:
             raise IOError(f"Verification failed for temporary copy: {source}")
-        if not install_without_overwrite(temp_path, final_path):
+        if not install_file(temp_path, final_path, replace=replace_existing):
             if files_match(source, final_path, force_sha256=True):
                 return DestinationResult(destination_base, "skipped", final_path,
                                          "another process created a matching file")
@@ -1465,6 +1491,17 @@ def validate_destinations(destinations: Sequence[Path], required_bytes: int = 0)
             raise RuntimeError(f"Destination is not writable: {destination}: {exc}") from exc
 
 
+def progress_bar(total: int, label: str):
+    """Terminal progress bar that never decorates log output.
+
+    alive-progress hooks print() and logging stream handlers while a bar is open
+    and prefixes each line with the bar position ("on 12: ..."); that ends up in
+    the log files. The bar is only drawn when stdout is a terminal.
+    """
+    return alive_bar(total, title=label, bar="filling", monitor=True, force_tty=False,
+                     enrich_print=False, disable=not sys.stdout.isatty())
+
+
 def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequence[Path],
                   label: str, stats: ImportStats) -> None:
     if not files:
@@ -1474,7 +1511,7 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
                   decision_files_checked=0, decision_files_total=len(files),
                   message=f"Checking {len(files)} {label} file(s)")
     card_manifest = load_card_manifest(dcim_folder)
-    with alive_bar(len(files), title=label, bar="filling", monitor=True, force_tty=False) as bar:
+    with progress_bar(len(files), label) as bar:
         for file_index, source in enumerate(files, start=1):
             update_status(state="scanning", phase="copy-decision", current_file=source.name,
                           current_path=str(source), category=label,
@@ -1749,6 +1786,7 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
     files.sort(key=lambda item: str(item[0]).lower())
     stats = ImportStats(found=len(files))
     pending: List[Tuple[Path, Path, FileFingerprint]] = []
+    replace_on_usb: Set[Path] = set()
 
     update_status(state="scanning", phase="USB backup", source="; ".join(str(root) for root in source_roots),
                   message="Comparing local archives with USB backup", current_file="")
@@ -1768,6 +1806,10 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
                 if destination.is_file() and cached_match:
                     stats.destination_skips += 1
                     stats.verified_copies += 1
+                elif destination.is_file() and is_camera_index_file(destination):
+                    replace_on_usb.add(destination)
+                    pending.append((source, destination, fingerprint))
+                    stats.source_bytes += fingerprint.size
                 else:
                     stats.failed += 1
                     message = f"USB file differs from local archive; not overwriting: {destination}"
@@ -1813,7 +1855,7 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
                 source_hash = sha256_file(source)
             if sha256_file(temp_path, nocache=True) != source_hash:
                 raise IOError(f"SHA-256 verification failed for USB temporary copy: {source}")
-            if not install_without_overwrite(temp_path, destination):
+            if not install_file(temp_path, destination, replace=destination in replace_on_usb):
                 if files_match(source, destination, force_sha256=True):
                     stats.destination_skips += 1
                     stats.verified_copies += 1

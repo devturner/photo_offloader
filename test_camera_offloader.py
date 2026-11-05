@@ -201,6 +201,18 @@ class TestCameraOffloader(unittest.TestCase):
             handler.flush()
         self.assertIn("hello", self.log.read_text())
 
+    def test_log_lines_written_during_a_progress_bar_are_not_prefixed(self):
+        # User log 2026-11-04: "on 1181: [..] [DEBUG] Found exiftool". alive-progress
+        # hooks logging stream handlers (FileHandler included) and prefixes the bar position.
+        app.configure_logging(verbose=True)
+        with app.progress_bar(3, "RAW") as bar:
+            bar()
+            app.logger.warning("inside the bar")
+        for handler in app.logger.handlers:
+            handler.flush()
+        line = next(text for text in self.log.read_text().splitlines() if "inside the bar" in text)
+        self.assertTrue(line.startswith("["), f"log line was decorated: {line!r}")
+
     def test_parse_args(self):
         args = app.parse_args(["--source", str(self.card), "--no-usb", "--no-eject", "--sha256", "--verbose"])
         self.assertEqual(args.source, self.card)
@@ -624,6 +636,26 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(destination.read_bytes(), b"xxx")
         self.assertEqual(result.path.read_bytes(), b"raw")
 
+    def camera_index_file(self, content):
+        source = self.dcim / "104NCZ_8" / "NC_FLLST.DAT"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(content)
+        return source
+
+    def test_camera_index_file_is_replaced_not_conflict_copied(self):
+        # User log 2026-11-04: Nikon rewrites NC_FLLST.DAT on every shoot, so each
+        # import left another NC_FLLST__conflict-N.DAT in Other.
+        first = app.copy_one_to_destination(self.camera_index_file(b"index v1"), self.dcim, self.local)
+        second = app.copy_one_to_destination(self.camera_index_file(b"index v2 longer"), self.dcim, self.local)
+        self.assertEqual(second.status, "copied")
+        self.assertEqual(second.path, first.path)
+        self.assertEqual(first.path.read_bytes(), b"index v2 longer")
+        self.assertEqual(sorted(p.name for p in first.path.parent.iterdir()), ["NC_FLLST.DAT"])
+
+    def test_camera_index_file_name_match_is_case_insensitive(self):
+        self.assertTrue(app.is_camera_index_file(Path("nc_fllst.dat")))
+        self.assertFalse(app.is_camera_index_file(Path("NOTES.DAT")))
+
     def test_conflict_counter_advances(self):
         source = self.media()["RAW"]
         destination = app.build_destination_path(source, self.dcim, self.local)
@@ -810,6 +842,23 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(stats.destination_copies, 0)
         self.assertEqual(stats.failed, 1)
         self.assertEqual((existing / "photo.jpg").read_bytes(), b"USB version")
+
+    def test_usb_backup_refreshes_a_changed_camera_index_file(self):
+        # Otherwise every USB backup after the second import fails on NC_FLLST.DAT.
+        archive = self.local / "2026-11" / "Other"
+        archive.mkdir(parents=True)
+        (archive / "NC_FLLST.DAT").write_bytes(b"index v2")
+        existing = self.usb / "2026-11" / "Other"
+        existing.mkdir(parents=True)
+        (existing / "NC_FLLST.DAT").write_bytes(b"index v1")
+
+        with patch.object(app, "usb_is_mounted", return_value=True):
+            stats = app.copy_local_archive_to_usb()
+
+        self.assertEqual(stats.failed, 0, stats.errors)
+        self.assertEqual(stats.destination_copies, 1)
+        self.assertEqual((existing / "NC_FLLST.DAT").read_bytes(), b"index v2")
+        self.assertEqual(sorted(p.name for p in existing.iterdir()), ["NC_FLLST.DAT"])
 
     # ---------------------------------------- card coverage (review finding 2)
     def test_scan_finds_video_stored_outside_dcim(self):
