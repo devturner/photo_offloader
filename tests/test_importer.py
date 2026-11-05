@@ -7,7 +7,6 @@ import pathlib
 import plistlib
 import sqlite3
 import stat
-import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -31,61 +30,7 @@ from photo_offloader.volumes import VolumeIdentity
 from tests import support
 
 
-class TestCameraOffloader(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        self.card = self.root / "card"
-        self.dcim = self.card / "DCIM"
-        self.local = self.root / "local"
-        self.usb = self.root / "usb"
-        self.usb_volume = self.root / "usb-volume"
-        self.log = self.root / "transfer.log"
-        self.lock = self.root / "import.lock"
-        self.dcim.mkdir(parents=True)
-        self.local.mkdir()
-        self.usb.mkdir()
-        self.usb_volume.mkdir()
-        support.isolate_config(
-            self, self.root, LOCAL_DEST_ROOT=self.local, LOCAL_RAW_DEST_ROOT=self.root / "local-raw",
-            USB_DEST_ROOT=self.usb, USB_DEST_VOLUME=self.usb_volume, LOG_FILE_PATH=self.log,
-            SESSION_LOCK_PATH=self.lock, STATUS_FILE_PATH=self.root / "status.json",
-            CATALOG_DB_PATH=self.root / "persistent-data" / "catalog.sqlite3",
-            LEGACY_CATALOG_DB_PATH=self.root / "legacy-app-dir" / "catalog.sqlite3")
-        config.LOCAL_RAW_DEST_ROOT.mkdir()
-        for name, value in (("VERIFY_WITH_SHA256", False), ("USE_FILE_BIRTH_TIME", False), ("WAIT_SECONDS", 0),
-                            ("EJECT_CARD_AFTER_SUCCESS", True), ("MIN_FREE_SPACE_BUFFER_BYTES", 0)):
-            patcher = patch.object(config, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        for name, value in (("_PROGRESS_STARTED", None), ("_PROGRESS", {"state": "idle", "bytes_done": 0,
-                                                                         "bytes_total": 0, "bytes_transferred": 0})):
-            patcher = patch.object(progress, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        media_info.find_exiftool.cache_clear()
-        logs.logger.handlers.clear()
-
-    def tearDown(self):
-        for handler in logs.logger.handlers[:]:
-            handler.close()
-        media_info.find_exiftool.cache_clear()
-        logs.logger.handlers.clear()
-        self.tmp.cleanup()
-
-    def media(self):
-        folder = self.dcim / "100NIKON"
-        folder.mkdir(parents=True, exist_ok=True)
-        files = {
-            "JPG": folder / "photo.jpg",
-            "RAW": folder / "photo.nef",
-            "VIDEO": folder / "clip.mp4",
-        }
-        files["JPG"].write_bytes(b"jpg")
-        files["RAW"].write_bytes(b"raw")
-        files["VIDEO"].write_bytes(b"video")
-        return files
-
+class TestCameraOffloader(support.CardFixtureTestCase):
     def test_card_manifest_records_scan_history_and_preserves_file_hashes(self):
         media = self.media()
         manifest = {"100NIKON/photo.jpg": {"size": 3, "mtime_ns": media["JPG"].stat().st_mtime_ns,
@@ -349,36 +294,6 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(row[5], "NIKON-Z-8")
         self.assertEqual(row[6], "Photos")
 
-    def archive_photos(self, count, folder="Photos", suffix=".jpg"):
-        target = config.LOCAL_DEST_ROOT / "2026-10" / "NIKON-Z-8" / folder
-        target.mkdir(parents=True, exist_ok=True)
-        for index in range(count):
-            (target / f"refresh{index}{suffix}").write_bytes(b"photo %d" % index)
-        return target
-
-    def refresh_catalog(self, batch_calls=None):
-        def fake_batch(paths, tags):
-            if batch_calls is not None:
-                batch_calls.append(len(paths))
-            return {str(p.resolve()): {"Make": "NIKON", "Model": "Z 8", "DateTimeOriginal": "2020:01:02 03:04:05"}
-                    for p in paths}
-        with patch.object(volumes, "usb_is_mounted", return_value=False), \
-                patch.object(media_info, "get_exiftool_metadata_batch", side_effect=fake_batch), \
-                patch.object(logs, "notify"):
-            return catalog_refresh.update_file_catalog()
-
-    def connections_during_refresh(self):
-        opened = []
-        real_connect = sqlite3.connect
-        catalog.catalog_connection().close()
-
-        def counting_connect(*args, **kwargs):
-            opened.append(args)
-            return real_connect(*args, **kwargs)
-        with patch.object(catalog.sqlite3, "connect", counting_connect):
-            self.refresh_catalog()
-        return len(opened)
-
     def test_catalog_refresh_uses_the_catalog_in_bulk_not_per_file(self):
         self.archive_photos(5)
         small = self.connections_during_refresh()
@@ -443,10 +358,6 @@ class TestCameraOffloader(unittest.TestCase):
             result = transfer.copy_one_to_destination(source, self.dcim, self.local, manifest)
         self.assertEqual(result.status, "skipped")
 
-    def shift_mtime(self, path, seconds):
-        st = path.stat()
-        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + int(seconds * 1_000_000_000)))
-
     def test_dst_shifted_card_timestamps_keep_cached_hashes(self):
         # User log 2026-11-04: after DST ended, exFAT/FAT local-time stamps all read
         # one hour later; 2346 files counted as "changed" and the card was re-hashed.
@@ -472,34 +383,6 @@ class TestCameraOffloader(unittest.TestCase):
             self.assertEqual(media_info.get_month_folder(source), "2026-10")
         self.shift_mtime(source, 1)  # not a whole-hour shift: cache must miss
         self.assertIsNone(catalog.catalog_row(source))
-
-    # ------------------------------------------- batched card metadata (fresh-card speed)
-    def fake_exiftool(self):
-        """An exiftool stand-in that answers every file and logs each process start."""
-        calls = self.root / "exiftool-calls.txt"
-        script = self.root / "exiftool"
-        script.write_text(
-            "#!/usr/bin/env python3\n"
-            "import json, sys\n"
-            f"open({str(calls)!r}, 'a').write('call\\n')\n"
-            "files = [a for a in sys.argv[1:] if not a.startswith('-') and a != 'filename=UTF8']\n"
-            "print(json.dumps([{'SourceFile': f, 'Make': 'NIKON CORPORATION', 'Model': 'NIKON Z 8',\n"
-            "                   'DateTimeOriginal': '2026:09:14 10:00:00'} for f in files]))\n")
-        script.chmod(0o755)
-        patcher = patch.object(media_info, "find_exiftool", return_value=str(script))
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        return lambda: len(calls.read_text().splitlines()) if calls.exists() else 0
-
-    def card_files(self, count):
-        folder = self.dcim / "100NCZ_8"
-        folder.mkdir(parents=True, exist_ok=True)
-        raws = [folder / f"DSC_{index:04d}.NEF" for index in range(count)]
-        for index, path in enumerate(raws):
-            path.write_bytes(b"raw%d" % index)
-        clip = folder / "DSC_9999.MOV"
-        clip.write_bytes(b"video")
-        return {"JPG": [], "RAW": raws, "VIDEO": [clip], "OTHER": []}
 
     def test_fresh_card_metadata_is_read_in_one_exiftool_process(self):
         # User card 2026-11-04: two ExifTool processes per RAW cost ~340 s for
@@ -767,7 +650,6 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(result.path.read_bytes(), b"raw")
         self.assertEqual(stat.S_IMODE(result.path.stat().st_mode), 0o600)
 
-
     def test_matching_duplicate_is_content_verified(self):
         source = self.media()["RAW"]
         destination = media_info.build_destination_path(source, self.dcim, self.local)
@@ -989,29 +871,6 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(stats.failed, 0)
         self.assertEqual((existing / "missing.jpg").read_bytes(), b"new content")
 
-    def archive_already_on_usb(self, count):
-        archive = config.LOCAL_DEST_ROOT / "2026-11" / "NIKON-Z-8" / "Photos"
-        backup = config.USB_DEST_ROOT / "2026-11" / "NIKON-Z-8" / "Photos"
-        archive.mkdir(parents=True, exist_ok=True)
-        backup.mkdir(parents=True, exist_ok=True)
-        for index in range(count):
-            (archive / f"p{index}.jpg").write_bytes(b"photo %d" % index)
-            (backup / f"p{index}.jpg").write_bytes(b"photo %d" % index)
-
-    def connections_during_usb_backup(self):
-        opened = []
-        real_connect = sqlite3.connect
-        catalog.catalog_connection().close()   # one-time schema setup is not the point here
-
-        def counting_connect(*args, **kwargs):
-            opened.append(args)
-            return real_connect(*args, **kwargs)
-        with patch.object(volumes, "usb_is_mounted", return_value=True), \
-                patch.object(catalog.sqlite3, "connect", counting_connect):
-            stats = transfer.copy_local_archive_to_usb()
-        self.assertEqual(stats.failed, 0, stats.errors)
-        return len(opened)
-
     def test_usb_comparison_reads_the_catalog_in_bulk_not_per_file(self):
         # Measured 2026-11-04: three catalog connections per archive file, ~5 s for
         # 2,784 files and ~90 s at 50,000; one bulk read takes 0.06 s.
@@ -1068,7 +927,6 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual((existing / "NC_FLLST.DAT").read_bytes(), b"index v2")
         self.assertEqual(sorted(p.name for p in existing.iterdir()), ["NC_FLLST.DAT"])
 
-    # ---------------------------------------- card coverage (review finding 2)
     def test_scan_finds_video_stored_outside_dcim(self):
         # Sony XAVC/AVCHD video lives in PRIVATE/, not DCIM/.
         clip = self.card / "PRIVATE" / "M4ROOT" / "CLIP" / "C0001.MP4"
@@ -1126,7 +984,6 @@ class TestCameraOffloader(unittest.TestCase):
         history = card.load_card_manifest_payload(self.dcim)["history"]
         self.assertEqual(history["files_discovered"], 5)  # jpg, nef, mp4, xml, private mp4
 
-    # --------------------------------------- efficiency (read each card file once)
     def test_card_to_ssd_copy_reads_the_source_only_once(self):
         self.media()
         source = self.dcim / "100NIKON" / "photo.jpg"
@@ -1211,7 +1068,6 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(len(opened), 1)
         self.assertTrue(all(catalog.google_photos_upload_record(p) for p in paths))
 
-    # -------------------------------------------- log growth (user report)
     def test_importer_log_file_is_size_capped(self):
         app.configure_logging()
         handlers = [h for h in logs.logger.handlers if isinstance(h, logging.FileHandler)]
@@ -1238,7 +1094,6 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(log.read_text(), "tiny\n")
         self.assertFalse((self.root / "small.log.1").exists())
 
-    # ------------------------------------------ clean shutdown (service stop)
     def test_sigterm_cancels_the_import_and_publishes_a_canceled_status(self):
         # `scripts/service.sh stop --force` sends SIGTERM. The importer must
         # shut down like Ctrl-C: release its lock, report "canceled", exit 130.
@@ -1273,7 +1128,6 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(result.returncode, 130, result.stdout + result.stderr)
         self.assertEqual(json.loads(status_path.read_text())["state"], "canceled")
 
-    # ------------------------------------------- persistent import history
     def test_import_history_records_and_lists_newest_first(self):
         catalog.record_import_run(kind="import", source="NIKON Z 8", outcome="complete",
                               files=10, copied=10, skipped=0, failed=0, bytes=1234,
