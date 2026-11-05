@@ -91,132 +91,8 @@ class DashboardServer:
 
     # ------------------------------------------------------------------------- handler
     def _make_handler(self) -> type:
-        server = self
+        return type("Handler", (_DashboardHandler,), {"dashboard": self})
 
-        class Handler(BaseHTTPRequestHandler):
-            server_version = "PhotoOffloaderDashboard"
-            sys_version = ""
-            protocol_version = "HTTP/1.1"
-
-            def log_message(self, *_args: Any) -> None:  # keep the console quiet
-                return
-
-            # ---- helpers
-            def _send(self, status: int, body: bytes, content_type: str, extra: Optional[Dict[str, str]] = None) -> None:
-                self.send_response(status)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("X-Content-Type-Options", "nosniff")
-                self.send_header("X-Frame-Options", "DENY")
-                self.send_header("Referrer-Policy", "no-referrer")
-                for key, value in (extra or {}).items():
-                    self.send_header(key, value)
-                self.end_headers()
-                self.wfile.write(body)
-
-            def _json(self, status: int, payload: Any) -> None:
-                self._send(status, json.dumps(payload).encode("utf-8"), "application/json")
-
-            def _host_ok(self) -> bool:
-                return (self.headers.get("Host") or "").lower() in server.allowed_hosts
-
-            def _origin_ok(self) -> bool:
-                origin = self.headers.get("Origin")
-                if origin is None:
-                    return True
-                parsed = urllib.parse.urlsplit(origin)
-                return parsed.scheme == "http" and parsed.netloc.lower() in server.allowed_hosts
-
-            def _token_ok(self) -> bool:
-                supplied = self.headers.get(TOKEN_HEADER) or ""
-                return hmac.compare_digest(supplied.encode("utf-8"), server.token.encode("utf-8"))
-
-            def _guard_api(self, touch: bool = True) -> bool:
-                if not self._host_ok():
-                    self._json(403, {"error": "bad host"})
-                    return False
-                if not self._origin_ok():
-                    self._json(403, {"error": "bad origin"})
-                    return False
-                if not self._token_ok():
-                    self._json(401, {"error": "missing or invalid token"})
-                    return False
-                if touch:
-                    server.last_request = time.monotonic()
-                return True
-
-            # ---- routes
-            def do_GET(self) -> None:  # noqa: N802 - http.server API
-                parsed = urllib.parse.urlsplit(self.path)
-                if parsed.path in STATIC_FILES:
-                    if not self._host_ok():
-                        self._json(403, {"error": "bad host"})
-                        return
-                    name, content_type = STATIC_FILES[parsed.path]
-                    try:
-                        body = (server.web_root / name).read_bytes()
-                    except OSError:
-                        self._json(500, {"error": "dashboard page is missing; re-run install.sh"})
-                        return
-                    server.last_request = time.monotonic()
-                    self._send(200, body, content_type, {"Content-Security-Policy": CONTENT_SECURITY_POLICY})
-                    return
-                if parsed.path == "/api/ping":
-                    # A ping asks "is a page showing the dashboard?", so it must not count as one.
-                    if self._guard_api(touch=False):
-                        self._json(200, {"ok": True, "pid": os.getpid(),
-                                         "idle_seconds": round(time.monotonic() - server.last_request, 3)})
-                    return
-                if parsed.path == "/api/state":
-                    if self._guard_api():
-                        self._json(200, server.core.state())
-                    return
-                if parsed.path == "/api/history":
-                    if self._guard_api():
-                        query = urllib.parse.parse_qs(parsed.query)
-                        try:
-                            limit = min(max(int(query.get("limit", ["15"])[0]), 1), 100)
-                        except ValueError:
-                            limit = 15
-                        self._json(200, {"history": server.core.history(limit=limit)})
-                    return
-                self._json(404, {"error": "not found"})
-
-            def do_POST(self) -> None:  # noqa: N802 - http.server API
-                parsed = urllib.parse.urlsplit(self.path)
-                prefix = "/api/action/"
-                if not parsed.path.startswith(prefix):
-                    self._json(404, {"error": "not found"})
-                    return
-                if not self._guard_api():
-                    return
-                if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
-                    self._json(415, {"error": "expected application/json"})
-                    return
-                try:
-                    length = int(self.headers.get("Content-Length") or 0)
-                except ValueError:
-                    length = -1
-                if length < 0 or length > MAX_BODY_BYTES:
-                    self._json(413, {"error": "bad body size"})
-                    return
-                try:
-                    params = json.loads(self.rfile.read(length) or b"{}")
-                    if not isinstance(params, dict):
-                        raise ValueError("body must be an object")
-                except ValueError:
-                    self._json(400, {"error": "invalid JSON"})
-                    return
-                result = server.core.act(parsed.path[len(prefix):], params)
-                self._json(200 if result.get("ok") or result.get("needs_choice") else 400, result)
-
-            def do_PUT(self) -> None:  # noqa: N802
-                self._json(405, {"error": "method not allowed"})
-
-            do_DELETE = do_PATCH = do_PUT  # noqa: N815
-
-        return Handler
 
 
 # ------------------------------------------------------------------ single-instance support
@@ -248,3 +124,131 @@ def find_running_instance(path: Path, timeout: float = 1.0) -> Optional[Dict[str
     except (OSError, ValueError, http.client.HTTPException):
         return None
     return info if ok else None
+
+
+class _DashboardHandler(BaseHTTPRequestHandler):
+    """Routes for one dashboard server; ``dashboard`` is set per server by _make_handler."""
+
+    dashboard: "DashboardServer"
+
+    server_version = "PhotoOffloaderDashboard"
+    sys_version = ""
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *_args: Any) -> None:  # keep the console quiet
+        return
+
+    # ---- helpers
+    def _send(self, status: int, body: bytes, content_type: str, extra: Optional[Dict[str, str]] = None) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        for key, value in (extra or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, status: int, payload: Any) -> None:
+        self._send(status, json.dumps(payload).encode("utf-8"), "application/json")
+
+    def _host_ok(self) -> bool:
+        return (self.headers.get("Host") or "").lower() in self.dashboard.allowed_hosts
+
+    def _origin_ok(self) -> bool:
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True
+        parsed = urllib.parse.urlsplit(origin)
+        return parsed.scheme == "http" and parsed.netloc.lower() in self.dashboard.allowed_hosts
+
+    def _token_ok(self) -> bool:
+        supplied = self.headers.get(TOKEN_HEADER) or ""
+        return hmac.compare_digest(supplied.encode("utf-8"), self.dashboard.token.encode("utf-8"))
+
+    def _guard_api(self, touch: bool = True) -> bool:
+        if not self._host_ok():
+            self._json(403, {"error": "bad host"})
+            return False
+        if not self._origin_ok():
+            self._json(403, {"error": "bad origin"})
+            return False
+        if not self._token_ok():
+            self._json(401, {"error": "missing or invalid token"})
+            return False
+        if touch:
+            self.dashboard.last_request = time.monotonic()
+        return True
+
+    # ---- routes
+    def do_GET(self) -> None:  # noqa: N802 - http.server API
+        parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path in STATIC_FILES:
+            if not self._host_ok():
+                self._json(403, {"error": "bad host"})
+                return
+            name, content_type = STATIC_FILES[parsed.path]
+            try:
+                body = (self.dashboard.web_root / name).read_bytes()
+            except OSError:
+                self._json(500, {"error": "dashboard page is missing; re-run install.sh"})
+                return
+            self.dashboard.last_request = time.monotonic()
+            self._send(200, body, content_type, {"Content-Security-Policy": CONTENT_SECURITY_POLICY})
+            return
+        if parsed.path == "/api/ping":
+            # A ping asks "is a page showing the dashboard?", so it must not count as one.
+            if self._guard_api(touch=False):
+                self._json(200, {"ok": True, "pid": os.getpid(),
+                                 "idle_seconds": round(time.monotonic() - self.dashboard.last_request, 3)})
+            return
+        if parsed.path == "/api/state":
+            if self._guard_api():
+                self._json(200, self.dashboard.core.state())
+            return
+        if parsed.path == "/api/history":
+            if self._guard_api():
+                query = urllib.parse.parse_qs(parsed.query)
+                try:
+                    limit = min(max(int(query.get("limit", ["15"])[0]), 1), 100)
+                except ValueError:
+                    limit = 15
+                self._json(200, {"history": self.dashboard.core.history(limit=limit)})
+            return
+        self._json(404, {"error": "not found"})
+
+    def do_POST(self) -> None:  # noqa: N802 - http.server API
+        parsed = urllib.parse.urlsplit(self.path)
+        prefix = "/api/action/"
+        if not parsed.path.startswith(prefix):
+            self._json(404, {"error": "not found"})
+            return
+        if not self._guard_api():
+            return
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+            self._json(415, {"error": "expected application/json"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY_BYTES:
+            self._json(413, {"error": "bad body size"})
+            return
+        try:
+            params = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(params, dict):
+                raise ValueError("body must be an object")
+        except ValueError:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        result = self.dashboard.core.act(parsed.path[len(prefix):], params)
+        self._json(200 if result.get("ok") or result.get("needs_choice") else 400, result)
+
+    def do_PUT(self) -> None:  # noqa: N802
+        self._json(405, {"error": "method not allowed"})
+
+    do_DELETE = do_PATCH = do_PUT  # noqa: N815

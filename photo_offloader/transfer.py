@@ -82,6 +82,16 @@ def hash_for_copy_decision(
     return source_hash, destination_hash
 
 
+def conflict_free_path(path: Path) -> Path:
+    """The first ``name__conflict-N.ext`` next to ``path`` that does not exist yet."""
+    counter = 1
+    while True:
+        candidate = path.with_name(f"{path.stem}__conflict-{counter}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
 def copy_one_to_destination(
     source: Path, dcim_folder: Path, destination_base: Path,
     card_manifest: Optional[Dict[str, dict]] = None,
@@ -113,14 +123,7 @@ def copy_one_to_destination(
             replace_existing = True
             logger.info("Camera index file changed; replacing the previous copy: %s", final_path)
         else:
-            stem, suffix = final_path.stem, final_path.suffix
-            counter = 1
-            while True:
-                candidate = final_path.with_name(f"{stem}__conflict-{counter}{suffix}")
-                if not candidate.exists():
-                    final_path = candidate
-                    break
-                counter += 1
+            final_path = conflict_free_path(final_path)
             logger.warning("Filename conflict for %s; using %s", source, final_path.name)
 
     progress.update_status(state="copying", phase="copy", current_file=source.name,

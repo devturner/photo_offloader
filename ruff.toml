@@ -5,8 +5,12 @@ extend-include = ["bin/*"]
 extend-exclude = ["scratch"]
 
 [lint]
-select = ["E", "F", "W", "I"]
+select = ["E", "F", "W", "I", "C901"]
 ignore = ["E501"]
+
+# Keep functions small enough to read; split rather than raise this.
+[lint.mccabe]
+max-complexity = 15
 
 [format]
 quote-style = "double"
