@@ -10,6 +10,7 @@ All notable changes to Photo Offloader are documented here.
 ### Fixed
 - **Step labels and values are no longer cut off in a narrow window.** Below 560 px wide, step labels wrap onto two lines and Progress and Files share the first row of the transfer panel, which is 10 px taller there to fit.
 - A failed or canceled import no longer says *Remaining: Done* in the transfer panel; it shows a dash.
+- The dashboard closes its read-only catalog connection after counting files, instead of leaving it for the garbage collector on every refresh.
 
 ### Changed (2.5)
 - **Repository and install layout.** Code is now a `photo_offloader/` package (importer, Google Photos, USB backup, `dashboard/`, `menubar/`), with entry points in `bin/` (`photo-offloader-import`, `-dashboard`, `-menubar`, `-google-sync`, `-usb-backup`), shell scripts in `scripts/` (`trigger.sh`, `import_supervisor.sh`, `service.sh`), helpers in `tools/` and tests in `tests/`. The installed app mirrors this layout. Re-running `./install.sh` upgrades an older install in place: it stops old and new processes, removes the old flat files and rewrites the LaunchAgents. `uninstall.sh` handles both layouts. The service script is now `~/Library/Application Support/PhotoOffloader/scripts/service.sh`.
