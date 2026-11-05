@@ -75,6 +75,9 @@ IMPORT_STAGES = (("scan", "Scan card"), ("metadata", "Read photo info"),
                  ("copy", "Copy new files"), ("usb", "Back up to USB"))
 THEMES = ("system", "light", "dark")
 SPEED_WINDOW_SAMPLES = 10
+def google_remote_name() -> str:
+    """Same rule as REMOTE_NAME in google_photos_sync.py."""
+    return os.environ.get("PHOTO_OFFLOADER_GPHOTOS_REMOTE", "gphotos").rstrip(":")
 
 
 def activity_stage(status: Dict[str, Any]) -> str:
@@ -134,6 +137,7 @@ class Paths:
     python: Path
     launchctl: str = "/bin/launchctl"
     pgrep: str = "/usr/bin/pgrep"
+    rclone_config: Optional[Path] = None   # where rclone keeps its remotes (not ours to change)
 
     @classmethod
     def default(cls) -> "Paths":
@@ -150,6 +154,7 @@ class Paths:
                             Path.home() / "Pictures" / "CameraImportsRaw"),
             usb_archives=(usb / "CameraImports",),
             python=venv_python if venv_python.exists() else Path(sys.executable),
+            rclone_config=Path(os.environ.get("RCLONE_CONFIG", str(Path.home() / ".config" / "rclone" / "rclone.conf"))),
         )
 
     # files the importer / trigger / service maintain
@@ -455,7 +460,10 @@ class DashboardCore:
     def _google(self, now: float) -> Dict[str, Any]:
         status = read_json(self.paths.google_status_file)
         preferences = read_json(self.paths.preferences_file).get("google_photos", {})
-        configured = bool(preferences.get("configured")) or bool(status) and status.get("state") != "not_configured"
+        # rclone's own config is the source of truth: our status file is replaced on every
+        # install and the preference is only written after a sync that uploaded something.
+        configured = (bool(preferences.get("configured")) or self.rclone_remote_configured()
+                      or bool(status) and status.get("state") != "not_configured")
         state = str(status.get("state", "")) or ("idle" if configured else "not_configured")
         info: Dict[str, Any] = {
             "configured": configured, "state": state, "message": str(status.get("message", "") or ""),
@@ -476,6 +484,22 @@ class DashboardCore:
             return None
         hours, minutes, seconds = (int(part or 0) for part in match.groups())
         return float(hours * 3600 + minutes * 60 + seconds)
+
+    def rclone_remote_configured(self) -> bool:
+        """Whether rclone has a [gphotos] remote. Reads section names only, never secrets."""
+        config = self.paths.rclone_config
+        if config is None:
+            return False
+
+        remote = google_remote_name()
+
+        def probe() -> bool:
+            try:
+                with config.open(encoding="utf-8", errors="replace") as handle:
+                    return any(line.strip() == f"[{remote}]" for line in handle)
+            except OSError:
+                return False
+        return self._cached("rclone", 30.0, probe)
 
     def _upload_activity(self, google: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if google["state"] != "running":

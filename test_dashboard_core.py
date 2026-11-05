@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for dashboard_core: the state the dashboard renders and the actions it can run."""
+import dataclasses
 import json
 import os
 import sqlite3
@@ -448,6 +449,35 @@ class TestPipeline(Fixture):
         (self.data / "preferences.json").write_text(json.dumps({"google_photos": {"configured": True}}))
         step = self.pipeline("cloud")
         self.assertEqual((step["state"], step["action"]["id"]), ("ok", "google_sync"))
+
+    def rclone_config(self, text):
+        config = Path(self.tmp.name) / "rclone.conf"
+        config.write_text(text)
+        self.core.paths = dataclasses.replace(self.paths, rclone_config=config)
+
+    def test_a_configured_rclone_remote_counts_even_after_a_reinstall(self):
+        # User report 2026-11-04: after uninstall/reinstall the dashboard asked to set up
+        # Google Photos again although rclone still had the gphotos remote.
+        self.rclone_config("[other]\ntype = drive\n\n[gphotos]\ntype = google photos\ntoken = {\"secret\": 1}\n")
+        step = self.pipeline("cloud")
+        self.assertEqual((step["state"], step["action"]["id"]), ("ok", "google_sync"))
+
+    def test_another_rclone_remote_alone_is_not_google_photos(self):
+        self.rclone_config("[gphotos-old]\ntype = drive\n[drive]\ntype = drive\n")
+        self.assertEqual(self.pipeline("cloud")["headline"], "Not set up")
+
+    def test_custom_remote_name_is_honored(self):
+        self.rclone_config("[photos-cloud]\ntype = google photos\n")
+        with patch.dict(os.environ, {"PHOTO_OFFLOADER_GPHOTOS_REMOTE": "photos-cloud:"}):
+            self.assertEqual(self.pipeline("cloud")["state"], "ok")
+
+    def test_default_paths_honor_rclone_config_override(self):
+        with patch.dict(os.environ, {"RCLONE_CONFIG": "/tmp/custom-rclone.conf"}):
+            self.assertEqual(core.Paths.default().rclone_config, Path("/tmp/custom-rclone.conf"))
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RCLONE_CONFIG", None)
+            self.assertEqual(core.Paths.default().rclone_config,
+                             Path.home() / ".config" / "rclone" / "rclone.conf")
 
     def test_google_photos_upload_shows_live_progress_from_the_rclone_log(self):
         self.google_up = True
