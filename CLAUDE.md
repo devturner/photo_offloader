@@ -8,7 +8,7 @@ app sit on top. Open work and its reasons are in `scratch/todo.md` (gitignored);
 first when asked to "continue".
 
 ## Commands
-- Tests: `.venv/bin/python -m unittest discover` (about 320 tests, about 60 s). Use the
+- Tests: `.venv/bin/python -m unittest discover` (about 360 tests, about 80 s). Use the
   project `.venv`, not the system `python3`, which has no Pillow.
 - One module or test: `.venv/bin/python -m unittest tests.test_usb_backup`, or add
   `.TestBackupLauncher.test_request_runs_importer_when_lock_is_free`. Filter by name with `-k`.
