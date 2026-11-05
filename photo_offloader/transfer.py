@@ -311,6 +311,46 @@ def _compare_with_usb(files: Sequence[Tuple[Path, Path]], source_roots: Sequence
     return pending, replace_on_usb
 
 
+def _copy_one_to_usb(source: Path, destination: Path, before: fileops.FileFingerprint, replace: bool) -> bool:
+    """Copy one archive file to USB through a verified temp file.
+
+    Returns True when copied, False when a matching file appeared meanwhile; raises on
+    any mismatch so the caller can record a failure. Never overwrites a differing
+    file unless ``replace`` (camera index files).
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=".photo-backup-", suffix=".tmp", dir=destination.parent)
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        source_hash = fileops.copy_file_with_progress(source, temp_path)
+        if fileops.file_fingerprint(source) != before:
+            raise IOError(f"Local source changed during backup: {source}")
+        if not source_hash:
+            source_hash = fileops.sha256_file(source)
+        if fileops.sha256_file(temp_path, nocache=True) != source_hash:
+            raise IOError(f"SHA-256 verification failed for USB temporary copy: {source}")
+        if not fileops.install_file(temp_path, destination, replace=replace):
+            if not fileops.files_match(source, destination, force_sha256=True):
+                raise FileExistsError(f"USB destination appeared and differs from source: {destination}")
+            copied = False
+        else:
+            if (not fileops._same_file(temp_path, destination)
+                    and fileops.sha256_file(destination, nocache=True) != source_hash):
+                destination.unlink(missing_ok=True)
+                raise IOError(f"SHA-256 verification failed for USB copy: {destination}")
+            os.chmod(destination, stat.S_IRUSR | stat.S_IWUSR)
+            copied = True
+        catalog.catalog_record(source, sha256=source_hash)
+        catalog.catalog_record(destination, sha256=source_hash)
+        return copied
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove temporary backup file %s", temp_path)
+
+
 def copy_local_archive_to_usb(expected_identity: Optional[volumes.VolumeIdentity] = None) -> ImportStats:
     """Copy only missing local archive files to USB; never overwrite mismatches."""
     if not volumes.usb_is_mounted():
@@ -338,7 +378,6 @@ def copy_local_archive_to_usb(expected_identity: Optional[volumes.VolumeIdentity
                       "message": f"Copying {len(pending)} missing file(s) to USB"})
     progress.update_status()
     for source, destination, before in pending:
-        temp_path: Optional[Path] = None
         if not volumes.usb_is_mounted():
             stats.failed += 1
             message = "USB backup volume was disconnected during the backup."
@@ -346,46 +385,16 @@ def copy_local_archive_to_usb(expected_identity: Optional[volumes.VolumeIdentity
             logger.error(message)
             break
         progress.update_status(current_file=source.name, current_path=str(source),
-                      message=f"USB backup: {source.name}")
+                               message=f"USB backup: {source.name}")
         try:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            fd, temp_name = tempfile.mkstemp(prefix=".photo-backup-", suffix=".tmp",
-                                             dir=destination.parent)
-            os.close(fd)
-            temp_path = Path(temp_name)
-            source_hash = fileops.copy_file_with_progress(source, temp_path)
-            if fileops.file_fingerprint(source) != before:
-                raise IOError(f"Local source changed during backup: {source}")
-            if not source_hash:
-                source_hash = fileops.sha256_file(source)
-            if fileops.sha256_file(temp_path, nocache=True) != source_hash:
-                raise IOError(f"SHA-256 verification failed for USB temporary copy: {source}")
-            if not fileops.install_file(temp_path, destination, replace=destination in replace_on_usb):
-                if fileops.files_match(source, destination, force_sha256=True):
-                    stats.destination_skips += 1
-                    stats.verified_copies += 1
-                    catalog.catalog_record(source, sha256=source_hash)
-                    catalog.catalog_record(destination, sha256=source_hash)
-                    continue
-                raise FileExistsError(f"USB destination appeared and differs from source: {destination}")
-            if not fileops._same_file(temp_path, destination) and fileops.sha256_file(destination, nocache=True) != source_hash:
-                destination.unlink(missing_ok=True)
-                raise IOError(f"SHA-256 verification failed for USB copy: {destination}")
-            os.chmod(destination, stat.S_IRUSR | stat.S_IWUSR)
-            catalog.catalog_record(source, sha256=source_hash)
-            catalog.catalog_record(destination, sha256=source_hash)
-            stats.destination_copies += 1
+            copied = _copy_one_to_usb(source, destination, before, replace=destination in replace_on_usb)
+            stats.destination_copies += int(copied)
+            stats.destination_skips += int(not copied)
             stats.verified_copies += 1
         except Exception as exc:
             stats.failed += 1
             stats.errors.append((str(source), f"{destination}: {exc}"))
             logger.exception("USB backup failed for %s", source)
-        finally:
-            if temp_path is not None:
-                try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError:
-                    logger.warning("Could not remove temporary backup file %s", temp_path)
 
     if not volumes.usb_is_mounted() or not volumes.volume_identity_matches(
         expected_identity, volumes.get_volume_identity(config.USB_DEST_VOLUME)
