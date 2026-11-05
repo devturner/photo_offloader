@@ -4,6 +4,9 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Browser tests for the dashboard page** (`tests/browser/`, Playwright, a development-only dependency that is never installed with the app). They run the real server and core against a temp sandbox and check every dashboard state: the fixed panel, the five slots, the step strip, truncation, the menu, the theme, the step buttons and that text from a card is never treated as HTML. CI runs them in a separate job and keeps screenshots in light and dark as artifacts.
+
 ### Fixed
 - **Step labels and values are no longer cut off in a narrow window.** Below 560 px wide, step labels wrap onto two lines and Progress and Files share the first row of the transfer panel, which is 10 px taller there to fit.
 - A failed or canceled import no longer says *Remaining: Done* in the transfer panel; it shows a dash.
