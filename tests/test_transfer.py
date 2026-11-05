@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from photo_offloader import card, catalog, config, fileops, media_info, transfer, volumes
-from photo_offloader.transfer import ImportStats
+from photo_offloader.transfer import DestinationResult, ImportStats
 from photo_offloader.volumes import VolumeIdentity
 from tests import support
 
@@ -262,6 +262,32 @@ class TestTransfer(support.CardFixtureTestCase):
             stats = transfer.copy_local_archive_to_usb()
         self.assertEqual((stats.destination_copies, stats.failed), (1, 0))
         self.assertEqual(len(opened), 1, f"local file was read {len(opened)} times")
+
+    def test_destination_result_defaults_are_stable(self):
+        result = DestinationResult(self.local, "copied")
+        self.assertEqual(result.destination, self.local)
+        self.assertEqual(result.status, "copied")
+        self.assertIsNone(result.path)
+        self.assertEqual(result.message, "")
+
+    def test_copy_category_records_partial_destination_failure(self):
+        source = self.root / "source.jpg"
+        source.write_bytes(b"photo")
+        stats = ImportStats(found=1)
+        copied_path = self.local / "photo.jpg"
+        copied_path.write_bytes(b"photo")
+        results = [
+            DestinationResult(self.local, "copied", copied_path, "copied and verified"),
+        ]
+
+        with patch("photo_offloader.transfer.copy_one_to_destination", side_effect=[results[0], OSError("backup unavailable")]):
+            transfer.copy_category([source], self.root, [self.local, self.usb], "JPG", stats)
+
+        self.assertEqual(stats.destination_copies, 1)
+        self.assertEqual(stats.verified_copies, 1)
+        self.assertEqual(stats.failed, 1)
+        self.assertEqual(len(stats.errors), 1)
+        self.assertIn("backup unavailable", stats.errors[0][1])
 
 
 if __name__ == "__main__":

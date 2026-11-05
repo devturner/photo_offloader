@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from photo_offloader import fileops
+from photo_offloader.fileops import FileFingerprint
 from tests import support
 
 
@@ -44,6 +45,13 @@ class TestFileops(support.CardFixtureTestCase):
         with patch.object(fileops.fcntl, "fcntl") as fcntl_call:
             fileops.sha256_file(target, nocache=True)
         self.assertTrue(any(c.args[1] == fileops.fcntl.F_NOCACHE for c in fcntl_call.call_args_list))
+
+    def test_file_fingerprint_captures_stat_identity(self):
+        source = self.root / "source.jpg"
+        source.write_bytes(b"photo")
+        fingerprint = fileops.file_fingerprint(source)
+        stat = source.stat()
+        self.assertEqual(fingerprint, FileFingerprint(stat.st_size, stat.st_mtime_ns, stat.st_ino))
 
 
 if __name__ == "__main__":

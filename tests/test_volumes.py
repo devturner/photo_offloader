@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from photo_offloader import volumes
-from photo_offloader.volumes import VolumeIdentity
+from photo_offloader.volumes import DestinationSnapshot, VolumeIdentity
 from tests import support
 
 
@@ -59,6 +59,24 @@ class TestVolumes(support.CardFixtureTestCase):
             self.assertTrue(volumes.eject_volume(self.card))
             run.return_value = MagicMock(returncode=1, stdout="", stderr="bad")
             self.assertFalse(volumes.eject_volume(self.card))
+
+    def test_destination_snapshot_is_immutable_and_ordered(self):
+        identity = VolumeIdentity(self.usb, "disk4s1", "uuid-a")
+        snapshot = DestinationSnapshot((self.local, self.usb), True, identity)
+        self.assertEqual(snapshot.destinations, (self.local, self.usb))
+        self.assertTrue(snapshot.usb_expected)
+        self.assertEqual(snapshot.usb_identity.device_identifier, "disk4s1")
+        with self.assertRaises(AttributeError):
+            snapshot.usb_expected = False
+
+    def test_volume_identity_falls_back_to_device_identifier(self):
+        mount = self.root / "volume"
+        mount.mkdir()
+        expected = VolumeIdentity(mount, "disk4s1", None)
+        current = VolumeIdentity(mount, "disk4s1", None)
+        replacement = VolumeIdentity(mount, "disk5s1", None)
+        self.assertTrue(volumes.volume_identity_matches(expected, current))
+        self.assertFalse(volumes.volume_identity_matches(expected, replacement))
 
 
 if __name__ == "__main__":
