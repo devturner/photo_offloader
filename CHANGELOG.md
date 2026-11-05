@@ -6,6 +6,7 @@ All notable changes to Photo Offloader are documented here.
 
 ### Changed (2.5)
 - **Repository and install layout.** Code is now a `photo_offloader/` package (importer, Google Photos, USB backup, `dashboard/`, `menubar/`), with entry points in `bin/` (`photo-offloader-import`, `-dashboard`, `-menubar`, `-google-sync`, `-usb-backup`), shell scripts in `scripts/` (`trigger.sh`, `import_supervisor.sh`, `service.sh`), helpers in `tools/` and tests in `tests/`. The installed app mirrors this layout. Re-running `./install.sh` upgrades an older install in place: it stops old and new processes, removes the old flat files and rewrites the LaunchAgents. `uninstall.sh` handles both layouts. The service script is now `~/Library/Application Support/PhotoOffloader/scripts/service.sh`.
+- **The 2,300-line importer is split into focused modules** (`config`, `logs`, `progress`, `fileops`, `catalog`, `card`, `media_info`, `volumes`, `transfer`, `catalog_refresh`; `importer` is now only the command line). Every path and tunable lives in `photo_offloader/config.py`, and `tests/support.py` redirects all of them for tests.
 - CI lints the whole repository (`ruff check .`, configured in `ruff.toml`) instead of a hand-kept file list.
 
 ### Removed

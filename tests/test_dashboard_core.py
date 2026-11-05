@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import importer as catalog
+from photo_offloader import catalog
 from photo_offloader.dashboard import core
 from tests import support
 

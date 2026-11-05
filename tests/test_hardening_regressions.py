@@ -4,14 +4,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import importer as app
-from photo_offloader.importer import (
-    DestinationResult,
-    DestinationSnapshot,
-    FileFingerprint,
-    ImportStats,
-    VolumeIdentity,
-)
+from photo_offloader import fileops, progress, transfer, volumes
+from photo_offloader.fileops import FileFingerprint
+from photo_offloader.transfer import DestinationResult, ImportStats
+from photo_offloader.volumes import DestinationSnapshot, VolumeIdentity
 from tests import support
 
 
@@ -28,7 +24,7 @@ class TestHardeningRegressions(unittest.TestCase):
         # Keep everything the importer writes inside this test's temp dir; without this,
         # copy_category published progress into the user's real installed status.json.
         support.isolate_config(self, self.root)
-        patcher = patch.object(app, "_PROGRESS", {"state": "idle", "bytes_done": 0, "bytes_total": 0,
+        patcher = patch.object(progress, "_PROGRESS", {"state": "idle", "bytes_done": 0, "bytes_total": 0,
                                                   "bytes_transferred": 0})
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -53,7 +49,7 @@ class TestHardeningRegressions(unittest.TestCase):
             snapshot.usb_expected = False
 
     def test_file_fingerprint_captures_stat_identity(self):
-        fingerprint = app.file_fingerprint(self.source)
+        fingerprint = fileops.file_fingerprint(self.source)
         stat = self.source.stat()
         self.assertEqual(fingerprint, FileFingerprint(stat.st_size, stat.st_mtime_ns, stat.st_ino))
 
@@ -65,8 +61,8 @@ class TestHardeningRegressions(unittest.TestCase):
             DestinationResult(self.local, "copied", copied_path, "copied and verified"),
         ]
 
-        with patch("photo_offloader.importer.copy_one_to_destination", side_effect=[results[0], OSError("backup unavailable")]):
-            app.copy_category([self.source], self.root, [self.local, self.usb], "JPG", stats)
+        with patch("photo_offloader.transfer.copy_one_to_destination", side_effect=[results[0], OSError("backup unavailable")]):
+            transfer.copy_category([self.source], self.root, [self.local, self.usb], "JPG", stats)
 
         self.assertEqual(stats.destination_copies, 1)
         self.assertEqual(stats.verified_copies, 1)
@@ -80,8 +76,8 @@ class TestHardeningRegressions(unittest.TestCase):
         expected = VolumeIdentity(mount, "disk4s1", None)
         current = VolumeIdentity(mount, "disk4s1", None)
         replacement = VolumeIdentity(mount, "disk5s1", None)
-        self.assertTrue(app.volume_identity_matches(expected, current))
-        self.assertFalse(app.volume_identity_matches(expected, replacement))
+        self.assertTrue(volumes.volume_identity_matches(expected, current))
+        self.assertFalse(volumes.volume_identity_matches(expected, replacement))
 
 
 if __name__ == "__main__":

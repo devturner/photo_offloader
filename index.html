@@ -388,7 +388,7 @@ Set `PHOTO_OFFLOADER_GPHOTOS_REMOTE` to change the remote name or `PHOTO_OFFLOAD
 
 ## 🔧 Configuration
 
-The main configuration constants are at the top of `photo_offloader/importer.py`:
+Paths and import settings are all in `photo_offloader/config.py` (archive locations, USB volume, logs, catalog, tunables); camera media types are in `photo_offloader/card.py`:
 
 - `CARD_VOLUME_GLOBS`
 - `LOCAL_DEST_ROOT`
@@ -402,7 +402,7 @@ The main configuration constants are at the top of `photo_offloader/importer.py`
 The installed copy lives at:
 
 ```text
-~/Library/Application Support/PhotoOffloader/photo_offloader/importer.py
+~/Library/Application Support/PhotoOffloader/photo_offloader/config.py
 ```
 
 ### Trigger configuration

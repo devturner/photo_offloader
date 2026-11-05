@@ -16,8 +16,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from photo_offloader import config  # noqa: E402
-from photo_offloader import importer as app  # noqa: E402
+from photo_offloader import (
+    catalog,
+    catalog_refresh,
+    config,  # noqa: E402
+)
 
 
 def main() -> int:
@@ -32,11 +35,11 @@ def main() -> int:
             config.CATALOG_DB_PATH = temp_root / "benchmark.sqlite3"
             config.STATUS_FILE_PATH = temp_root / "status.json"
             config.LOG_FILE_PATH = temp_root / "benchmark.log"
-            app._CATALOG_INITIALIZED_PATH = None
+            catalog._CATALOG_INITIALIZED_PATH = None
             results = []
             for label in ("cold_build", "repeat_refresh"):
                 started = time.perf_counter()
-                stats = app.update_file_catalog()
+                stats = catalog_refresh.update_file_catalog()
                 elapsed = time.perf_counter() - started
                 results.append({
                     "run": label,
@@ -56,7 +59,7 @@ def main() -> int:
     finally:
         for name, value in originals.items():
             setattr(config, name, value)
-        app._CATALOG_INITIALIZED_PATH = None
+        catalog._CATALOG_INITIALIZED_PATH = None
     return 0
 
 

@@ -314,8 +314,16 @@ The test suite includes filesystem-level copy tests, catalog caching/invalidatio
 
 ```text
 bin/              entry points (photo-offloader-import, -dashboard, -menubar, -google-sync, -usb-backup)
-photo_offloader/  the Python package: importer, Google Photos sync, USB backup launcher,
-                  dashboard/ (core, server, launcher, web/) and menubar/ (model, app)
+photo_offloader/  the Python package:
+                    config        every path and setting
+                    importer      command line (bin/photo-offloader-import)
+                    card          media types, card scanning, card manifest
+                    media_info    EXIF/ExifTool, camera model, archive folder
+                    transfer      copy decisions, copying a card, USB backup
+                    catalog       SQLite catalog, history, upload records
+                    catalog_refresh, fileops, volumes, progress, logs
+                    google_photos, usb_backup
+                    dashboard/ (core, server, launcher, web/), menubar/ (model, app)
 scripts/          trigger.sh (launchd), import_supervisor.sh, service.sh (start/stop/status)
 tools/            benchmark and one-off migration scripts
 tests/            unittest suite: python -m unittest discover
@@ -368,7 +376,7 @@ Set `PHOTO_OFFLOADER_GPHOTOS_REMOTE` to change the remote name or `PHOTO_OFFLOAD
 
 ## 🔧 Configuration
 
-The main configuration constants are at the top of `photo_offloader/importer.py`:
+Paths and import settings are all in `photo_offloader/config.py` (archive locations, USB volume, logs, catalog, tunables); camera media types are in `photo_offloader/card.py`:
 
 - `CARD_VOLUME_GLOBS`
 - `LOCAL_DEST_ROOT`
@@ -382,7 +390,7 @@ The main configuration constants are at the top of `photo_offloader/importer.py`
 The installed copy lives at:
 
 ```text
-~/Library/Application Support/PhotoOffloader/photo_offloader/importer.py
+~/Library/Application Support/PhotoOffloader/photo_offloader/config.py
 ```
 
 ### Trigger configuration

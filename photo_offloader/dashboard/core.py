@@ -21,8 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
-from photo_offloader import config
-from photo_offloader import importer as catalog
+from photo_offloader import catalog, config
 from photo_offloader.google_photos import parse_rclone_stats_line
 
 SERVICE_LABEL = "com.user.photooffloader"

@@ -7,9 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import config
+from photo_offloader import catalog, config
 from photo_offloader import google_photos as sync
-from photo_offloader import importer as catalog
 from tests import support
 
 

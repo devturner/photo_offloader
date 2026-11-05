@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import config, importer
+from photo_offloader import catalog, config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,6 +63,6 @@ def isolate_config(testcase: unittest.TestCase, root: Path, **overrides) -> None
         patcher.start()
         testcase.addCleanup(patcher.stop)
     # The catalog schema is set up once per database path per process.
-    patcher = patch.object(importer, "_CATALOG_INITIALIZED_PATH", None)
+    patcher = patch.object(catalog, "_CATALOG_INITIALIZED_PATH", None)
     patcher.start()
     testcase.addCleanup(patcher.stop)

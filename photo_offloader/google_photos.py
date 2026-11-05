@@ -14,8 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from photo_offloader import config
-from photo_offloader import importer as catalog
+from photo_offloader import catalog, config, logs
 
 REMOTE_NAME = os.environ.get("PHOTO_OFFLOADER_GPHOTOS_REMOTE", "gphotos").rstrip(":")
 ALBUM_NAME = os.environ.get("PHOTO_OFFLOADER_GPHOTOS_ALBUM", "Photo Offloader")
@@ -241,7 +240,7 @@ def _sync() -> int:
         # A preferences-file failure must not block a working upload.
         log_sync_event(f"Could not persist Google Photos connection preference: {exc}")
 
-    catalog.rotate_log_file(config.GOOGLE_LOG_PATH, SYNC_LOG_MAX_BYTES, SYNC_LOG_BACKUPS)
+    logs.rotate_log_file(config.GOOGLE_LOG_PATH, SYNC_LOG_MAX_BYTES, SYNC_LOG_BACKUPS)
     # Upload exactly the snapshot taken above. Files imported while the upload is
     # running are neither sent nor recorded, so the next sync picks them up.
     list_fd, list_name = tempfile.mkstemp(prefix=".upload-list-", suffix=".txt", dir=config.INSTALL_DIR)

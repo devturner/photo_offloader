@@ -11,380 +11,32 @@ card when enabled and independently synchronizes missing files to USB.
 from __future__ import annotations
 
 import argparse
-import errno
 import fcntl
-import glob
-import hashlib
 import json
 import logging
 import logging.handlers
 import os
-import plistlib
-import re
-import shutil
 import signal
-import sqlite3
-import stat
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Iterator, Optional, Sequence
 
-from photo_offloader import config
-
-try:
-    from alive_progress import alive_bar
-    HAS_ALIVE_PROGRESS = True
-except ImportError:  # pragma: no cover
-    HAS_ALIVE_PROGRESS = False
-
-    class _NullProgress:
-        def __enter__(self): return self
-        def __exit__(self, exc_type, exc_value, traceback): return False
-        def __call__(self, *args, **kwargs): return None
-
-    def alive_bar(*args, **kwargs):
-        return _NullProgress()
-
-try:
-    from PIL import Image
-except ImportError:  # pragma: no cover
-    Image = None
-
-CARD_VOLUME_GLOBS = [
-    "/Volumes/NIKON*/DCIM",
-    "/Volumes/SONY*/DCIM",
-    "/Volumes/EOS*/DCIM",
-]
-_PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
-_PROGRESS_STARTED: Optional[float] = None
-
-
-def update_status(**updates: object) -> None:
-    """Atomically publish importer progress for the menu-bar dashboard."""
-    global _PROGRESS_STARTED, _LAST_STATUS_WRITE
-    if _PROGRESS_STARTED is None:
-        _PROGRESS_STARTED = time.monotonic()
-    _PROGRESS.update(updates)
-    elapsed = max(time.monotonic() - _PROGRESS_STARTED, 0.001)
-    done = int(_PROGRESS.get("bytes_done", 0))
-    total = int(_PROGRESS.get("bytes_total", 0))
-    speed = done / elapsed
-    transferred = int(_PROGRESS.get("bytes_transferred", 0))
-    transfer_speed = transferred / elapsed
-    remaining = max(total - done, 0)
-    status = dict(_PROGRESS)
-    status.update({
-        "speed_bps": speed,
-        "transfer_speed_bps": transfer_speed,
-        "eta_seconds": remaining / speed if speed > 0 and total > done else 0,
-        "elapsed_seconds": elapsed,
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-    })
-    try:
-        config.STATUS_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temp = config.STATUS_FILE_PATH.with_suffix(".tmp")
-        temp.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
-        os.replace(temp, config.STATUS_FILE_PATH)
-        _LAST_STATUS_WRITE = time.monotonic()
-    except OSError as exc:
-        logger.debug("Could not publish dashboard status: %s", exc)
-
-
-def add_progress_bytes(amount: int, transferred: bool = False) -> None:
-    _PROGRESS["bytes_done"] = int(_PROGRESS.get("bytes_done", 0)) + amount
-    if transferred:
-        _PROGRESS["bytes_transferred"] = int(_PROGRESS.get("bytes_transferred", 0)) + amount
-    # Counters stay exact on every chunk; the on-disk status file (read by the
-    # dashboard about once a second) is rewritten at most a few times a second.
-    if time.monotonic() - _LAST_STATUS_WRITE >= STATUS_MIN_INTERVAL_SECONDS:
-        update_status()
-
-PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".heic", ".heif", ".hif"}
-RAW_EXTENSIONS = {
-    ".3fr", ".arq", ".arw", ".cr2", ".cr3", ".crw", ".dcr", ".dng", ".erf",
-    ".fff", ".gpr", ".iiq", ".k25", ".kdc", ".mef", ".mos", ".mrw", ".nef",
-    ".nrw", ".orf", ".pef", ".raf", ".raw", ".rw2", ".rwl", ".sr2", ".srf",
-    ".srw", ".x3f",
-}
-VIDEO_EXTENSIONS = {
-    ".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts", ".mxf", ".mkv", ".3gp",
-    ".crm", ".braw",
-}
-MEDIA_EXTENSIONS = {
-    **{ext: "JPG" for ext in PHOTO_EXTENSIONS},
-    **{ext: "RAW" for ext in RAW_EXTENSIONS},
-    **{ext: "VIDEO" for ext in VIDEO_EXTENSIONS},
-}
-# Camera cards keep media in more than DCIM: Sony/Canon/Panasonic video lives
-# under PRIVATE (M4ROOT, AVCHD, PANA_GRP) and some older bodies use MP_ROOT.
-CARD_SCAN_FOLDERS = ("DCIM", "PRIVATE", "MP_ROOT")
-# Files that are never worth copying even though they are not hidden.
-IGNORED_CARD_FILENAMES = {"thumbs.db", "desktop.ini"}
-MEDIA_CATEGORIES = ("JPG", "RAW", "VIDEO", "OTHER")
-
-LOG_MAX_BYTES = 5 * 1024 * 1024
-LOG_BACKUP_COUNT = 3
-COPY_CHUNK_BYTES = 4 * 1024 * 1024
-STATUS_MIN_INTERVAL_SECONDS = 0.25
-_LAST_STATUS_WRITE = 0.0
-
-logger = logging.getLogger("camera_offloader")
-
-
-def rotate_log_file(path: Path, max_bytes: int = LOG_MAX_BYTES, backups: int = LOG_BACKUP_COUNT) -> bool:
-    """Rotate ``path`` to ``path.1`` (shifting older copies) once it exceeds ``max_bytes``.
-
-    Used for logs written by other programs (rclone, shell scripts) that cannot
-    rotate themselves. Returns True when a rotation happened.
-    """
-    try:
-        if max_bytes <= 0 or backups < 1 or path.stat().st_size <= max_bytes:
-            return False
-    except OSError:
-        return False
-    try:
-        path.with_name(f"{path.name}.{backups}").unlink(missing_ok=True)
-        for index in range(backups - 1, 0, -1):
-            older = path.with_name(f"{path.name}.{index}")
-            if older.exists():
-                os.replace(older, path.with_name(f"{path.name}.{index + 1}"))
-        os.replace(path, path.with_name(f"{path.name}.1"))
-    except OSError as exc:
-        logger.debug("Could not rotate %s: %s", path, exc)
-        return False
-    return True
-
-
-@dataclass
-class ImportStats:
-    found: int = 0
-    source_bytes: int = 0
-    destination_copies: int = 0
-    destination_skips: int = 0
-    verified_copies: int = 0
-    failed: int = 0
-    errors: List[Tuple[str, str]] = field(default_factory=list)
-
-    @property
-    def copied(self) -> int: return self.destination_copies
-
-    @property
-    def skipped(self) -> int: return self.destination_skips
-
-    @property
-    def verified(self) -> int: return self.verified_copies
-
-    @property
-    def successful(self) -> bool: return self.failed == 0 and not self.errors
-
-
-@dataclass
-class DestinationResult:
-    destination: Path
-    status: str  # copied, skipped, failed
-    path: Optional[Path] = None
-    message: str = ""
-
-
-@dataclass(frozen=True)
-class VolumeIdentity:
-    mount_point: Path
-    device_identifier: Optional[str]
-    volume_uuid: Optional[str]
-
-
-@dataclass(frozen=True)
-class DestinationSnapshot:
-    destinations: Tuple[Path, ...]
-    usb_expected: bool
-    usb_identity: Optional[VolumeIdentity]
-
-
-@dataclass(frozen=True)
-class FileFingerprint:
-    size: int
-    mtime_ns: int
-    inode: int
-
-
-_CATALOG_INITIALIZED_PATH: Optional[str] = None
-
-
-def catalog_connection() -> sqlite3.Connection:
-    """Open the persistent media/location catalog, initializing its schema once per path."""
-    global _CATALOG_INITIALIZED_PATH
-    config.CATALOG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not config.CATALOG_DB_PATH.exists() and config.LEGACY_CATALOG_DB_PATH.is_file():
-        try:
-            shutil.copy2(config.LEGACY_CATALOG_DB_PATH, config.CATALOG_DB_PATH)
-            logger.info("Migrated legacy file catalog to persistent data location: %s", config.CATALOG_DB_PATH)
-        except OSError as exc:
-            logger.warning("Could not migrate legacy catalog; using the existing catalog location: %s", exc)
-            return sqlite3.connect(config.LEGACY_CATALOG_DB_PATH, timeout=10)
-    connection = sqlite3.connect(config.CATALOG_DB_PATH, timeout=10)
-    catalog_path = str(config.CATALOG_DB_PATH.resolve())
-    try:
-        # Readers (the dashboard) no longer block behind the importer's writes.
-        connection.execute("PRAGMA synchronous=NORMAL")
-    except sqlite3.Error:
-        pass
-    if _CATALOG_INITIALIZED_PATH != catalog_path:
-        try:
-            connection.execute("PRAGMA journal_mode=WAL")  # persistent per database file
-        except sqlite3.Error as exc:  # e.g. a filesystem without shared-memory support
-            logger.debug("Could not enable WAL for the catalog: %s", exc)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS file_locations (
-                path TEXT PRIMARY KEY,
-                root TEXT NOT NULL,
-                relative_path TEXT NOT NULL,
-                size INTEGER NOT NULL,
-                mtime_ns INTEGER NOT NULL,
-                inode INTEGER NOT NULL,
-                sha256 TEXT,
-                capture_month TEXT,
-                camera_model TEXT,
-                media_folder TEXT,
-                indexed_at REAL NOT NULL
-            )
-        """)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS google_photos_uploads (
-                path TEXT PRIMARY KEY,
-                size INTEGER NOT NULL,
-                mtime_ns INTEGER NOT NULL,
-                inode INTEGER NOT NULL,
-                uploaded_at REAL NOT NULL,
-                remote TEXT NOT NULL,
-                album TEXT NOT NULL
-            )
-        """)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS catalog_refreshes (
-                root TEXT PRIMARY KEY,
-                last_updated REAL NOT NULL,
-                files_scanned INTEGER NOT NULL,
-                status TEXT NOT NULL
-            )
-        """)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS import_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                started_at REAL NOT NULL,
-                finished_at REAL NOT NULL,
-                kind TEXT NOT NULL,
-                source TEXT NOT NULL DEFAULT '',
-                outcome TEXT NOT NULL,
-                files INTEGER NOT NULL DEFAULT 0,
-                copied INTEGER NOT NULL DEFAULT 0,
-                skipped INTEGER NOT NULL DEFAULT 0,
-                failed INTEGER NOT NULL DEFAULT 0,
-                bytes INTEGER NOT NULL DEFAULT 0,
-                usb INTEGER NOT NULL DEFAULT 0,
-                message TEXT NOT NULL DEFAULT ''
-            )
-        """)
-        history_columns = {row[1] for row in connection.execute("PRAGMA table_info(import_history)")}
-        if "details" not in history_columns:
-            # Per-session breakdown (new files by type, bytes, USB copies) as JSON.
-            connection.execute("ALTER TABLE import_history ADD COLUMN details TEXT NOT NULL DEFAULT '{}'")
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_root ON file_locations(root)")
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_relative ON file_locations(root, relative_path)")
-        connection.commit()
-        _CATALOG_INITIALIZED_PATH = catalog_path
-    return connection
-
-
-@contextmanager
-def catalog_db() -> Iterator[sqlite3.Connection]:
-    """Use a catalog connection for one transaction and always close its file handles."""
-    connection = catalog_connection()
-    try:
-        with connection:
-            yield connection
-    finally:
-        connection.close()
-
-
-IMPORT_HISTORY_MAX_ROWS = 500
-
-
-def record_import_run(*, kind: str, outcome: str, started_at: float, finished_at: float,
-                      source: str = "", files: int = 0, copied: int = 0, skipped: int = 0,
-                      failed: int = 0, bytes: int = 0, usb: bool = False,  # noqa: A002
-                      message: str = "", details: Optional[Dict[str, object]] = None) -> None:
-    """Persist one finished run so the dashboard can show history across restarts.
-
-    History is a convenience: any database problem is logged and swallowed so it
-    can never fail or hide a real import.
-    """
-    try:
-        with catalog_db() as db:
-            db.execute(
-                """INSERT INTO import_history
-                   (started_at, finished_at, kind, source, outcome, files, copied, skipped,
-                    failed, bytes, usb, message, details)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (float(started_at), float(finished_at), kind, source, outcome, int(files),
-                 int(copied), int(skipped), int(failed), int(bytes), int(bool(usb)),
-                 str(message)[:500], json.dumps(details or {}, sort_keys=True)),
-            )
-            db.execute(
-                """DELETE FROM import_history WHERE id NOT IN
-                   (SELECT id FROM import_history ORDER BY id DESC LIMIT ?)""",
-                (IMPORT_HISTORY_MAX_ROWS,),
-            )
-    except (OSError, sqlite3.Error) as exc:
-        logger.warning("Could not record import history: %s", exc)
-
-
-def list_import_history(limit: int = 20) -> List[Dict[str, object]]:
-    """Most recent runs first."""
-    try:
-        with catalog_db() as db:
-            rows = db.execute(
-                """SELECT id, started_at, finished_at, kind, source, outcome, files, copied,
-                          skipped, failed, bytes, usb, message, details
-                   FROM import_history ORDER BY id DESC LIMIT ?""",
-                (int(limit),),
-            ).fetchall()
-    except (OSError, sqlite3.Error) as exc:
-        logger.debug("Could not read import history: %s", exc)
-        return []
-    return [
-        {"id": r[0], "started_at": r[1], "finished_at": r[2],
-         "duration_seconds": max(r[2] - r[1], 0.0), "kind": r[3], "source": r[4],
-         "outcome": r[5], "files": r[6], "copied": r[7], "skipped": r[8], "failed": r[9],
-         "bytes": r[10], "usb": bool(r[11]), "message": r[12], "details": _parse_details(r[13])}
-        for r in rows
-    ]
-
-
-def _parse_details(text: object) -> Dict[str, object]:
-    try:
-        value = json.loads(str(text or "{}"))
-    except ValueError:
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
-def clear_import_history() -> int:
-    """Delete all recorded runs; returns how many were removed."""
-    try:
-        with catalog_db() as db:
-            return db.execute("DELETE FROM import_history").rowcount
-    except (OSError, sqlite3.Error) as exc:
-        logger.warning("Could not clear import history: %s", exc)
-        return 0
-
+from photo_offloader import (
+    card,
+    catalog,
+    catalog_refresh,
+    config,
+    logs,
+    media_info,
+    progress,
+    transfer,
+    volumes,
+)
+from photo_offloader.logs import logger
 
 # What the current run has learned so far; turned into a history row by main().
 _RUN: Dict[str, object] = {}
@@ -397,10 +49,10 @@ def _finish_run_record(exit_code: int) -> None:
     if kind == "import" and not _RUN.get("source"):
         return  # no card was ever resolved, so there is nothing worth recording
     outcome = {0: "complete", 2: "complete", 130: "canceled"}.get(exit_code, "failed")
-    message = str(_PROGRESS.get("message", "") or "")
+    message = str(progress._PROGRESS.get("message", "") or "")
     if exit_code == 2 and not message:
         message = "Copies completed, but the card could not be ejected."
-    record_import_run(
+    catalog.record_import_run(
         kind=str(kind), outcome=outcome, source=str(_RUN.get("source", "")),
         started_at=float(_RUN.get("started_at", time.time())), finished_at=time.time(),
         files=int(_RUN.get("files", 0)), copied=int(_RUN.get("copied", 0)),
@@ -414,392 +66,11 @@ def _run_details() -> Dict[str, object]:
     """What this session itself did, for the dashboard's Recent activity."""
     details: Dict[str, object] = {}
     if _RUN.get("kind") == "import":
-        details["new"] = {k: v for k, v in dict(_PROGRESS.get("new_by_category") or {}).items() if v}
-        details["new_bytes"] = int(_PROGRESS.get("new_bytes", 0) or 0)
+        details["new"] = {k: v for k, v in dict(progress._PROGRESS.get("new_by_category") or {}).items() if v}
+        details["new_bytes"] = int(progress._PROGRESS.get("new_bytes", 0) or 0)
     if "usb_copied" in _RUN:
         details["usb_copied"] = int(_RUN["usb_copied"])  # type: ignore[call-overload]
     return details
-
-
-def mark_google_photos_uploaded_many(paths: Sequence[Path], remote: str, album: str) -> int:
-    """Record cloud uploads for many files using a single connection/transaction."""
-    now = time.time()
-    rows = []
-    for path in paths:
-        try:
-            fingerprint = file_fingerprint(path)
-            rows.append((str(path.resolve()), fingerprint.size, fingerprint.mtime_ns,
-                         fingerprint.inode, now, remote, album))
-        except OSError as exc:
-            logger.debug("Skipping upload record for vanished file %s: %s", path, exc)
-    if rows:
-        with catalog_db() as db:
-            db.executemany(
-                """INSERT INTO google_photos_uploads
-                   (path, size, mtime_ns, inode, uploaded_at, remote, album)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(path) DO UPDATE SET
-                     size=excluded.size, mtime_ns=excluded.mtime_ns, inode=excluded.inode,
-                     uploaded_at=excluded.uploaded_at, remote=excluded.remote, album=excluded.album""",
-                rows,
-            )
-    return len(rows)
-
-
-def mark_google_photos_uploaded(path: Path, remote: str, album: str) -> None:
-    """Record successful cloud upload for this exact local-file fingerprint."""
-    mark_google_photos_uploaded_many([path], remote, album)
-
-
-def google_photos_uploaded_fingerprints() -> Dict[str, Tuple[int, int, int]]:
-    """Return {resolved path: (size, mtime_ns, inode)} for every recorded upload in one query."""
-    try:
-        with catalog_db() as db:
-            rows = db.execute("SELECT path, size, mtime_ns, inode FROM google_photos_uploads").fetchall()
-    except sqlite3.Error as exc:
-        logger.debug("Could not read Google Photos upload records: %s", exc)
-        return {}
-    return {row[0]: (row[1], row[2], row[3]) for row in rows}
-
-
-def google_photos_upload_record(path: Path) -> Optional[dict]:
-    """Return upload details only when the file still matches its uploaded fingerprint."""
-    try:
-        fingerprint = file_fingerprint(path)
-        with catalog_db() as db:
-            row = db.execute(
-                "SELECT size, mtime_ns, inode, uploaded_at, remote, album "
-                "FROM google_photos_uploads WHERE path = ?", (str(path.resolve()),)
-            ).fetchone()
-        if row and row[:3] == (fingerprint.size, fingerprint.mtime_ns, fingerprint.inode):
-            return {"uploaded_at": row[3], "remote": row[4], "album": row[5]}
-    except (OSError, sqlite3.Error) as exc:
-        logger.debug("Could not read Google Photos upload record for %s: %s", path, exc)
-    return None
-
-
-def catalog_row(path: Path, fingerprint: Optional[FileFingerprint] = None) -> Optional[tuple]:
-    """Return cached catalog metadata only when the filesystem fingerprint still matches."""
-    try:
-        fingerprint = fingerprint or file_fingerprint(path)
-        with catalog_db() as db:
-            row = db.execute(
-                "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
-                "FROM file_locations WHERE path = ?", (str(path.resolve()),)
-            ).fetchone()
-        if (row and row[2] == fingerprint.inode
-                and card_fingerprint_unchanged({"size": row[0], "mtime_ns": row[1]}, fingerprint)):
-            return row
-    except (OSError, sqlite3.Error) as exc:
-        logger.debug("Catalog lookup failed for %s: %s", path, exc)
-    return None
-
-
-def _catalog_upsert(db: sqlite3.Connection, path: Path, sha256: Optional[str] = None,
-                    capture_month: Optional[str] = None, camera_model: Optional[str] = None,
-                    media_folder: Optional[str] = None) -> None:
-    fingerprint = file_fingerprint(path)
-    resolved = path.resolve()
-    known_root = next(
-        (candidate.resolve() for candidate in (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT, config.USB_DEST_ROOT)
-         if resolved == candidate.resolve() or candidate.resolve() in resolved.parents),
-        None,
-    )
-    if known_root is not None:
-        root = str(known_root)
-        relative = str(resolved.relative_to(known_root))
-    else:
-        # Camera-card paths are still catalogued by their absolute location.
-        root = str(resolved.anchor)
-        relative = str(resolved).lstrip("/")
-    old = db.execute(
-        "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
-        "FROM file_locations WHERE path = ?", (str(resolved),)
-    ).fetchone()
-    same = bool(old) and old[2] == fingerprint.inode and card_fingerprint_unchanged(
-        {"size": old[0], "mtime_ns": old[1]}, fingerprint)
-    values = (
-        str(resolved), root, relative, fingerprint.size, fingerprint.mtime_ns,
-        fingerprint.inode,
-        sha256 if sha256 is not None else (old[3] if same else None),
-        capture_month if capture_month is not None else (old[4] if same else None),
-        camera_model if camera_model is not None else (old[5] if same else None),
-        media_folder if media_folder is not None else (old[6] if same else None),
-        time.time(),
-    )
-    db.execute("""
-        INSERT INTO file_locations
-        (path, root, relative_path, size, mtime_ns, inode, sha256,
-         capture_month, camera_model, media_folder, indexed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(path) DO UPDATE SET
-            root=excluded.root, relative_path=excluded.relative_path,
-            size=excluded.size, mtime_ns=excluded.mtime_ns, inode=excluded.inode,
-            sha256=excluded.sha256, capture_month=excluded.capture_month,
-            camera_model=excluded.camera_model, media_folder=excluded.media_folder,
-            indexed_at=excluded.indexed_at
-    """, values)
-
-
-def catalog_record(path: Path, *, sha256: Optional[str] = None,
-                   capture_month: Optional[str] = None,
-                   camera_model: Optional[str] = None,
-                   media_folder: Optional[str] = None) -> None:
-    """Record a file location while preserving cached fields for an unchanged file."""
-    try:
-        with catalog_db() as db:
-            _catalog_upsert(db, path, sha256, capture_month, camera_model, media_folder)
-    except (OSError, sqlite3.Error) as exc:
-        # Catalog is an optimization, never a reason to interrupt a safe import.
-        logger.debug("Could not update file catalog for %s: %s", path, exc)
-
-
-def catalog_record_many(entries: Sequence[Tuple[Path, Dict[str, Optional[str]]]]) -> int:
-    """Record many files in one transaction; files that vanished are skipped."""
-    written = 0
-    try:
-        with catalog_db() as db:
-            for path, fields in entries:
-                try:
-                    _catalog_upsert(db, path, **fields)
-                    written += 1
-                except OSError as exc:
-                    logger.debug("Could not catalog %s: %s", path, exc)
-    except sqlite3.Error as exc:
-        logger.debug("Could not update file catalog in bulk: %s", exc)
-        return 0
-    return written
-
-
-def catalog_hash_matches(source: Path, destination: Path) -> Optional[bool]:
-    """Use cached hashes only when both paths still match their indexed fingerprints."""
-    source_row = catalog_row(source)
-    destination_row = catalog_row(destination)
-    if source_row and destination_row and source_row[3] and destination_row[3]:
-        return source_row[3] == destination_row[3]
-    return None
-
-CARD_MANIFEST_DIR = ".photo-offloader"
-CARD_MANIFEST_NAME = "manifest-v1.json"
-
-
-_HOUR_NS = 3600 * 1_000_000_000
-
-
-def card_fingerprint_unchanged(entry: object, fingerprint: "FileFingerprint") -> bool:
-    """Same size and mtime, allowing an exact whole-hour mtime shift (up to 24 h).
-
-    Cameras write FAT/exFAT timestamps in local time, so after a DST change or a
-    time-zone change macOS reports every file on the card N hours off, to the
-    nanosecond. Treating that as "changed" re-hashes the whole card. A genuine
-    edit that keeps the size and moves mtime by an exact multiple of 3600.000 s
-    does not happen in practice; anything else still counts as changed.
-    """
-    if not isinstance(entry, dict) or entry.get("size") != fingerprint.size:
-        return False
-    recorded = entry.get("mtime_ns")
-    if not isinstance(recorded, int):
-        return False
-    delta = abs(fingerprint.mtime_ns - recorded)
-    return delta % _HOUR_NS == 0 and delta <= 24 * _HOUR_NS
-
-
-def card_relative_key(source: Path, dcim_folder: Path) -> str:
-    """Stable manifest key: unchanged for DCIM files, ``../PRIVATE/...`` for siblings of DCIM."""
-    return Path(os.path.relpath(source.resolve(), dcim_folder.resolve())).as_posix()
-
-
-def card_manifest_path(dcim_folder: Path) -> Path:
-    """Return the optional sidecar manifest location at the card volume root."""
-    return dcim_folder.resolve().parent / CARD_MANIFEST_DIR / CARD_MANIFEST_NAME
-
-
-def load_card_manifest_payload(dcim_folder: Path) -> Dict[str, object]:
-    """Read the complete card-side manifest, tolerating absent/corrupt/read-only media."""
-    try:
-        payload = json.loads(card_manifest_path(dcim_folder).read_text(encoding="utf-8"))
-        if isinstance(payload, dict) and payload.get("schema") == 1 and isinstance(payload.get("files"), dict):
-            return payload
-    except (OSError, ValueError, AttributeError):
-        pass
-    return {"schema": 1, "files": {}, "history": {}}
-
-
-def load_card_manifest(dcim_folder: Path) -> Dict[str, dict]:
-    """Read per-file fingerprints and hashes from the card-side manifest."""
-    payload = load_card_manifest_payload(dcim_folder)
-    files = payload.get("files", {})
-    return files if isinstance(files, dict) else {}
-
-
-def save_card_manifest(
-    dcim_folder: Path, files: Dict[str, dict], history: Optional[Dict[str, object]] = None,
-) -> bool:
-    """Atomically persist card metadata; inability to write never blocks import."""
-    path = card_manifest_path(dcim_folder)
-    temp_path: Optional[Path] = None
-    try:
-        previous = load_card_manifest_payload(dcim_folder)
-        metadata = history if history is not None else previous.get("history", {})
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(prefix=".manifest-", suffix=".tmp", dir=path.parent)
-        temp_path = Path(temp_name)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"schema": 1, "files": files, "history": metadata},
-                      handle, separators=(",", ":"), sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, path)
-        return True
-    except (OSError, TypeError, ValueError) as exc:
-        logger.info("Card-side cache is unavailable; continuing with Mac catalog: %s", exc)
-        if temp_path is not None:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-        return False
-
-
-def reconcile_card_manifest(
-    dcim_folder: Path, discovered: Dict[str, List[Path]],
-) -> Dict[str, int]:
-    """Compare the live card inventory with the prior manifest without trusting it to skip copies."""
-    now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat() + "Z"
-    payload = load_card_manifest_payload(dcim_folder)
-    manifest = payload.get("files", {})
-    if not isinstance(manifest, dict):
-        manifest = {}
-    prior_paths = set(manifest)
-    current_paths = set()
-    new_files = changed_files = unchanged_files = 0
-    for category_paths in discovered.values():
-        for source in category_paths:
-            try:
-                relative = card_relative_key(source, dcim_folder)
-                fingerprint = file_fingerprint(source)
-            except (OSError, ValueError):
-                continue
-            current_paths.add(relative)
-            previous = manifest.get(relative)
-            if not isinstance(previous, dict):
-                new_files += 1
-                entry = {}
-            elif not card_fingerprint_unchanged(previous, fingerprint):
-                changed_files += 1
-                entry = dict(previous)
-                # Invalidate stale hashes; a changed file must be hashed and verified again.
-                entry.pop("sha256", None)
-            else:
-                unchanged_files += 1
-                entry = dict(previous)
-            entry.update({"size": fingerprint.size, "mtime_ns": fingerprint.mtime_ns,
-                          "last_seen": now})
-            manifest[relative] = entry
-    counts = {
-        "new_files": new_files,
-        "changed_files": changed_files,
-        "unchanged_manifest_files": unchanged_files,
-        "missing_from_card": len(prior_paths - current_paths),
-    }
-    history = payload.get("history", {})
-    history = dict(history) if isinstance(history, dict) else {}
-    history.update(counts)
-    history["last_seen"] = now
-    # This is an inventory observation, not a completed import.
-    save_card_manifest(dcim_folder, manifest, history)
-    return counts
-
-
-def update_card_scan_history(
-    dcim_folder: Path, files: Dict[str, List[Path]], status: str,
-    verified_imported: int = 0, pending_or_failed: int = 0,
-) -> bool:
-    """Record scan/import reconciliation metadata without claiming failed scans succeeded."""
-    now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat() + "Z"
-    previous = load_card_manifest_payload(dcim_folder)
-    history = previous.get("history", {})
-    if not isinstance(history, dict):
-        history = {}
-    history = dict(history)
-    history["last_seen"] = now
-    history["last_scan_status"] = status
-    history["files_discovered"] = sum(len(items) for items in files.values())
-    history["files_verified_imported"] = int(verified_imported)
-    history["pending_or_failed"] = int(pending_or_failed)
-    if status == "complete":
-        history["last_scan_completed"] = now
-        history["last_successful_import"] = now
-    return save_card_manifest(dcim_folder, load_card_manifest(dcim_folder), history)
-
-
-def card_manifest_entry(
-    manifest: Dict[str, dict], source: Path, dcim_folder: Path,
-) -> Optional[str]:
-    """Return a card-cached hash only when relative path, size, and mtime still match."""
-    try:
-        relative = card_relative_key(source, dcim_folder)
-        entry = manifest.get(relative)
-        fingerprint = file_fingerprint(source)
-        if card_fingerprint_unchanged(entry, fingerprint) and isinstance(entry.get("sha256"), str):
-            return entry["sha256"]
-    except (OSError, ValueError):
-        pass
-    return None
-
-
-def update_card_manifest_entry(
-    manifest: Dict[str, dict], source: Path, dcim_folder: Path, digest: str,
-) -> None:
-    """Cache a verified source hash keyed by card-relative path and stable fingerprint."""
-    try:
-        relative = card_relative_key(source, dcim_folder)
-        fingerprint = file_fingerprint(source)
-        manifest[relative] = {
-            "size": fingerprint.size,
-            "mtime_ns": fingerprint.mtime_ns,
-            "sha256": digest,
-        }
-    except (OSError, ValueError):
-        pass
-
-
-def hash_for_copy_decision(
-    source: Path, destination: Path, dcim_folder: Path, manifest: Dict[str, dict],
-) -> Tuple[str, str]:
-    """Reuse trustworthy cached hashes and avoid database writes on cache hits."""
-    # The card manifest is the cheapest source of truth. Only query SQLite when
-    # the card-side fingerprint is absent or stale.
-    source_hash = card_manifest_entry(manifest, source, dcim_folder)
-    source_hash_was_cached = source_hash is not None
-    source_row = None
-    if source_hash is None:
-        source_row = catalog_row(source)
-        if source_row and source_row[3]:
-            source_hash = str(source_row[3])
-            source_hash_was_cached = True
-
-    # Destination hashes are reusable only when its indexed fingerprint still
-    # matches the current file. A missing/stale row requires a content hash.
-    destination_row = catalog_row(destination)
-    destination_hash = (
-        str(destination_row[3])
-        if destination_row and destination_row[3]
-        else None
-    )
-    if source_hash is None:
-        source_hash = sha256_file(source)
-    if destination_hash is None:
-        destination_hash = sha256_file(destination)
-
-    # Persist hashes only when we had to establish them; do not open and commit
-    # two more SQLite transactions for every unchanged duplicate on every insert.
-    if not source_hash_was_cached:
-        catalog_record(source, sha256=source_hash)
-    if not destination_row or not destination_row[3]:
-        catalog_record(destination, sha256=destination_hash)
-    update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
-    return source_hash, destination_hash
 
 
 def load_build_info() -> Dict[str, str]:
@@ -849,7 +120,7 @@ def launch_google_photos_sync() -> None:
         return
     try:
         log_path = config.GOOGLE_LAUNCHER_LOG_PATH
-        rotate_log_file(log_path, max_bytes=1024 * 1024, backups=1)
+        logs.rotate_log_file(log_path, max_bytes=1024 * 1024, backups=1)
         with log_path.open("a", encoding="utf-8") as output:
             subprocess.Popen([sys.executable, str(config.GOOGLE_PHOTOS_SYNC_PATH), "--sync"], stdin=subprocess.DEVNULL,
                              stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
@@ -867,7 +138,7 @@ def configure_logging(verbose: bool = False) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     fh = logging.handlers.RotatingFileHandler(
-        config.LOG_FILE_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8")
+        config.LOG_FILE_PATH, maxBytes=logs.LOG_MAX_BYTES, backupCount=logs.LOG_BACKUP_COUNT, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(formatter)
     ch = logging.StreamHandler()
@@ -875,25 +146,8 @@ def configure_logging(verbose: bool = False) -> None:
     ch.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     logger.addHandler(fh)
     logger.addHandler(ch)
-    if not HAS_ALIVE_PROGRESS:
+    if not progress.HAS_ALIVE_PROGRESS:
         logger.warning("alive-progress is not installed; progress output is disabled.")
-
-
-def notify(title: str, text: str) -> None:
-    script = """
-    on run argv
-        display notification (item 2 of argv) with title (item 1 of argv)
-    end run
-    """
-    try:
-        result = subprocess.run(
-            ["osascript", "-e", script, title, text],
-            check=False, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            logger.warning("Notification failed: %s", result.stderr.strip())
-    except OSError as exc:
-        logger.warning("Could not show notification: %s", exc)
 
 
 @contextmanager
@@ -919,1109 +173,6 @@ def import_session_lock() -> Iterator[None]:
                 pass
 
 
-def find_card_dcim() -> Path:
-    matches: List[Path] = []
-    for pattern in CARD_VOLUME_GLOBS:
-        for raw in glob.glob(pattern):
-            path = Path(raw)
-            if path.is_dir():
-                matches.append(path)
-    matches = sorted(set(matches), key=lambda p: str(p).lower())
-    default = str(matches[0].parent) if len(matches) == 1 else ""
-    prompt = "Source card volume or DCIM folder"
-    if default:
-        prompt += f" [{default}]"
-    entered = input(prompt + ": ").strip()
-    if entered:
-        return resolve_dcim_path(Path(entered).expanduser())
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        print("\nMultiple matching cards found:")
-        for i, path in enumerate(matches, 1):
-            print(f"  {i}. {path.parent}")
-        try:
-            return matches[int(input("Enter the number of the source card: ")) - 1]
-        except (ValueError, IndexError) as exc:
-            raise RuntimeError("Invalid card selection.") from exc
-    raise RuntimeError("No recognized card was found.")
-
-
-def resolve_dcim_path(path: Path) -> Path:
-    path = path.expanduser().resolve()
-    if path.name.lower() == "dcim" and path.is_dir():
-        return path
-    dcim = path / "DCIM"
-    if dcim.is_dir():
-        return dcim
-    raise RuntimeError(f"DCIM folder not found at {dcim if path.name.lower() != 'dcim' else path}")
-
-
-def _walk_card_files(root: Path) -> Iterator[Path]:
-    """Yield regular, non-hidden files under ``root`` (one stat-free scandir pass)."""
-    stack = [root]
-    while stack:
-        current = stack.pop()
-        try:
-            with os.scandir(current) as entries:
-                for entry in entries:
-                    if entry.name.startswith("."):
-                        continue
-                    try:
-                        if entry.is_symlink():
-                            continue
-                        if entry.is_dir(follow_symlinks=False):
-                            stack.append(Path(entry.path))
-                        elif entry.is_file(follow_symlinks=False):
-                            yield Path(entry.path)
-                    except OSError as exc:
-                        logger.error("Could not inspect %s: %s", entry.path, exc)
-        except OSError as exc:
-            logger.error("Could not read %s: %s", current, exc)
-
-
-def find_media_files(dcim_folder: Path) -> Dict[str, List[Path]]:
-    """Inventory a camera card.
-
-    Known photo/RAW/video types are categorised; every other file is returned
-    under ``OTHER`` instead of being ignored, so nothing on the card is silently
-    left behind (sidecar XML, thumbnails, unfamiliar RAW formats, AVCHD indexes).
-    """
-    files: Dict[str, List[Path]] = {category: [] for category in MEDIA_CATEGORIES}
-    card_root = dcim_folder.parent
-    roots = [dcim_folder] + [
-        card_root / name for name in CARD_SCAN_FOLDERS[1:] if (card_root / name).is_dir()
-    ]
-    for root in roots:
-        for path in _walk_card_files(root):
-            if path.name.lower() in IGNORED_CARD_FILENAMES:
-                continue
-            files[MEDIA_EXTENSIONS.get(path.suffix.lower(), "OTHER")].append(path)
-    for category in files:
-        files[category].sort(key=lambda p: str(p).lower())
-    return files
-
-
-def scan_with_retry(dcim_folder: Path) -> Dict[str, List[Path]]:
-    files = find_media_files(dcim_folder)
-    if any(files.values()):
-        return files
-    deadline = time.monotonic() + config.WAIT_SECONDS
-    while time.monotonic() < deadline:
-        logger.info("No matching files visible yet; checking again...")
-        time.sleep(2)
-        files = find_media_files(dcim_folder)
-        if any(files.values()):
-            break
-    return files
-
-
-def sha256_file(path: Path, chunk_size: int = 1024 * 1024, nocache: bool = False) -> str:
-    """SHA-256 of a file. ``nocache`` bypasses the macOS page cache so a verification
-    read comes from the disk that was just written, not from RAM."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        if nocache and hasattr(fcntl, "F_NOCACHE"):
-            try:
-                fcntl.fcntl(handle.fileno(), fcntl.F_NOCACHE, 1)
-            except OSError:
-                pass
-        while chunk := handle.read(chunk_size):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def file_fingerprint(path: Path) -> FileFingerprint:
-    info = path.stat()
-    return FileFingerprint(info.st_size, info.st_mtime_ns, info.st_ino)
-
-
-def files_match(source: Path, destination: Path, force_sha256: bool = False) -> bool:
-    try:
-        if source.stat().st_size != destination.stat().st_size:
-            return False
-        if config.VERIFY_WITH_SHA256 or force_sha256:
-            return sha256_file(source) == sha256_file(destination)
-        return True
-    except OSError:
-        return False
-
-
-def _same_file(first: Path, second: Path) -> bool:
-    try:
-        return os.path.samefile(first, second)
-    except OSError:
-        return False
-
-
-# Index/database files the camera itself rewrites on every shoot. They never match
-# the previous copy, so keeping conflict copies would pile up one per import; the
-# newest version replaces the old one instead (locally and on USB).
-CAMERA_INDEX_FILE_NAMES = frozenset({
-    "NC_FLLST.DAT",   # Nikon file list
-    "MEDIAPRO.XML",   # Sony clip index (PRIVATE/M4ROOT)
-})
-
-
-def is_camera_index_file(path: Path) -> bool:
-    return path.name.upper() in CAMERA_INDEX_FILE_NAMES
-
-
-def install_file(temp_path: Path, final_path: Path, replace: bool = False) -> bool:
-    """Install a verified temp file; only camera index files may replace an existing file."""
-    if replace:
-        os.replace(temp_path, final_path)  # same directory, so atomic
-        return True
-    return install_without_overwrite(temp_path, final_path)
-
-
-def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
-    try:
-        os.link(temp_path, final_path)
-        return True
-    except FileExistsError:
-        return False
-    except OSError as exc:
-        unsupported = {errno.EXDEV, errno.EPERM, errno.EACCES,
-                       getattr(errno, "EOPNOTSUPP", -1), getattr(errno, "ENOTSUP", -1)}
-        if exc.errno not in unsupported:
-            raise
-    fd = os.open(final_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
-    try:
-        with os.fdopen(fd, "wb") as output, temp_path.open("rb") as source:
-            shutil.copyfileobj(source, output)
-            output.flush()
-            os.fsync(output.fileno())
-    except Exception:
-        try:
-            final_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-    return True
-
-
-def _parse_exif_datetime_value(value: str) -> Optional[datetime]:
-    text = value.strip().replace("Z", "+00:00").replace("/", "-")
-    normalized = re.sub(
-        r"^(\d{4})[-:](\d{2})[-:](\d{2})[ T](\d{2}):(\d{2}):(\d{2})",
-        r"\1-\2-\3 \4:\5:\6", text,
-    )
-    for candidate in (text, normalized):
-        for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S",
-                     "%Y-%m-%d %H:%M:%S%z", "%Y-%m-%dT%H:%M:%S",
-                     "%Y-%m-%dT%H:%M:%S%z"):
-            try:
-                return datetime.strptime(candidate, fmt)
-            except ValueError:
-                pass
-        try:
-            return datetime.fromisoformat(candidate)
-        except ValueError:
-            pass
-    return None
-
-
-
-def get_exiftool_metadata_batch(paths: List[Path], tags: List[str], batch_size: int = 100) -> dict:
-    """Read selected tags for many files per ExifTool process, keyed by absolute path."""
-    exiftool = find_exiftool()
-    if not exiftool or not paths:
-        return {}
-    results = {}
-    total_batches = (len(paths) + batch_size - 1) // batch_size
-    started = time.monotonic()
-    logger.info(
-        "ExifTool metadata phase started: %d uncached files in %d batches (batch size %d).",
-        len(paths), total_batches, batch_size,
-    )
-    for offset in range(0, len(paths), batch_size):
-        batch = paths[offset:offset + batch_size]
-        batch_number = offset // batch_size + 1
-        batch_started = time.monotonic()
-        logger.info(
-            "ExifTool heartbeat: starting batch %d/%d (%d files; %d/%d submitted).",
-            batch_number, total_batches, len(batch), offset, len(paths),
-        )
-        try:
-            result = subprocess.run(
-                [exiftool, "-j", "-charset", "filename=UTF8", *tags, *map(str, batch)],
-                check=False, capture_output=True, text=True, timeout=max(15, len(batch) // 2),
-            )
-            if result.returncode != 0 or not result.stdout.strip():
-                logger.warning("ExifTool batch %d/%d returned no metadata after %.1fs: %s",
-                               batch_number, total_batches, time.monotonic() - batch_started,
-                               result.stderr.strip())
-                continue
-            records = json.loads(result.stdout)
-            batch_results = 0
-            for record in records if isinstance(records, list) else []:
-                if not isinstance(record, dict) or not record.get("SourceFile"):
-                    continue
-                results[str(Path(record["SourceFile"]).resolve())] = record
-                batch_results += 1
-            logger.info(
-                "ExifTool heartbeat: finished batch %d/%d; metadata records %d/%d; "
-                "%.1fs this batch, %.1fs total.",
-                batch_number, total_batches, min(offset + len(batch), len(paths)), len(paths),
-                time.monotonic() - batch_started, time.monotonic() - started,
-            )
-        except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
-            logger.warning("ExifTool batch %d/%d failed after %.1fs: %s",
-                           batch_number, total_batches, time.monotonic() - batch_started, exc)
-    logger.info("ExifTool metadata phase complete: %d/%d records in %.1fs.",
-                len(results), len(paths), time.monotonic() - started)
-    return results
-
-
-def get_exiftool_metadata(path: Path, tags: List[str]) -> dict:
-    """Read selected metadata with ExifTool for formats Pillow cannot decode."""
-    exiftool = find_exiftool()
-    if not exiftool:
-        logger.debug("exiftool is unavailable; metadata fallback skipped for %s", path)
-        return {}
-    try:
-        result = subprocess.run(
-            [exiftool, "-j", *tags, str(path)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            logger.debug("ExifTool returned no metadata for %s: %s", path, result.stderr.strip())
-            return {}
-        metadata = json.loads(result.stdout)
-        return metadata[0] if metadata and isinstance(metadata[0], dict) else {}
-    except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
-        logger.debug("Could not read ExifTool metadata for %s: %s", path, exc)
-        return {}
-
-
-def get_exif_datetime(path: Path) -> Optional[datetime]:
-    if path.suffix.lower() in VIDEO_EXTENSIONS or path.suffix.lower() not in MEDIA_EXTENSIONS:
-        return None
-
-    # Pillow often cannot identify proprietary camera RAW formats such as Nikon NEF.
-    if path.suffix.lower() in RAW_EXTENSIONS:
-        metadata = get_exiftool_metadata(
-            path, ["-DateTimeOriginal", "-CreateDate", "-DateTimeDigitized", "-ModifyDate"]
-        )
-        for tag in ("DateTimeOriginal", "CreateDate", "DateTimeDigitized", "ModifyDate"):
-            value = metadata.get(tag)
-            if isinstance(value, str):
-                parsed = _parse_exif_datetime_value(value)
-                if parsed:
-                    return parsed
-        return None
-
-    if Image is not None:
-        try:
-            with Image.open(path) as image:
-                exif = image.getexif()
-                for tag in (36867, 36868, 306):
-                    value = exif.get(tag) if exif else None
-                    if isinstance(value, bytes):
-                        value = value.decode("utf-8", errors="ignore")
-                    if isinstance(value, str):
-                        parsed = _parse_exif_datetime_value(value)
-                        if parsed:
-                            return parsed
-        except Exception as exc:  # best effort
-            logger.debug("Could not read EXIF date for %s: %s", path, exc)
-
-    # Fallback is useful for formats that Pillow cannot open despite having EXIF.
-    metadata = get_exiftool_metadata(
-        path, ["-DateTimeOriginal", "-CreateDate", "-DateTimeDigitized", "-ModifyDate"]
-    )
-    for tag in ("DateTimeOriginal", "CreateDate", "DateTimeDigitized", "ModifyDate"):
-        value = metadata.get(tag)
-        if isinstance(value, str):
-            parsed = _parse_exif_datetime_value(value)
-            if parsed:
-                return parsed
-    return None
-
-
-def normalize_camera_model(make: object, model: object) -> str:
-    """Return a stable, filesystem-safe camera identifier from EXIF values."""
-    def clean(value: object) -> str:
-        if isinstance(value, bytes):
-            value = value.decode("utf-8", errors="ignore")
-        if not isinstance(value, str):
-            return ""
-        return re.sub(r"\\s+", " ", value).strip()
-
-    make_text = clean(make)
-    model_text = clean(model)
-    make_prefix = re.sub(r"\s+(?:corporation|corp\.?|inc\.?|co\.?)$", "", make_text, flags=re.IGNORECASE)
-    if make_text and model_text:
-        combined = (
-            model_text
-            if model_text.lower().startswith(make_prefix.lower())
-            else f"{make_prefix} {model_text}"
-        )
-    else:
-        combined = model_text or make_prefix or make_text
-    combined = re.sub(r"[^A-Za-z0-9._-]+", "-", combined)
-    combined = re.sub(r"-+", "-", combined).strip(".-_")
-    return combined or "Unknown-Camera"
-
-
-@lru_cache(maxsize=1)
-def find_exiftool() -> Optional[str]:
-    """Find exiftool once per importer process, even with launchd’s minimal PATH."""
-    exiftool = shutil.which("exiftool")
-    if exiftool:
-        return exiftool
-
-    # launchd jobs often do not inherit Homebrew's PATH entries.
-    for candidate in (
-        Path("/opt/homebrew/bin/exiftool"),
-        Path("/usr/local/bin/exiftool"),
-        Path("/opt/local/bin/exiftool"),
-    ):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            logger.debug("Found exiftool at its standard install path: %s", candidate)
-            return str(candidate)
-    return None
-
-
-def get_camera_model_from_exiftool(path: Path) -> str:
-    """Read camera make/model from video or camera RAW metadata."""
-    if path.suffix.lower() not in VIDEO_EXTENSIONS and path.suffix.lower() not in RAW_EXTENSIONS:
-        return "Unknown-Camera"
-    metadata = get_exiftool_metadata(path, ["-Make", "-Model"])
-    return normalize_camera_model(metadata.get("Make"), metadata.get("Model"))
-
-
-def get_camera_model(path: Path) -> str:
-    """Read camera make/model once per unchanged file and cache it in SQLite."""
-    if path.suffix.lower() not in MEDIA_EXTENSIONS:
-        return "Unknown-Camera"
-    cached = catalog_row(path)
-    if cached and cached[5]:
-        return str(cached[5])
-    suffix = path.suffix.lower()
-    model = ""
-    if suffix in VIDEO_EXTENSIONS or suffix in RAW_EXTENSIONS:
-        model = get_camera_model_from_exiftool(path)
-    else:
-        if Image is not None:
-            try:
-                with Image.open(path) as image:
-                    exif = image.getexif()
-                    if exif:
-                        model = normalize_camera_model(exif.get(271), exif.get(272))
-            except Exception as exc:  # best effort
-                logger.debug("Could not read camera EXIF for %s: %s", path, exc)
-        if not model or model == "Unknown-Camera":
-            metadata = get_exiftool_metadata(path, ["-Make", "-Model"])
-            model = normalize_camera_model(metadata.get("Make"), metadata.get("Model"))
-    catalog_record(path, camera_model=model or "Unknown-Camera")
-    return model or "Unknown-Camera"
-
-
-def _month_from_file_time(source: Path) -> str:
-    info = source.stat()
-    birth = getattr(info, "st_birthtime", None) if config.USE_FILE_BIRTH_TIME else None
-    return datetime.fromtimestamp(birth if birth is not None else info.st_mtime).strftime("%Y-%m")
-
-
-def get_month_folder(source: Path) -> str:
-    cached = catalog_row(source)
-    if cached and cached[4]:
-        return str(cached[4])
-    timestamp = get_exif_datetime(source)
-    month = timestamp.strftime("%Y-%m") if timestamp is not None else _month_from_file_time(source)
-    catalog_record(source, capture_month=month)
-    return month
-
-
-EXIF_DATE_TAGS = ("DateTimeOriginal", "CreateDate", "DateTimeDigitized", "ModifyDate")
-
-
-def prefetch_card_metadata(files: Dict[str, List[Path]]) -> int:
-    """Read capture month and camera for uncached RAW/video files in batched ExifTool runs.
-
-    The per-file path (get_month_folder/get_camera_model) starts ExifTool twice per
-    RAW, about 0.3 s each time; for a fresh card of ~1,200 RAWs that is minutes
-    before copying starts. Results are cached in the catalog, which the per-file
-    path then reads. It produces the same values as the per-file path: RAW months
-    come from EXIF dates, video months from file time (see get_exif_datetime).
-    Anything the batch cannot answer is left to the per-file path.
-    """
-    candidates: List[Path] = []
-    for category in ("RAW", "VIDEO"):
-        for path in files.get(category, []):
-            row = catalog_row(path)
-            if not (row and row[4] and row[5]):
-                candidates.append(path)
-    if not candidates or not find_exiftool():
-        return 0
-    update_status(state="scanning", phase="card-to-ssd", stage="metadata", current_file="",
-                  message=f"Reading photo info for {len(candidates):,} new files")
-    metadata = get_exiftool_metadata_batch(candidates, [f"-{tag}" for tag in EXIF_DATE_TAGS] + ["-Make", "-Model"])
-    entries: List[Tuple[Path, Dict[str, Optional[str]]]] = []
-    for path in candidates:
-        record = metadata.get(str(path.resolve()))
-        if not record:
-            continue
-        timestamp = None
-        if path.suffix.lower() in RAW_EXTENSIONS:
-            for tag in EXIF_DATE_TAGS:
-                value = record.get(tag)
-                if isinstance(value, str):
-                    timestamp = _parse_exif_datetime_value(value)
-                    if timestamp:
-                        break
-        try:
-            month = timestamp.strftime("%Y-%m") if timestamp else _month_from_file_time(path)
-        except OSError:
-            continue
-        entries.append((path, {"capture_month": month,
-                               "camera_model": normalize_camera_model(record.get("Make"), record.get("Model"))}))
-    return catalog_record_many(entries)
-
-
-def get_media_type_folder(source: Path) -> str:
-    """Map a supported media extension to its human-friendly destination folder."""
-    category = MEDIA_EXTENSIONS.get(source.suffix.lower())
-    return {"JPG": "Photos", "RAW": "Raws", "VIDEO": "Movies"}.get(category, "Other")
-
-
-def local_root_for_category(category: str) -> Path:
-    """Choose the top-level local archive by media category."""
-    return config.LOCAL_RAW_DEST_ROOT if category == "RAW" else config.LOCAL_DEST_ROOT
-
-
-def build_destination_path(source: Path, dcim_folder: Path, destination_base: Path) -> Path:
-    return (
-        destination_base
-        / get_month_folder(source)
-        / get_camera_model(source)
-        / get_media_type_folder(source)
-        / source.name
-    )
-
-
-def copy_file_with_progress(source: Path, destination: Path) -> str:
-    """Copy in chunks so progress and ETA update even for large video files.
-
-    Returns the SHA-256 of the bytes that were read from ``source``, computed in
-    the same pass, so the source never has to be read a second time to verify.
-    """
-    digest = hashlib.sha256()
-    with source.open("rb") as input_file, destination.open("wb") as output_file:
-        while chunk := input_file.read(COPY_CHUNK_BYTES):
-            digest.update(chunk)
-            output_file.write(chunk)
-            add_progress_bytes(len(chunk), transferred=True)
-        output_file.flush()
-        os.fsync(output_file.fileno())
-    shutil.copystat(source, destination, follow_symlinks=True)
-    return digest.hexdigest()
-
-
-def copy_one_to_destination(
-    source: Path, dcim_folder: Path, destination_base: Path,
-    card_manifest: Optional[Dict[str, dict]] = None,
-) -> DestinationResult:
-    before = file_fingerprint(source)
-    manifest = card_manifest if card_manifest is not None else load_card_manifest(dcim_folder)
-    update_status(state="scanning", phase="copy-decision", current_file=source.name,
-                  current_path=str(source), message=f"Checking existing file: {source.name}",
-                  decision_files_checked=int(_PROGRESS.get("decision_files_checked", 0)),
-                  decision_files_total=int(_PROGRESS.get("decision_files_total", 0)))
-    final_path = build_destination_path(source, dcim_folder, destination_base)
-    final_path.parent.mkdir(parents=True, exist_ok=True)
-    replace_existing = False
-
-    if final_path.exists() and final_path.is_file():
-        try:
-            source_hash, destination_hash = hash_for_copy_decision(
-                source, final_path, dcim_folder, manifest
-            )
-            if source_hash == destination_hash:
-                add_progress_bytes(before.size)
-                update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
-                update_status(state="copying", phase="copy", message="Existing file verified; continuing")
-                return DestinationResult(destination_base, "skipped", final_path,
-                                         "already exists and matches cached/verified hash")
-        except OSError as exc:
-            logger.warning("Could not verify existing file %s: %s", final_path, exc)
-        if is_camera_index_file(source):
-            replace_existing = True
-            logger.info("Camera index file changed; replacing the previous copy: %s", final_path)
-        else:
-            stem, suffix = final_path.stem, final_path.suffix
-            counter = 1
-            while True:
-                candidate = final_path.with_name(f"{stem}__conflict-{counter}{suffix}")
-                if not candidate.exists():
-                    final_path = candidate
-                    break
-                counter += 1
-            logger.warning("Filename conflict for %s; using %s", source, final_path.name)
-
-    update_status(state="copying", phase="copy", current_file=source.name,
-                  current_path=str(source), message=f"Copying {source.name}")
-    temp_path: Optional[Path] = None
-    try:
-        fd, temp_name = tempfile.mkstemp(prefix=".photo-copy-", suffix=".tmp", dir=final_path.parent)
-        os.close(fd)
-        temp_path = Path(temp_name)
-        source_hash = copy_file_with_progress(source, temp_path)
-        after_copy = file_fingerprint(source)
-        if after_copy != before:
-            raise IOError(f"Source changed during copy: {source}")
-        if not source_hash:  # copy helper replaced/legacy: fall back to a second read
-            source_hash = sha256_file(source)
-        # Verify what is actually on the destination disk against what was read
-        # from the card (cache-bypassing read where the OS supports it).
-        if sha256_file(temp_path, nocache=True) != source_hash:
-            raise IOError(f"Verification failed for temporary copy: {source}")
-        if not install_file(temp_path, final_path, replace=replace_existing):
-            if files_match(source, final_path, force_sha256=True):
-                return DestinationResult(destination_base, "skipped", final_path,
-                                         "another process created a matching file")
-            raise FileExistsError(f"Destination appeared during copy and does not match source: {final_path}")
-        if not _same_file(temp_path, final_path) and sha256_file(final_path, nocache=True) != source_hash:
-            # Hard-linked installs share the verified inode; only a fallback
-            # copy (e.g. exFAT) is a fresh write that needs its own check.
-            try:
-                final_path.unlink(missing_ok=True)
-            except OSError:
-                logger.exception("Could not remove failed destination %s", final_path)
-            raise IOError(f"Final verification failed: {final_path}")
-
-        # Camera media can arrive with owner-only or executable mode bits
-        # (for example, 0700). Do not propagate those source permissions to
-        # imported photos/videos. Imported media should be regular user files,
-        # not executables, while remaining private to the importing user.
-        os.chmod(final_path, stat.S_IRUSR | stat.S_IWUSR)
-        # Persist content hashes after a successful copy so later card insertions
-        # can compare cached source/destination hashes without rereading large RAWs.
-        catalog_record(source, sha256=source_hash)
-        catalog_record(final_path, sha256=source_hash)
-        update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
-        update_status(state="copying", phase="copy", message="Copy verified")
-        return DestinationResult(destination_base, "copied", final_path, "copied and verified")
-    finally:
-        if temp_path is not None:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError as exc:
-                logger.warning("Could not remove temporary file %s: %s", temp_path, exc)
-
-
-def usb_is_mounted() -> bool:
-    return config.USB_DEST_VOLUME.is_dir() and config.USB_DEST_VOLUME.is_mount()
-
-
-def get_volume_identity(volume_path: Path) -> Optional[VolumeIdentity]:
-    if not volume_path.is_dir():
-        return None
-    try:
-        result = subprocess.run(["diskutil", "info", "-plist", str(volume_path)],
-                                check=False, capture_output=True)
-        if result.returncode != 0:
-            return None
-        info = plistlib.loads(result.stdout)
-        return VolumeIdentity(volume_path.resolve(), info.get("DeviceIdentifier"), info.get("VolumeUUID"))
-    except (OSError, plistlib.InvalidFileException, ValueError):
-        return None
-
-
-def volume_identity_matches(expected: Optional[VolumeIdentity], current: Optional[VolumeIdentity]) -> bool:
-    if expected is None:
-        return True
-    if current is None or expected.mount_point != current.mount_point:
-        return False
-    if expected.volume_uuid and current.volume_uuid:
-        return expected.volume_uuid == current.volume_uuid
-    if expected.device_identifier and current.device_identifier:
-        return expected.device_identifier == current.device_identifier
-    return expected.mount_point == current.mount_point
-
-
-def snapshot_destinations(no_usb: bool = False) -> DestinationSnapshot:
-    if no_usb or not usb_is_mounted():
-        return DestinationSnapshot((config.LOCAL_DEST_ROOT,), False, None)
-    identity = get_volume_identity(config.USB_DEST_VOLUME)
-    return DestinationSnapshot((config.LOCAL_DEST_ROOT, config.USB_DEST_ROOT), True, identity)
-
-
-def required_source_bytes(files: Dict[str, List[Path]]) -> int:
-    total = 0
-    for items in files.values():
-        for path in items:
-            total += path.stat().st_size
-    return total
-
-
-def available_bytes(path: Path) -> int:
-    return shutil.disk_usage(path).free
-
-
-def validate_destinations(destinations: Sequence[Path], required_bytes: int = 0) -> None:
-    for destination in destinations:
-        try:
-            destination.mkdir(parents=True, exist_ok=True)
-            probe = destination / ".camera-offloader-write-test"
-            probe.write_bytes(b"")
-            probe.unlink(missing_ok=True)
-            if required_bytes:
-                free = available_bytes(destination)
-                if free < required_bytes + config.MIN_FREE_SPACE_BUFFER_BYTES:
-                    raise RuntimeError(
-                        f"Insufficient free space at {destination}: {free} bytes available, "
-                        f"{required_bytes} bytes required plus safety buffer."
-                    )
-        except OSError as exc:
-            raise RuntimeError(f"Destination is not writable: {destination}: {exc}") from exc
-
-
-def progress_bar(total: int, label: str):
-    """Terminal progress bar that never decorates log output.
-
-    alive-progress hooks print() and logging stream handlers while a bar is open
-    and prefixes each line with the bar position ("on 12: ..."); that ends up in
-    the log files. The bar is only drawn when stdout is a terminal.
-    """
-    return alive_bar(total, title=label, bar="filling", monitor=True, force_tty=False,
-                     enrich_print=False, disable=not sys.stdout.isatty())
-
-
-def _count_session_file(category: str, source: Path, copied: bool) -> None:
-    """Session counters the dashboard shows while importing and keeps in history."""
-    _PROGRESS["files_done"] = int(_PROGRESS.get("files_done", 0) or 0) + 1
-    if copied:
-        _PROGRESS["new_files"] = int(_PROGRESS.get("new_files", 0) or 0) + 1
-        by_category = dict(_PROGRESS.get("new_by_category") or {})
-        by_category[category] = int(by_category.get(category, 0)) + 1
-        _PROGRESS["new_by_category"] = by_category
-        try:
-            _PROGRESS["new_bytes"] = int(_PROGRESS.get("new_bytes", 0) or 0) + source.stat().st_size
-        except OSError:
-            pass
-
-
-def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequence[Path],
-                  label: str, stats: ImportStats) -> None:
-    if not files:
-        return
-    logger.info("%s: processing %d file(s)", label, len(files))
-    update_status(state="scanning", phase="copy-decision", category=label,
-                  decision_files_checked=0, decision_files_total=len(files),
-                  message=f"Checking {len(files)} {label} file(s)")
-    card_manifest = load_card_manifest(dcim_folder)
-    with progress_bar(len(files), label) as bar:
-        for file_index, source in enumerate(files, start=1):
-            update_status(state="scanning", phase="copy-decision", current_file=source.name,
-                          current_path=str(source), category=label,
-                          decision_files_checked=file_index - 1,
-                          decision_files_total=len(files),
-                          message=f"Checking existing files ({file_index}/{len(files)}): {source.name}")
-            results: List[DestinationResult] = []
-            for destination in destinations:
-                try:
-                    result = copy_one_to_destination(source, dcim_folder, destination, card_manifest)
-                    results.append(result)
-                    if result.status == "copied":
-                        stats.destination_copies += 1
-                        stats.verified_copies += 1
-                    elif result.status == "skipped":
-                        stats.destination_skips += 1
-                        stats.verified_copies += 1
-                    else:
-                        stats.failed += 1
-                        stats.errors.append((str(source), result.message or "copy failed"))
-                except Exception as exc:
-                    stats.failed += 1
-                    message = f"{source} -> {destination}: {exc}"
-                    stats.errors.append((str(source), message))
-                    logger.exception(message)
-            if len(results) != len(destinations):
-                logger.error("One or more destinations failed for %s", source)
-            _count_session_file(label, source, any(r.status == "copied" for r in results))
-            update_status(state="scanning", phase="copy-decision",
-                          decision_files_checked=file_index,
-                          decision_files_total=len(files),
-                          message=f"Checked {file_index} of {len(files)} {label} files")
-            bar()
-    save_card_manifest(dcim_folder, card_manifest)
-
-
-def update_file_catalog() -> Dict[str, int]:
-    """Index the local archive and mounted USB archive, refreshing cached metadata.
-
-    This operation does not hash every file: hashes already verified by copy/backup
-    operations are preserved for unchanged files, while new/changed files are
-    indexed without a hash until a verification operation computes one.
-    """
-    roots: List[Path] = []
-    for local_root in (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT):
-        if local_root.is_dir():
-            roots.append(local_root)
-        else:
-            logger.info("Local archive root is not available for catalog update: %s", local_root)
-    if usb_is_mounted() and config.USB_DEST_ROOT.is_dir():
-        roots.append(config.USB_DEST_ROOT)
-    else:
-        logger.info("USB volume is not mounted; skipping USB catalog refresh.")
-
-    if not roots:
-        raise RuntimeError("No archive locations are available to update the catalog.")
-
-    totals = {"scanned": 0, "metadata_refreshed": 0, "roots": len(roots)}
-    # Use the last successful refresh counts as an initial total estimate. These
-    # counts are advisory only: roots can gain or lose files between refreshes.
-    previous_counts: Dict[str, int] = {}
-    try:
-        with catalog_db() as db:
-            previous_counts = {
-                str(row[0]): int(row[1])
-                for row in db.execute(
-                    "SELECT root, files_scanned FROM catalog_refreshes WHERE status = 'complete'"
-                )
-            }
-    except sqlite3.Error as exc:
-        logger.debug("Could not read previous catalog counts for ETA estimate: %s", exc)
-    estimated_total = sum(previous_counts.get(str(root.resolve()), 0) for root in roots)
-    update_status(state="scanning", phase="catalog-update", stage="catalog", catalog_stage="Preparing metadata",
-                  catalog_scanned=0, catalog_total_scanned=0, catalog_estimated_total=estimated_total,
-                  catalog_candidates=0, catalog_root="", catalog_root_index=0,
-                  catalog_roots_total=len(roots),
-                  source="; ".join(map(str, roots)), message="Preparing catalog metadata batches",
-                  current_file="", current_path="")
-    logger.info("Starting catalog update for %d root(s).", len(roots))
-
-    for root_index, root in enumerate(roots, start=1):
-        root = root.resolve()
-        update_status(catalog_root=str(root), catalog_root_index=root_index,
-                      catalog_roots_total=len(roots), catalog_scanned=0,
-                      message=f"Scanning location {root_index} of {len(roots)}: {root}")
-        logger.info("Scanning catalog root %d/%d: %s", root_index, len(roots), root)
-        seen: List[str] = []
-        root_scanned = 0
-        candidates = []
-        discovered = 0
-        for candidate in root.rglob("*"):
-            try:
-                if (candidate.is_file() and not candidate.is_symlink()
-                        and not any(part.startswith(".") for part in candidate.relative_to(root).parts)
-                        and candidate.suffix.lower() in MEDIA_EXTENSIONS):
-                    discovered += 1
-                    fingerprint = file_fingerprint(candidate)
-                    cached = catalog_row(candidate, fingerprint)
-                    if not (cached and cached[4] and cached[5] and cached[6]):
-                        candidates.append(candidate)
-                    if discovered % 100 == 0:
-                        update_status(catalog_stage="Finding files needing metadata",
-                                      catalog_root=str(root), catalog_root_index=root_index,
-                                      catalog_roots_total=len(roots),
-                                      catalog_scanned=totals["scanned"],
-                                      catalog_total_scanned=totals["scanned"],
-                                      catalog_discovered=discovered,
-                                      catalog_candidates=len(candidates),
-                                      catalog_estimated_total=max(
-                                          estimated_total,
-                                          totals["scanned"] + discovered
-                                          + sum(previous_counts.get(str(item.resolve()), 0)
-                                                for item in roots[root_index:])
-                                      ),
-                                      current_file=candidate.name, current_path=str(candidate),
-                                      message=f"Preparing metadata batch • {discovered:,} media files checked")
-            except (OSError, sqlite3.Error) as exc:
-                logger.warning("Could not inspect catalog candidate %s: %s", candidate, exc)
-
-        estimated_total = max(
-            estimated_total,
-            totals["scanned"] + discovered
-            + sum(previous_counts.get(str(item.resolve()), 0) for item in roots[root_index:])
-        )
-        update_status(catalog_stage="Reading metadata batches", catalog_candidates=len(candidates),
-                      catalog_discovered=discovered, catalog_estimated_total=estimated_total,
-                      current_file="", current_path="",
-                      message=f"Reading metadata for {len(candidates):,} new or changed files")
-        batch_metadata = get_exiftool_metadata_batch(
-            candidates,
-            ["-DateTimeOriginal", "-CreateDate", "-DateTimeDigitized", "-ModifyDate", "-Make", "-Model"],
-        )
-        logger.info("ExifTool batch metadata available for %d/%d uncached files under %s",
-                    len(batch_metadata), len(candidates), root)
-
-        for path in sorted(root.rglob("*"), key=lambda item: str(item).lower()):
-            try:
-                if (not path.is_file() or path.is_symlink()
-                        or any(part.startswith(".") for part in path.relative_to(root).parts)
-                        or path.suffix.lower() not in MEDIA_EXTENSIONS):
-                    continue
-                resolved_path = str(path.resolve())
-                seen.append(resolved_path)
-                totals["scanned"] += 1
-                root_scanned += 1
-
-                # The common case is an unchanged file already fully indexed.
-                # Validate its fingerprint once and avoid redundant SQLite writes
-                # and repeated metadata lookups for every cached field.
-                fingerprint = file_fingerprint(path)
-                cached = catalog_row(path, fingerprint)
-                if cached and cached[4] and cached[5] and cached[6]:
-                    if totals["scanned"] % 100 == 0:
-                        update_status(catalog_stage="Indexing files",
-                                      current_file=path.name, current_path=str(path),
-                                      catalog_scanned=totals["scanned"],
-                                      catalog_total_scanned=totals["scanned"],
-                                      catalog_root_scanned=root_scanned,
-                                      catalog_root_estimated_total=discovered,
-                                      catalog_root=str(root),
-                                      catalog_roots_total=len(roots),
-                                      catalog_root_index=root_index,
-                                      catalog_files_found=totals["scanned"],
-                                      catalog_candidates=len(candidates),
-                                      message=f"Indexing cached entries • {totals['scanned']:,} media files scanned")
-                        logger.info("Catalog update progress: %d files scanned.", totals["scanned"])
-                    continue
-
-                update_status(catalog_stage="Indexing files",
-                              current_file=path.name, current_path=str(path),
-                              catalog_scanned=totals["scanned"],
-                              catalog_total_scanned=totals["scanned"],
-                              catalog_root_scanned=root_scanned,
-                              catalog_root_estimated_total=discovered,
-                              catalog_root=str(root),
-                              catalog_roots_total=len(roots),
-                              catalog_root_index=root_index,
-                              catalog_files_found=totals["scanned"],
-                              catalog_candidates=len(candidates),
-                              message=f"Indexing {path.name} • {totals['scanned']:,} media files scanned")
-                metadata = batch_metadata.get(resolved_path)
-                if metadata:
-                    timestamp = None
-                    for tag in ("DateTimeOriginal", "CreateDate", "DateTimeDigitized", "ModifyDate"):
-                        value = metadata.get(tag)
-                        if isinstance(value, str):
-                            timestamp = _parse_exif_datetime_value(value)
-                            if timestamp:
-                                break
-                    if timestamp is None:
-                        info = path.stat()
-                        birth = getattr(info, "st_birthtime", None) if config.USE_FILE_BIRTH_TIME else None
-                        timestamp = datetime.fromtimestamp(birth if birth is not None else info.st_mtime)
-                    month = timestamp.strftime("%Y-%m")
-                    model = normalize_camera_model(metadata.get("Make"), metadata.get("Model")) or "Unknown-Camera"
-                    catalog_record(path, capture_month=month, camera_model=model,
-                                   media_folder=get_media_type_folder(path))
-                else:
-                    # Preserve the established Pillow/ExifTool fallback when batch
-                    # metadata is unavailable or ExifTool is not installed.
-                    catalog_record(path, media_folder=get_media_type_folder(path))
-                    get_month_folder(path)
-                    get_camera_model(path)
-                totals["metadata_refreshed"] += 1
-                if totals["scanned"] % 100 == 0:
-                    logger.info("Catalog update progress: %d files scanned.", totals["scanned"])
-            except (OSError, sqlite3.Error) as exc:
-                logger.warning("Could not catalog %s: %s", path, exc)
-
-        # Never reconcile an unmounted USB volume as empty; only scanned roots
-        # have stale path records removed.
-        try:
-            with catalog_db() as db:
-                db.execute("CREATE TEMP TABLE IF NOT EXISTS catalog_seen_paths (path TEXT PRIMARY KEY)")
-                db.execute("DELETE FROM catalog_seen_paths")
-                db.executemany("INSERT OR IGNORE INTO catalog_seen_paths(path) VALUES (?)",
-                               ((item,) for item in seen))
-                db.execute("DELETE FROM file_locations WHERE root = ? AND path NOT IN "
-                           "(SELECT path FROM catalog_seen_paths)", (str(root),))
-                db.execute("DELETE FROM catalog_seen_paths")
-        except sqlite3.Error as exc:
-            logger.warning("Could not reconcile catalog entries under %s: %s", root, exc)
-
-        try:
-            with catalog_db() as db:
-                db.execute(
-                    """INSERT INTO catalog_refreshes(root, last_updated, files_scanned, status)
-                       VALUES (?, ?, ?, 'complete')
-                       ON CONFLICT(root) DO UPDATE SET
-                         last_updated=excluded.last_updated,
-                         files_scanned=excluded.files_scanned,
-                         status=excluded.status""",
-                    (str(root), time.time(), len(seen)),
-                )
-        except sqlite3.Error as exc:
-            logger.warning("Could not save catalog refresh timestamp for %s: %s", root, exc)
-
-        logger.info("Catalog root updated: %s (%d media files).", root, len(seen))
-
-    update_status(state="complete", phase="catalog-update", current_file="",
-                  message=f"Catalog update complete: {totals['scanned']} files scanned")
-    logger.info("Catalog update complete: scanned=%d roots=%d", totals["scanned"], totals["roots"])
-    notify("Photo Offloader Catalog Updated",
-           f"Scanned {totals['scanned']} media files across {totals['roots']} location(s).")
-    return totals
-
-
-def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None) -> ImportStats:
-    """Copy only missing local archive files to USB; never overwrite mismatches."""
-    if not usb_is_mounted():
-        raise RuntimeError(f"USB backup volume is not mounted at {config.USB_DEST_VOLUME}")
-    if expected_identity is None:
-        expected_identity = get_volume_identity(config.USB_DEST_VOLUME)
-    if not usb_is_mounted() or not volume_identity_matches(
-        expected_identity, get_volume_identity(config.USB_DEST_VOLUME)
-    ):
-        raise RuntimeError("USB backup volume identity changed before backup started.")
-    source_roots = (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT)
-    files: List[Tuple[Path, Path]] = []
-    for source_root in source_roots:
-        if not source_root.is_dir():
-            logger.info("Local archive root is not present; skipping USB backup source: %s", source_root)
-            continue
-        for path in source_root.rglob("*"):
-            try:
-                if (path.is_file() and not path.is_symlink()
-                        and not any(part.startswith(".") for part in path.relative_to(source_root).parts)):
-                    # Both local trees retain the same YYYY-MM/camera/{Photos,Raws,Movies}
-                    # structure, so mirror both into the single consolidated USB root.
-                    files.append((path, config.USB_DEST_ROOT / path.relative_to(source_root)))
-            except OSError as exc:
-                logger.warning("Could not inspect local archive file %s: %s", path, exc)
-    files.sort(key=lambda item: str(item[0]).lower())
-    stats = ImportStats(found=len(files))
-    pending: List[Tuple[Path, Path, FileFingerprint]] = []
-    replace_on_usb: Set[Path] = set()
-
-    update_status(state="scanning", phase="USB backup", stage="usb",
-                  source="; ".join(str(root) for root in source_roots),
-                  message="Comparing local archives with USB backup", current_file="")
-    for source, destination in files:
-        try:
-            fingerprint = file_fingerprint(source)
-            catalog_record(source)
-            if destination.exists():
-                cached_match = catalog_hash_matches(source, destination)
-                if cached_match is None:
-                    source_hash = sha256_file(source)
-                    destination_hash = sha256_file(destination) if destination.is_file() else ""
-                    catalog_record(source, sha256=source_hash)
-                    if destination.is_file():
-                        catalog_record(destination, sha256=destination_hash)
-                    cached_match = bool(destination_hash) and source_hash == destination_hash
-                if destination.is_file() and cached_match:
-                    stats.destination_skips += 1
-                    stats.verified_copies += 1
-                elif destination.is_file() and is_camera_index_file(destination):
-                    replace_on_usb.add(destination)
-                    pending.append((source, destination, fingerprint))
-                    stats.source_bytes += fingerprint.size
-                else:
-                    stats.failed += 1
-                    message = f"USB file differs from local archive; not overwriting: {destination}"
-                    stats.errors.append((str(source), message))
-                    logger.error(message)
-                continue
-            pending.append((source, destination, fingerprint))
-            stats.source_bytes += fingerprint.size
-        except OSError as exc:
-            stats.failed += 1
-            stats.errors.append((str(source), str(exc)))
-            logger.exception("Could not inspect backup candidate %s", source)
-
-    if pending:
-        validate_destinations([config.USB_DEST_ROOT], sum(item[2].size for item in pending))
-    global _PROGRESS_STARTED
-    _PROGRESS_STARTED = time.monotonic()
-    _PROGRESS.update({"state": "copying", "phase": "USB backup", "bytes_done": 0,
-                      "bytes_total": stats.source_bytes, "bytes_transferred": 0,
-                      "current_file": "", "current_path": "",
-                      "message": f"Copying {len(pending)} missing file(s) to USB"})
-    update_status()
-    for source, destination, before in pending:
-        temp_path: Optional[Path] = None
-        if not usb_is_mounted():
-            stats.failed += 1
-            message = "USB backup volume was disconnected during the backup."
-            stats.errors.append((str(config.USB_DEST_VOLUME), message))
-            logger.error(message)
-            break
-        update_status(current_file=source.name, current_path=str(source),
-                      message=f"USB backup: {source.name}")
-        try:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            fd, temp_name = tempfile.mkstemp(prefix=".photo-backup-", suffix=".tmp",
-                                             dir=destination.parent)
-            os.close(fd)
-            temp_path = Path(temp_name)
-            source_hash = copy_file_with_progress(source, temp_path)
-            if file_fingerprint(source) != before:
-                raise IOError(f"Local source changed during backup: {source}")
-            if not source_hash:
-                source_hash = sha256_file(source)
-            if sha256_file(temp_path, nocache=True) != source_hash:
-                raise IOError(f"SHA-256 verification failed for USB temporary copy: {source}")
-            if not install_file(temp_path, destination, replace=destination in replace_on_usb):
-                if files_match(source, destination, force_sha256=True):
-                    stats.destination_skips += 1
-                    stats.verified_copies += 1
-                    catalog_record(source, sha256=source_hash)
-                    catalog_record(destination, sha256=source_hash)
-                    continue
-                raise FileExistsError(f"USB destination appeared and differs from source: {destination}")
-            if not _same_file(temp_path, destination) and sha256_file(destination, nocache=True) != source_hash:
-                destination.unlink(missing_ok=True)
-                raise IOError(f"SHA-256 verification failed for USB copy: {destination}")
-            os.chmod(destination, stat.S_IRUSR | stat.S_IWUSR)
-            catalog_record(source, sha256=source_hash)
-            catalog_record(destination, sha256=source_hash)
-            stats.destination_copies += 1
-            stats.verified_copies += 1
-        except Exception as exc:
-            stats.failed += 1
-            stats.errors.append((str(source), f"{destination}: {exc}"))
-            logger.exception("USB backup failed for %s", source)
-        finally:
-            if temp_path is not None:
-                try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError:
-                    logger.warning("Could not remove temporary backup file %s", temp_path)
-
-    if not usb_is_mounted() or not volume_identity_matches(
-        expected_identity, get_volume_identity(config.USB_DEST_VOLUME)
-    ):
-        stats.failed += 1
-        message = "USB backup volume was disconnected or replaced during the backup."
-        if not any(existing_message == message for _, existing_message in stats.errors):
-            stats.errors.append((str(config.USB_DEST_VOLUME), message))
-        logger.error(message)
-
-    update_status(state="complete" if stats.failed == 0 else "failed",
-                  message=f"USB backup complete: {stats.destination_copies} copied, {stats.destination_skips} already matched"
-                  if stats.failed == 0 else f"USB backup incomplete: {stats.failed} failure(s)",
-                  current_file="", current_path="")
-    return stats
-
-
-def eject_volume(volume_path: Path) -> bool:
-    if not volume_path.is_mount():
-        logger.info("Skipping eject: %s is not mounted.", volume_path)
-        return False
-    try:
-        result = subprocess.run(["diskutil", "eject", str(volume_path)], check=False,
-                                capture_output=True, text=True)
-        if result.returncode == 0:
-            logger.info("Ejected: %s", volume_path)
-            return True
-        logger.error("Could not eject %s: %s", volume_path, result.stderr.strip() or result.stdout.strip())
-        return False
-    except OSError as exc:
-        logger.error("Could not eject %s: %s", volume_path, exc)
-        return False
-
-
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Safely import camera media to local and backup storage.")
     parser.add_argument("--source", type=Path, help="Camera volume or DCIM path.")
@@ -2034,7 +185,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def print_summary(dcim_folder: Path, destinations: Sequence[Path], stats: ImportStats,
+def print_summary(dcim_folder: Path, destinations: Sequence[Path], stats: transfer.ImportStats,
                   eject_attempted: bool, eject_success: bool) -> None:
     print("\n" + "=" * 64)
     print("CAMERA IMPORT SUMMARY")
@@ -2085,7 +236,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 def _main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    global _PROGRESS_STARTED
     config.VERIFY_WITH_SHA256 = args.sha256
     configure_logging(args.verbose)
 
@@ -2109,16 +259,16 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             # session lock; a duplicate launch must not hide the active session.
             logger.info("--- Starting new photo offloader session run_id=%s ---", run_id)
             _RUN.update(kind="import", started_at=time.time())
-            _PROGRESS_STARTED = time.monotonic()
-            _PROGRESS.update({"state": "scanning", "phase": "startup", "bytes_done": 0,
+            progress._PROGRESS_STARTED = time.monotonic()
+            progress._PROGRESS.update({"state": "scanning", "phase": "startup", "bytes_done": 0,
                               "bytes_total": 0, "bytes_transferred": 0, "current_file": "",
                               "source": "", "message": "Preparing Photo Offloader"})
-            update_status()
+            progress.update_status()
 
             if args.update_catalog:
                 _RUN["kind"] = "catalog"
                 logger.info("Starting explicit file catalog update.")
-                catalog_stats = update_file_catalog()
+                catalog_stats = catalog_refresh.update_file_catalog()
                 logger.info("Catalog update summary: %s", catalog_stats)
                 print("Catalog update complete:")
                 for key, value in catalog_stats.items():
@@ -2128,36 +278,36 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             if args.backup_usb:
                 _RUN.update(kind="usb_backup", usb=True)
                 logger.info("Starting independent local-to-USB backup.")
-                backup_stats = copy_local_archive_to_usb()
+                backup_stats = transfer.copy_local_archive_to_usb()
                 _RUN.update(files=backup_stats.found, copied=backup_stats.destination_copies,
                             skipped=backup_stats.destination_skips, failed=backup_stats.failed)
                 print_summary(config.LOCAL_DEST_ROOT, [config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT, config.USB_DEST_ROOT], backup_stats, False, False)
                 if backup_stats.failed:
-                    notify("USB Backup Incomplete", f"{backup_stats.failed} backup failure(s).")
+                    logs.notify("USB Backup Incomplete", f"{backup_stats.failed} backup failure(s).")
                     return 1
-                notify("USB Backup Complete", f"{backup_stats.destination_copies} files copied; {backup_stats.destination_skips} already matched.")
+                logs.notify("USB Backup Complete", f"{backup_stats.destination_copies} files copied; {backup_stats.destination_skips} already matched.")
                 return 0
 
             if args.source:
                 logger.info("Using explicit source path: %s", args.source)
-                dcim_folder = resolve_dcim_path(args.source)
+                dcim_folder = card.resolve_dcim_path(args.source)
             else:
-                dcim_folder = find_card_dcim()
+                dcim_folder = card.find_card_dcim()
             card_volume = dcim_folder.parent.resolve()
             _RUN["source"] = card_volume.name
             logger.info("Source card volume: %s", card_volume)
-            update_status(source=str(card_volume), state="scanning", phase="card-to-ssd", stage="scan",
+            progress.update_status(source=str(card_volume), state="scanning", phase="card-to-ssd", stage="scan",
                           files_total=0, files_done=0, new_files=0, new_by_category={}, new_bytes=0,
                           usb_planned=False, message="Scanning camera card")
             logger.info("Scanning: %s", dcim_folder)
             time.sleep(1)
-            files = scan_with_retry(dcim_folder)
+            files = card.scan_with_retry(dcim_folder)
             if not any(files.values()):
                 raise RuntimeError(f"No supported media files found under {dcim_folder}")
 
             total_found = sum(len(items) for items in files.values())
-            source_bytes = required_source_bytes(files)
-            local_stats = ImportStats(found=total_found, source_bytes=source_bytes)
+            source_bytes = volumes.required_source_bytes(files)
+            local_stats = transfer.ImportStats(found=total_found, source_bytes=source_bytes)
             _RUN.update(files=total_found, bytes=source_bytes)
             logger.info("Scan complete: %d files (%d JPG, %d RAW, %d VIDEO, %d other)",
                         total_found, len(files["JPG"]), len(files["RAW"]), len(files["VIDEO"]),
@@ -2170,69 +320,69 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
                             ", ".join(f"{ext} x{count}" for ext, count in sorted(kinds.items())))
             # Reconcile the live card inventory with the previous manifest. The
             # manifest is diagnostic/cache data only; copy decisions still verify destinations.
-            reconciliation = reconcile_card_manifest(dcim_folder, files)
+            reconciliation = card.reconcile_card_manifest(dcim_folder, files)
             logger.info("Card manifest reconciliation: %s", reconciliation)
             # Record discovery immediately, but do not advance successful timestamps
             # until destination copies have been verified.
-            update_card_scan_history(dcim_folder, files, "scanning", 0, total_found)
+            card.update_card_scan_history(dcim_folder, files, "scanning", 0, total_found)
             metadata_started = time.monotonic()
-            prefetched = prefetch_card_metadata(files)
+            prefetched = media_info.prefetch_card_metadata(files)
             if prefetched:
                 logger.info("Read photo info for %d new RAW/video files in %.1fs.",
                             prefetched, time.monotonic() - metadata_started)
 
-            usb_expected = not args.no_usb and usb_is_mounted()
-            usb_identity = get_volume_identity(config.USB_DEST_VOLUME) if usb_expected else None
+            usb_expected = not args.no_usb and volumes.usb_is_mounted()
+            usb_identity = volumes.get_volume_identity(config.USB_DEST_VOLUME) if usb_expected else None
             local_destinations = [config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT]
             local_required = {
                 config.LOCAL_DEST_ROOT: sum(path.stat().st_size for category in ("JPG", "VIDEO", "OTHER") for path in files[category]),
                 config.LOCAL_RAW_DEST_ROOT: sum(path.stat().st_size for path in files["RAW"]),
             }
             for destination in local_destinations:
-                validate_destinations([destination], local_required[destination])
+                volumes.validate_destinations([destination], local_required[destination])
             logger.info("Stage 1 destinations: %s and %s", config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT)
             if usb_expected:
                 logger.info("USB backup is mounted; it will be synchronized after the local SSD import.")
             else:
                 logger.info("USB backup not selected or not mounted; local SSD import only.")
 
-            _PROGRESS_STARTED = time.monotonic()
-            _PROGRESS.update({"bytes_total": source_bytes, "bytes_done": 0,
+            progress._PROGRESS_STARTED = time.monotonic()
+            progress._PROGRESS.update({"bytes_total": source_bytes, "bytes_done": 0,
                               "bytes_transferred": 0, "state": "copying", "stage": "copy",
                               "files_total": total_found, "files_done": 0, "usb_planned": bool(usb_expected),
                               "phase": "card-to-ssd", "message": "Copying camera card to Mac SSD"})
-            update_status()
-            for category in MEDIA_CATEGORIES:
-                category_root = local_root_for_category(category)
-                copy_category(files[category], dcim_folder, [category_root], category, local_stats)
+            progress.update_status()
+            for category in card.MEDIA_CATEGORIES:
+                category_root = media_info.local_root_for_category(category)
+                transfer.copy_category(files[category], dcim_folder, [category_root], category, local_stats)
 
             _RUN.update(copied=local_stats.destination_copies, skipped=local_stats.destination_skips,
                         failed=local_stats.failed)
             if local_stats.failed:
                 print_summary(dcim_folder, local_destinations, local_stats, False, False)
-                update_status(state="failed", phase="card-to-ssd",
+                progress.update_status(state="failed", phase="card-to-ssd",
                               message=f"Local SSD import failed: {local_stats.failed} failure(s)",
                               current_file="", current_path="")
-                update_card_scan_history(dcim_folder, files, "incomplete",
+                card.update_card_scan_history(dcim_folder, files, "incomplete",
                                          local_stats.verified_copies, local_stats.failed)
                 logger.error("Local SSD import failed; card was not ejected and USB backup was not started.")
-                notify("Photo Import Incomplete", "Local SSD copy failed. Card remains mounted; USB backup was not started.")
+                logs.notify("Photo Import Incomplete", "Local SSD copy failed. Card remains mounted; USB backup was not started.")
                 return 1
 
-            update_card_scan_history(dcim_folder, files, "complete",
+            card.update_card_scan_history(dcim_folder, files, "complete",
                                      local_stats.verified_copies, 0)
             # The card is safe to release as soon as the complete local archive is verified.
             eject_attempted = False
             eject_success = False
             if config.EJECT_CARD_AFTER_SUCCESS and not args.no_eject:
                 eject_attempted = True
-                eject_success = eject_volume(card_volume)
+                eject_success = volumes.eject_volume(card_volume)
 
-            backup_stats = ImportStats()
+            backup_stats = transfer.ImportStats()
             _RUN["usb"] = bool(usb_expected)
             if usb_expected:
-                if not usb_is_mounted() or not volume_identity_matches(
-                    usb_identity, get_volume_identity(config.USB_DEST_VOLUME)
+                if not volumes.usb_is_mounted() or not volumes.volume_identity_matches(
+                    usb_identity, volumes.get_volume_identity(config.USB_DEST_VOLUME)
                 ):
                     backup_stats.failed += 1
                     message = "Configured USB backup volume was disconnected or replaced before backup."
@@ -2240,54 +390,55 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
                     logger.error(message)
                 else:
                     try:
-                        backup_stats = copy_local_archive_to_usb(usb_identity)
+                        backup_stats = transfer.copy_local_archive_to_usb(usb_identity)
                         _RUN["usb_copied"] = backup_stats.destination_copies
                     except Exception as exc:
                         backup_stats.failed += 1
                         backup_stats.errors.append((str(config.USB_DEST_VOLUME), str(exc)))
                         logger.exception("USB backup stage failed: %s", exc)
             else:
-                update_status(state="complete", phase="card-to-ssd",
+                progress.update_status(state="complete", phase="card-to-ssd",
                               message="Mac SSD import complete; USB backup skipped",
                               current_file="", current_path="")
 
             print_summary(dcim_folder, local_destinations + ([config.USB_DEST_ROOT] if usb_expected else []),
                           backup_stats if usb_expected else local_stats, eject_attempted, eject_success)
             if backup_stats.failed:
-                update_status(state="failed", phase="usb-backup",
+                progress.update_status(state="failed", phase="usb-backup",
                               message=f"Local import succeeded; USB backup has {backup_stats.failed} failure(s)",
                               current_file="", current_path="")
-                notify("USB Backup Incomplete", "The card was copied to the Mac. USB backup needs attention.")
+                logs.notify("USB Backup Incomplete", "The card was copied to the Mac. USB backup needs attention.")
                 return 1
             if eject_attempted and not eject_success:
                 logger.error("Local import and USB backup succeeded, but automatic card ejection failed.")
-                notify("Photo Import Complete — Eject Failed", "Copies completed, but the camera card could not be ejected.")
+                logs.notify("Photo Import Complete — Eject Failed", "Copies completed, but the camera card could not be ejected.")
                 return 2
             logger.info("Photo Offloader finished. Local copies: %d; USB copies: %d; USB skips: %d.",
                         local_stats.destination_copies, backup_stats.destination_copies,
                         backup_stats.destination_skips)
             launch_google_photos_sync()
-            notify("Photo Import Complete", f"{total_found} media files copied to the Mac; USB backup " +
+            logs.notify("Photo Import Complete", f"{total_found} media files copied to the Mac; USB backup " +
                    ("completed." if usb_expected else "was not run."))
             return 0
     except KeyboardInterrupt:
-        update_status(state="canceled", message="Operation canceled", current_file="")
+        progress.update_status(state="canceled", message="Operation canceled", current_file="")
         logger.warning("Process canceled by user.")
-        notify("Photo Offloader Canceled", "The operation was canceled.")
+        logs.notify("Photo Offloader Canceled", "The operation was canceled.")
         return 130
     except RuntimeError as exc:
         if str(exc) == "Another Photo Offloader import session is already running.":
             logger.warning("Duplicate launch ignored because another Photo Offloader session owns the lock.")
             return 0
-        update_status(state="failed", message=str(exc), current_file="")
+        progress.update_status(state="failed", message=str(exc), current_file="")
         logger.exception("Fatal error: %s", exc)
-        notify("Photo Offloader Stopped", str(exc))
+        logs.notify("Photo Offloader Stopped", str(exc))
         return 1
     except Exception as exc:
-        update_status(state="failed", message=str(exc), current_file="")
+        progress.update_status(state="failed", message=str(exc), current_file="")
         logger.exception("Fatal error: %s", exc)
-        notify("Photo Offloader Stopped", str(exc))
+        logs.notify("Photo Offloader Stopped", str(exc))
         return 1
+
 
 if __name__ == "__main__":
     sys.exit(main())
