@@ -41,7 +41,7 @@ class TestCameraOffloader(unittest.TestCase):
             "LOG_FILE_PATH", "SESSION_LOCK_PATH", "VERIFY_WITH_SHA256",
             "USE_FILE_BIRTH_TIME", "WAIT_SECONDS",
             "EJECT_CARD_AFTER_SUCCESS", "MIN_FREE_SPACE_BUFFER_BYTES", "STATUS_FILE_PATH",
-            "_PROGRESS_STARTED", "_PROGRESS",
+            "_PROGRESS_STARTED", "_PROGRESS", "GOOGLE_PHOTOS_SYNC_PATH",
         )}
         app.LOCAL_DEST_ROOT = self.local
         app.LOCAL_RAW_DEST_ROOT = self.root / "local-raw"
@@ -63,6 +63,9 @@ class TestCameraOffloader(unittest.TestCase):
         app.VERSION_PATH = self.root / "VERSION"
         app._PROGRESS_STARTED = None
         app._PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0}
+        # Never start the real installed Google Photos sync from a test: an import that
+        # succeeds launches it, and it would upload from (and log into) the user's library.
+        app.GOOGLE_PHOTOS_SYNC_PATH = self.root / "not-installed" / "google_photos_sync.py"
         app.find_exiftool.cache_clear()
         app.logger.handlers.clear()
 
@@ -193,6 +196,10 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual((stats.copied, stats.skipped, stats.verified), (2, 1, 3))
         stats.errors.append(("x", "y"))
         self.assertFalse(stats.successful)
+
+    def test_fixture_never_reaches_the_installed_google_photos_helper(self):
+        with patch.object(app.subprocess, "Popen", side_effect=AssertionError("started a real sync")):
+            app.launch_google_photos_sync()
 
     def test_logging(self):
         app.configure_logging(verbose=True)
