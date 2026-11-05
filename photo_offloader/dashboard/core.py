@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 
-from photo_offloader import catalog, config
+from photo_offloader import catalog, config, logs
 from photo_offloader.google_photos import parse_rclone_stats_line
 
 SERVICE_LABEL = "com.user.photooffloader"
@@ -58,6 +58,8 @@ IMPORT_STAGES = (("scan", "Scan card"), ("metadata", "Read photo info"),
                  ("upload", "Upload to Google Photos"))
 UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60   # an upload this soon after an import continues its steps
 UPLOAD_START_GRACE_SECONDS = 30           # importer done, sync process still starting
+FINISHING_GRACE_SECONDS = 30              # status says "complete", history row not written yet
+EVENTS_LOG_MAX_BYTES = 512 * 1024
 THEMES = ("system", "light", "dark")
 SPEED_WINDOW_SAMPLES = 10
 def google_remote_name() -> str:
@@ -195,6 +197,11 @@ class Paths:
                                    str(config.TRIGGER_LOG_PATH)))
 
     @property
+    def events_log_file(self) -> Path:
+        """What the dashboard showed and why, one line per change (View logs > Dashboard)."""
+        return self.install_dir / "dashboard_events.log"
+
+    @property
     def google_log_file(self) -> Path:
         return self.install_dir / "google_photos_sync.log"
 
@@ -250,6 +257,7 @@ class DashboardCore:
         self._samples: Deque[float] = deque(maxlen=SPEED_SAMPLES)
         self._last_sample: Optional[Tuple[float, int, str]] = None
         self._upload_files: Optional[Tuple[int, int]] = None
+        self._last_view: Optional[tuple] = None
 
     # ---- tiny TTL cache so a 1 s poll doesn't fork or hit SQLite every time
     def _cached(self, key: str, ttl: float, produce: Callable[[], Any]) -> Any:
@@ -684,10 +692,11 @@ class DashboardCore:
         paused = self.paths.pause_file.exists()
         card = self.mounted_card()
         google = self._google(now)
-        import_activity = self._activity(status, now, google["configured"])
-        interrupted = self._interrupted(status, now)
         rows = catalog.list_import_history(limit=1)
         latest = rows[0] if rows else None
+        import_activity = (self._activity(status, now, google["configured"])
+                           or self._finishing(status, latest, google, now))
+        interrupted = self._interrupted(status, now)
         last = self._last_transfer(now, latest)
         counts = self.archive_counts()
         usb_mounted = self.usb_mounted()
@@ -696,7 +705,7 @@ class DashboardCore:
 
         handled = self.card_handled(card)
         headline = self._headline(running, paused, card, activity, interrupted, last, status, google, handled)
-        return {
+        payload = {
             "generated_at": now,
             "version": read_json(self.paths.install_dir / "build_info.json").get("version", ""),
             "service": {"running": running, "paused": paused},
@@ -716,6 +725,57 @@ class DashboardCore:
                 "theme": self.theme(),
             },
         }
+        self._log_view(now, payload, status, google)
+        return payload
+
+    def _log_view(self, now: float, payload: Dict[str, Any], status: Dict[str, Any],
+                  google: Dict[str, Any]) -> None:
+        """Append a line to the events log whenever what the dashboard shows changes."""
+        head, activity, finished = payload["headline"], payload["activity"], payload["finished"]
+        view = (head["tone"], head["title"], activity and activity["kind"], activity and activity["title"],
+                finished and finished["title"])
+        if view == self._last_view:
+            return
+        self._last_view = view
+        shown = f"activity={activity['kind']}:{activity['title']!r}" if activity else (
+            f"summary={finished['title']!r}" if finished else "resting")
+        line = (f"{datetime.fromtimestamp(now).isoformat(timespec='milliseconds')} "
+                f"headline={head['tone']}:{head['title']!r} {shown} "
+                f"importer={status.get('state', '-')}/{status.get('stage', '-')} "
+                f"importer_alive={self.importer_running()} google={google['state']} "
+                f"card={payload['card']['name'] or '-'}\n")
+        try:
+            target = self.paths.events_log_file
+            target.parent.mkdir(parents=True, exist_ok=True)
+            logs.rotate_log_file(target, EVENTS_LOG_MAX_BYTES, 1)
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+        except OSError:
+            pass   # a diagnostic log must never break the dashboard
+
+    def _finishing(self, status: Dict[str, Any], latest: Optional[Dict[str, Any]], google: Dict[str, Any],
+                   now: float) -> Optional[Dict[str, Any]]:
+        """The importer's last moments: status says "complete" but the run is not in history yet.
+
+        Without this the panel fell back to the card headline between copying and the upload.
+        """
+        stamp = parse_timestamp(status.get("updated_at"))
+        if (status.get("state") != "complete" or "usb_planned" not in status or stamp is None
+                or now - stamp > FINISHING_GRACE_SECONDS
+                or (latest is not None and float(latest["finished_at"]) >= stamp - 1)):
+            return None
+        stages = import_stages(status, "upload", google["configured"]) or []
+        if stages and google["configured"]:
+            stages[-1]["state"] = "pending"
+        source = str(status.get("source", "") or "").rstrip("/").rsplit("/", 1)[-1]
+        total = int(status.get("bytes_total", 0) or 0)
+        return {"kind": "import", "stage": "finishing", "title": "Finishing import", "detail": "",
+                "percent": 100.0, "indeterminate": False, "bytes_done": total, "bytes_total": total,
+                "files_done": int(status.get("files_done", 0) or 0),
+                "files_total": int(status.get("files_total", 0) or 0),
+                "new_files": int(status.get("new_files", 0) or 0), "speed_bps": 0.0, "eta_seconds": None,
+                "elapsed_seconds": float(status.get("elapsed_seconds", 0) or 0), "source": source,
+                "speed_history": [round(sample) for sample in self._samples], "stages": stages}
 
     @staticmethod
     def _headline(running: bool, paused: bool, card: Optional[Path], activity: Optional[Dict[str, Any]],
@@ -868,7 +928,8 @@ class DashboardCore:
         # Only these ids are accepted; the page never sends a path.
         logs = {"import": ("Import log", self.paths.import_log_file),
                 "trigger": ("Card detection log", self.paths.trigger_log_file),
-                "google": ("Google Photos log", self.paths.google_log_file)}
+                "google": ("Google Photos log", self.paths.google_log_file),
+                "dashboard": ("Dashboard log", self.paths.events_log_file)}
         if log_id not in logs:
             return {"ok": False, "message": "Unknown log."}
         label, path = logs[log_id]

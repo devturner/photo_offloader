@@ -23,6 +23,8 @@ All notable changes to Photo Offloader are documented here.
 
 ### Changed
 - **One transfer panel from start to finish.** The dashboard no longer drops back to the import result between copying and uploading: the sync reports itself as soon as it has files to send (its elapsed time counts from then), and the moment before it starts shows *Starting upload*. When everything is done, the same panel shows a summary (all steps, new files, size, average speed, total time) until it fades after 10 minutes or is dismissed.
+- The importer's last second no longer drops the panel to the card headline ("already imported"): an import status that has just turned *complete* before the run reaches the history shows as *Finishing import*.
+- **Dashboard log** (`dashboard_events.log`, **View logs › Dashboard**): one line each time what the dashboard shows changes, with the importer, upload and card state behind it.
 - **Eject** buttons on the Camera card and USB backup cards (hidden while a transfer is using that volume).
 - **The Google Photos upload is the last step of an import**, not a separate view: the step strip reads Scan card › Read photo info › Copy new files › Back up to USB › Upload to Google Photos, and an upload that starts right after an import keeps the import's steps and card name. During the upload, Files (from rclone's transfer count) and Elapsed are filled in and the speed graph runs, instead of showing dashes; the subtitle names the card and files rather than repeating the byte count.
 - **Update file catalog is faster**: each folder is walked once, read from the catalog in one query and written back in one transaction (2,781 files: 1.8 s instead of 4.9 s). Videos are now dated by file time there too, the same rule an import uses.

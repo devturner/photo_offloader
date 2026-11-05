@@ -487,6 +487,22 @@ class TestRunFlow(Fixture):
         self.assertEqual([s["state"] for s in activity["stages"]][-1], "active")
         self.assertEqual(state["headline"]["tone"], "active")
 
+    def test_the_importers_last_second_stays_in_the_transfer_view(self):
+        # Installed 2.5 on 2026-11-04 still showed "card is ready" between copy and upload:
+        # status.json said "complete" before the run reached the history table.
+        self.google_configured()
+        self.add_card("NIKON Z 8")
+        (self.install / ".last_camera_source").write_text(str(self.volumes / "NIKON Z 8" / "DCIM") + "\n")
+        self.record(started_at=self.now - 900, finished_at=self.now - 720)    # the previous import
+        self.google_status("complete", seconds_ago=700)
+        self.write_status(state="complete", phase="card-to-ssd", stage="copy", usb_planned=False,
+                          source=str(self.volumes / "NIKON Z 8"))
+        state = self.core.state()
+        self.assertEqual(state["activity"]["title"], "Finishing import")
+        self.assertEqual([(s["id"], s["state"]) for s in state["activity"]["stages"]][2:],
+                         [("copy", "done"), ("usb", "skipped"), ("upload", "pending")])
+        self.assertNotIn("already imported", state["headline"]["title"])
+
     def test_a_finished_run_ends_with_a_summary_in_the_same_panel(self):
         self.google_configured()
         self.finished_import(seconds_ago=60)
@@ -516,6 +532,32 @@ class TestRunFlow(Fixture):
         self.finished_import(seconds_ago=60)
         self.google_status("failed", seconds_ago=30)
         self.assertEqual(self.core.state()["finished"]["stages"][-1]["state"], "error")
+
+
+class TestEventLog(Fixture):
+    # User question 2026-11-04: is there a debug log of what the page showed?
+    def events(self):
+        log = self.install / "dashboard_events.log"
+        return log.read_text().splitlines() if log.exists() else []
+
+    def test_each_change_of_what_the_dashboard_shows_is_logged_once(self):
+        self.core.state()
+        self.advance(1)
+        self.core.state()
+        self.assertEqual(len(self.events()), 1)
+        self.add_card("NIKON Z 8")
+        self.advance(5)
+        self.core.state()
+        lines = self.events()
+        self.assertEqual(len(lines), 2)
+        self.assertIn("NIKON Z 8 is mounted", lines[-1])
+        self.assertIn("importer=", lines[-1])
+        self.assertIn("google=", lines[-1])
+
+    def test_the_dashboard_log_can_be_opened(self):
+        self.core.state()
+        self.assertTrue(self.core.act("open_log", {"log": "dashboard"})["ok"])
+        self.assertEqual(self.spawned[-1][-1], str(self.install / "dashboard_events.log"))
 
 
 class TestTheme(Fixture):
