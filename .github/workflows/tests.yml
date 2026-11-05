@@ -22,8 +22,17 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
 
+      - name: Install menu-bar UI dependencies
+        run: python -m pip install -r requirements-ui.txt
+
       - name: Run tests
         run: python -m unittest discover -v
 
       - name: Run Ruff
-        run: python -m ruff check camera_offloader_v2.py test_camera_offloader.py
+        run: python -m ruff check camera_offloader_v2.py google_photos_sync.py photo_offloader_ui.py photo_offloader_menubar.py menubar_model.py dashboard_core.py dashboard_server.py test_camera_offloader.py test_camera_offloader_trigger.py test_google_photos_sync.py test_service_control.py test_dashboard_core.py test_dashboard_server.py test_dashboard_launcher.py test_menubar_model.py
+
+      - name: Validate shell scripts
+        run: bash -n install.sh uninstall.sh camera_offloader_trigger.sh photo_offloader_import_supervisor.sh photo_offloader_service.sh
+
+      - name: Compile Python modules
+        run: python -m compileall -q camera_offloader_v2.py google_photos_sync.py photo_offloader_ui.py photo_offloader_menubar.py menubar_model.py dashboard_core.py dashboard_server.py

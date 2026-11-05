@@ -5,7 +5,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import camera_offloader_v2 as app
-from camera_offloader_v2 import DestinationResult, DestinationSnapshot, FileFingerprint, ImportStats, VolumeIdentity
+from camera_offloader_v2 import (
+    DestinationResult,
+    DestinationSnapshot,
+    FileFingerprint,
+    ImportStats,
+    VolumeIdentity,
+)
 
 
 class TestHardeningRegressions(unittest.TestCase):
@@ -18,6 +24,19 @@ class TestHardeningRegressions(unittest.TestCase):
         self.local.mkdir()
         self.usb.mkdir()
         self.source.write_bytes(b"photo")
+        # Keep everything the importer writes inside this test's temp dir; without this,
+        # copy_category published progress into the user's real installed status.json.
+        for name, value in (("STATUS_FILE_PATH", self.root / "status.json"),
+                            ("LOG_FILE_PATH", self.root / "transfer.log"),
+                            ("CATALOG_DB_PATH", self.root / "catalog.sqlite3"),
+                            ("LEGACY_CATALOG_DB_PATH", self.root / "legacy.sqlite3"),
+                            ("_CATALOG_INITIALIZED_PATH", None),
+                            ("GOOGLE_PHOTOS_SYNC_PATH", self.root / "not-installed.py"),
+                            ("_PROGRESS", {"state": "idle", "bytes_done": 0, "bytes_total": 0,
+                                           "bytes_transferred": 0})):
+            patcher = patch.object(app, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.tmp.cleanup()

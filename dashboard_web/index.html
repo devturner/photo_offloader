@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Photo Offloader</title>
+<style>
+:root {
+  --bg: #f5f5f7; --surface: #ffffff; --surface-2: #f2f2f5; --border: rgba(0,0,0,.08);
+  --text: #1d1d1f; --text-2: #6e6e73; --text-3: #8e8e93;
+  --accent: #0071e3; --accent-soft: rgba(0,113,227,.10);
+  --ok: #1a7f37; --ok-soft: #e7f6ec; --warn: #9a6700; --warn-soft: #fff4d6;
+  --err: #c62828; --err-soft: #fdeaea; --off: #8e8e93; --off-soft: #ececf0;
+  --shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px rgba(0,0,0,.05);
+  --radius: 16px;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, Roboto, "Helvetica Neue", sans-serif;
+  --hero-h: 262px;
+  color-scheme: light;
+}
+/* Appearance: follows macOS unless the user picked Light or Dark in the ⋯ menu
+   (data-theme on <html>). The dark palette is listed twice so either route works. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1c1c1e; --surface: #2c2c2e; --surface-2: #3a3a3c; --border: rgba(255,255,255,.10);
+    --text: #f5f5f7; --text-2: #a1a1a6; --text-3: #8e8e93;
+    --accent: #0a84ff; --accent-soft: rgba(10,132,255,.18);
+    --ok: #30d158; --ok-soft: rgba(48,209,88,.15); --warn: #ffd60a; --warn-soft: rgba(255,214,10,.14);
+    --err: #ff6961; --err-soft: rgba(255,69,58,.16); --off: #8e8e93; --off-soft: rgba(255,255,255,.08);
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.25);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1c1c1e; --surface: #2c2c2e; --surface-2: #3a3a3c; --border: rgba(255,255,255,.10);
+  --text: #f5f5f7; --text-2: #a1a1a6; --text-3: #8e8e93;
+  --accent: #0a84ff; --accent-soft: rgba(10,132,255,.18);
+  --ok: #30d158; --ok-soft: rgba(48,209,88,.15); --warn: #ffd60a; --warn-soft: rgba(255,214,10,.14);
+  --err: #ff6961; --err-soft: rgba(255,69,58,.16); --off: #8e8e93; --off-soft: rgba(255,255,255,.08);
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.25);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
+body { min-height: 100vh; }
+/* The page fills the (fixed-size) window: Recent activity takes what is left and scrolls. */
+.wrap { height: 100vh; display: flex; flex-direction: column; }
+.wrap > * { flex: none; }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+.icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.wrap { max-width: 920px; margin: 0 auto; padding: 24px 24px 16px; }
+
+/* header */
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.logo { width: 36px; height: 36px; border-radius: 10px; background: var(--accent); color: #fff; display: grid; place-items: center; }
+.logo .icon { width: 20px; height: 20px; }
+.brand h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+.brand small { color: var(--text-3); font-size: 12px; }
+.tools { display: flex; align-items: center; gap: 8px; position: relative; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px; font-size: 12.5px; font-weight: 550; background: var(--off-soft); color: var(--text-2); }
+.pill i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill[data-tone="idle"] { background: var(--ok-soft); color: var(--ok); }
+.pill[data-tone="success"] { background: var(--ok-soft); color: var(--ok); }
+.pill[data-tone="active"] { background: var(--accent-soft); color: var(--accent); }
+.pill[data-tone="active"] i { animation: pulse 1.4s ease-in-out infinite; }
+.pill[data-tone="warning"] { background: var(--warn-soft); color: var(--warn); }
+.pill[data-tone="error"] { background: var(--err-soft); color: var(--err); }
+.iconbtn { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); display: grid; place-items: center; color: var(--text-2); }
+.iconbtn:hover { color: var(--text); background: var(--surface-2); }
+
+/* menu */
+.menu { position: absolute; right: 0; top: 42px; z-index: 20; min-width: 300px; padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 10px 40px rgba(0,0,0,.18); }
+.menu[hidden] { display: none; }
+.menu button { width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 0; background: none; border-radius: 9px; text-align: left; }
+.menu button:hover:not(:disabled), .menu button:focus-visible { background: var(--surface-2); }
+.menu button:disabled { color: var(--text-3); cursor: default; }
+.menu hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
+.menu .danger { color: var(--err); }
+.menu .label { flex: 1; }
+.switch { width: 34px; height: 20px; border-radius: 999px; background: var(--off-soft); position: relative; flex: none; transition: background .15s; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .15s; }
+button[aria-checked="true"] .switch { background: var(--accent); }
+button[aria-checked="true"] .switch::after { transform: translateX(14px); }
+.menu .appearance { display: flex; align-items: center; gap: 10px; padding: 6px 10px; }
+.segmented { display: inline-flex; padding: 2px; border-radius: 9px; background: var(--surface-2); gap: 2px; }
+.menu .segmented button { width: auto; padding: 4px 10px; border-radius: 7px; font-size: 12.5px; font-weight: 550; color: var(--text-2); }
+.menu .segmented button[aria-checked="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+
+/* banner + hero */
+[hidden] { display: none !important; }
+.banner { display: flex; align-items: center; gap: 14px; padding: 22px 24px; margin-bottom: 16px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); }
+.banner .grow { flex: 1; min-width: 0; }
+.banner h2 { margin: 1px 0 2px; font-size: 21px; font-weight: 650; letter-spacing: -.015em; }
+.banner p { margin: 0; color: var(--text-2); }
+.banner .btn { padding: 10px 22px; }
+.pipeline.dim { opacity: .5; }
+.btn { border: 1px solid transparent; border-radius: 10px; padding: 8px 16px; font-weight: 600; background: var(--accent); color: #fff; }
+.btn:hover { filter: brightness(1.08); }
+.btn.secondary { background: var(--surface); color: var(--text); border-color: var(--border); }
+.btn.danger { background: var(--err); }
+/* The hero has one fixed height for every state, so nothing below it moves and no
+   number or graph pops in and out while an import alternates between checking and copying. */
+.hero { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 22px 24px; margin-bottom: 16px; position: relative; height: var(--hero-h); overflow: hidden; display: flex; flex-direction: column; }
+.hero.resting { justify-content: center; }
+.hero-top { display: flex; align-items: flex-start; gap: 14px; flex: none; }
+.hero h2, .hero p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stages { display: flex; gap: 6px; margin-top: 16px; flex: none; height: 24px; }
+.stages span { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 550; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-top: 6px; border-top: 3px solid var(--surface-2); }
+.stages span[data-state="done"] { color: var(--text-2); border-top-color: var(--ok); }
+.stages span[data-state="active"] { color: var(--accent); border-top-color: var(--accent); }
+.stages span[data-state="skipped"] { text-decoration: line-through; }
+.slots { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, .9fr) minmax(0, 1.5fr) minmax(0, .8fr) minmax(0, .8fr); gap: 4px 14px; margin-top: 12px; font-variant-numeric: tabular-nums; flex: none; }
+.slot { min-width: 0; }
+.slot .k { display: block; color: var(--text-3); font-size: 11.5px; font-weight: 550; text-transform: uppercase; letter-spacing: .04em; }
+.slot .v { display: block; color: var(--text); font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slot .v.none { color: var(--text-3); font-weight: 500; }
+.badge { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; flex: none; background: var(--off-soft); color: var(--text-2); }
+.badge .icon { width: 22px; height: 22px; }
+.hero[data-tone="success"] .badge, .hero[data-tone="idle"] .badge { background: var(--ok-soft); color: var(--ok); }
+.hero[data-tone="active"] .badge { background: var(--accent-soft); color: var(--accent); }
+.hero[data-tone="warning"] .badge { background: var(--warn-soft); color: var(--warn); }
+.hero[data-tone="error"] .badge { background: var(--err-soft); color: var(--err); }
+.hero h2 { margin: 1px 0 2px; font-size: 21px; font-weight: 650; letter-spacing: -.015em; }
+.hero p { margin: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.hero .grow { flex: 1; min-width: 0; }
+.dismiss { position: absolute; top: 12px; right: 12px; width: 28px; height: 28px; border: 0; border-radius: 8px; background: none; color: var(--text-3); display: grid; place-items: center; }
+.dismiss:hover { background: var(--surface-2); color: var(--text); }
+.progress { margin-top: 14px; flex: none; }
+.bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.bar > div { height: 100%; border-radius: inherit; background: var(--accent); transition: width .6s ease; }
+.bar.indeterminate > div { width: 35% !important; animation: slide 1.3s ease-in-out infinite; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; color: var(--text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
+.meta b { color: var(--text); font-weight: 600; }
+.spark { margin-top: 12px; height: 44px; width: 100%; display: block; flex: none; }
+.spark path.base { stroke: var(--surface-2); stroke-width: 1; }
+.spark path.line { fill: none; stroke: var(--accent); stroke-width: 1.75; stroke-linejoin: round; }
+.spark path.area { fill: var(--accent-soft); }
+
+/* pipeline */
+.pipeline { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
+.step { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 2px; min-height: 118px; transition: border-color .2s; }
+.step[data-state="active"] { border-color: var(--accent); }
+.step-head { display: flex; align-items: center; justify-content: space-between; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); }
+.step[data-state="ok"] .dot { background: var(--ok); }
+.step[data-state="active"] .dot { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.step[data-state="error"] .dot { background: var(--err); }
+.step h3 { margin: 8px 0 0; font-size: 16px; font-weight: 620; letter-spacing: -.01em; }
+.step[data-state="off"] h3 { color: var(--text-2); font-weight: 560; }
+.step .detail { color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
+.step .mini { height: 4px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin-top: 8px; }
+.step .mini > div { height: 100%; background: var(--accent); transition: width .6s ease; }
+.step .action { margin-top: auto; padding-top: 8px; align-self: flex-start; border: 0; background: none; color: var(--accent); font-weight: 600; font-size: 13px; padding-left: 0; }
+.step .action:hover { text-decoration: underline; }
+
+/* history */
+.section-head { display: flex; align-items: baseline; justify-content: space-between; margin: 0 2px 8px; }
+.section-head h2 { margin: 0; font-size: 13px; font-weight: 620; color: var(--text-2); text-transform: uppercase; letter-spacing: .06em; }
+.link { border: 0; background: none; color: var(--accent); font-size: 13px; font-weight: 550; padding: 2px 4px; }
+.link:hover { text-decoration: underline; }
+.link[hidden] { display: none; }
+.history { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow-y: auto; flex: 1 1 auto !important; min-height: 150px; overscroll-behavior: contain; }
+.row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--border); }
+.row:first-child { border-top: 0; }
+.row .ico { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; flex: none; }
+.row .ico .icon { width: 16px; height: 16px; }
+.row[data-tone="success"] .ico { background: var(--ok-soft); color: var(--ok); }
+.row[data-tone="warning"] .ico { background: var(--warn-soft); color: var(--warn); }
+.row[data-tone="error"] .ico { background: var(--err-soft); color: var(--err); }
+.row .grow { flex: 1; min-width: 0; }
+.row .t { font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .s { color: var(--text-2); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.row time { color: var(--text-3); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.empty { padding: 28px 16px; text-align: center; color: var(--text-3); }
+footer { margin-top: 12px; text-align: center; color: var(--text-3); font-size: 12px; }
+
+/* toast + dialog */
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-weight: 520; box-shadow: 0 8px 30px rgba(0,0,0,.25); transition: opacity .2s, transform .2s; max-width: calc(100vw - 48px); }
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+dialog { border: 1px solid var(--border); border-radius: 18px; background: var(--surface); color: var(--text); padding: 22px; max-width: 420px; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog h3 { margin: 0 0 6px; font-size: 17px; }
+dialog p { margin: 0 0 18px; color: var(--text-2); }
+dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.lost { background: var(--err-soft); color: var(--err); }
+
+@keyframes pulse { 50% { opacity: .35; } }
+@keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+@media (max-width: 560px) {
+  :root { --hero-h: 306px; }
+  .wrap { padding: 16px; } .hero { padding: 18px; } .brand small { display: none; }
+  .slots { grid-template-columns: minmax(0, 1.3fr) minmax(0, .8fr) minmax(0, 1.4fr); }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo"><svg class="icon" data-icon="camera"></svg></div>
+      <div><h1>Photo Offloader</h1><small id="version"></small></div>
+    </div>
+    <div class="tools">
+      <span class="pill" id="pill" data-tone="idle"><i></i><span id="pill-text">Connecting…</span></span>
+      <button class="iconbtn" id="menu-button" aria-label="More actions" aria-haspopup="menu" aria-expanded="false"><svg class="icon" data-icon="dots"></svg></button>
+      <div class="menu" id="menu" role="menu" hidden>
+        <button role="menuitem" id="m-pause"></button>
+        <button role="menuitem" id="m-catalog"><svg class="icon" data-icon="refresh"></svg><span class="label">Update file catalog</span></button>
+        <button role="menuitem" id="m-usb"><svg class="icon" data-icon="plug"></svg><span class="label">Back up to USB now</span></button>
+        <button role="menuitem" id="m-google"><svg class="icon" data-icon="cloud"></svg><span class="label">Sync Google Photos now</span></button>
+        <hr>
+        <button role="menuitemcheckbox" id="m-eject" aria-checked="false" data-keep-open><span class="label">Eject card after import</span><span class="switch"></span></button>
+        <button role="menuitemcheckbox" id="m-terminal" aria-checked="false" data-keep-open><span class="label">Show Terminal during imports</span><span class="switch"></span></button>
+        <div class="appearance"><span class="label" id="appearance-label">Appearance</span>
+          <div class="segmented" role="radiogroup" aria-labelledby="appearance-label">
+            <button role="menuitemradio" data-theme-choice="system" data-keep-open aria-checked="true">Auto</button>
+            <button role="menuitemradio" data-theme-choice="light" data-keep-open aria-checked="false">Light</button>
+            <button role="menuitemradio" data-theme-choice="dark" data-keep-open aria-checked="false">Dark</button>
+          </div>
+        </div>
+        <hr>
+        <div class="appearance"><span class="label">View logs</span>
+          <div class="segmented">
+            <button role="menuitem" data-log="import" title="What each import did">Import</button>
+            <button role="menuitem" data-log="trigger" title="Card detection">Cards</button>
+            <button role="menuitem" data-log="google" title="Google Photos uploads">Google</button>
+          </div>
+        </div>
+        <hr>
+        <button role="menuitem" id="m-service" class="danger"></button>
+      </div>
+    </div>
+  </header>
+
+  <section class="banner" id="banner" hidden>
+    <div class="badge"><svg class="icon" data-icon="power"></svg></div>
+    <div class="grow"><h2>Photo Offloader is stopped</h2><p>Camera cards will not be imported until you start it.</p></div>
+    <button class="btn" id="banner-start">Start</button>
+  </section>
+
+  <section class="hero" id="hero" data-tone="idle" aria-live="polite"></section>
+  <section class="pipeline" id="pipeline" aria-label="Where your photos are"></section>
+
+  <div class="section-head"><h2>Recent activity</h2><button class="link" id="clear-history" hidden>Clear</button></div>
+  <section class="history" id="history"></section>
+  <footer>Source media on your card is never deleted.</footer>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<dialog id="stop-dialog">
+  <h3 id="stop-title">Stop Photo Offloader?</h3>
+  <p id="stop-text"></p>
+  <div class="actions" id="stop-actions"></div>
+</dialog>
+
+<script>
+"use strict";
+const ICONS = {
+  camera: '<path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/>',
+  drive: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 14h18"/><path d="M7 17h.01"/>',
+  plug: '<path d="M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-10 0V8zM12 16v5"/>',
+  cloud: '<path d="M7 18a4 4 0 0 1-.5-7.97A5.5 5.5 0 0 1 17 8.5a4.5 4.5 0 0 1 .5 9.5H7z"/>',
+  check: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.8"/>',
+  alert: '<path d="M12 4l9 16H3L12 4z"/><path d="M12 10v4M12 17h.01"/>',
+  xcircle: '<circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/>',
+  pause: '<path d="M9 6v12M15 6v12"/>',
+  play: '<path d="M8 5l11 7-11 7V5z"/>',
+  dots: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  power: '<path d="M12 3v8"/><path d="M6.5 6.5a7 7 0 1 0 11 0"/>',
+  up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  refresh: '<path d="M20 11a8 8 0 0 0-14.5-3.5M4 4v4h4M4 13a8 8 0 0 0 14.5 3.5M20 20v-4h-4"/>',
+  arrow: '<path d="M12 5v14M6 13l6 6 6-6"/>',
+  sync: '<path d="M4 12a8 8 0 0 1 14-5.3M20 4v4h-4M20 12a8 8 0 0 1-14 5.3M4 20v-4h4"/>',
+};
+const SVGNS = "http://www.w3.org/2000/svg";
+
+// ---- tiny DOM helpers. Everything dynamic (file names from the card!) goes through
+// textContent, never innerHTML, so nothing from a card can inject markup.
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === false || v == null) continue;
+    if (k === "class") el.className = v;
+    else if (k === "text") el.textContent = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
+  return el;
+}
+function icon(name) {
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("class", "icon"); svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = ICONS[name] || "";   // static markup from the ICONS table above only
+  return svg;
+}
+document.querySelectorAll("svg[data-icon]").forEach(s => { s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("aria-hidden", "true"); s.innerHTML = ICONS[s.dataset.icon] || ""; });
+const $ = (sel) => document.querySelector(sel);
+
+// ---- formatting
+function fmtBytes(n) {
+  n = Math.max(+n || 0, 0); const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? Math.round(n) : n.toFixed(1)) + " " + u[i];
+}
+function fmtDuration(s) {
+  s = Math.max(Math.round(+s || 0), 0); const m = Math.floor(s / 60), sec = s % 60;
+  if (s >= 3600) return Math.floor(s / 3600) + "h " + String(Math.floor((s % 3600) / 60)).padStart(2, "0") + "m";
+  return m ? m + "m " + String(sec).padStart(2, "0") + "s" : sec + "s";
+}
+function relTime(epoch, now) {
+  const s = Math.max((now - epoch), 0);
+  if (s < 45) return "just now";
+  if (s < 3600) return Math.round(s / 60) + " min ago";
+  if (s < 86400) return Math.round(s / 3600) + " h ago";
+  const d = new Date(epoch * 1000);
+  return s < 86400 * 6 ? Math.round(s / 86400) + " d ago" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+// The graph is a fixed one-minute window (one sample per poll), filled from the right,
+// so it never rescales its time axis or jumps as samples arrive.
+const SPARK_POINTS = 60;
+function sparkPaths(values, w, hgt) {
+  const vals = (values || []).slice(-SPARK_POINTS);
+  if (vals.length < 2) return null;
+  const max = Math.max(...vals, 1), step = w / (SPARK_POINTS - 1), x0 = w - (vals.length - 1) * step;
+  const pts = vals.map((v, i) => [x0 + i * step, hgt - 2 - (v / max) * (hgt - 6)]);
+  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+  return { line, area: line + ` L${w} ${hgt} L${x0.toFixed(1)} ${hgt} Z` };
+}
+const fmtCount = (n) => Number(n || 0).toLocaleString();
+// "34.4 of 80.0 GB" rather than "34.4 GB of 80.0 GB" when both share a unit.
+function fmtRange(done, total) {
+  const [dv, du] = fmtBytes(done).split(" "), t = fmtBytes(total);
+  return (t.endsWith(" " + du) ? dv : dv + " " + du) + " of " + t;
+}
+
+// ---- connection
+const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
+let TOKEN = hash.get("t") || sessionStorage.getItem("po-token") || "";
+if (hash.get("t")) { sessionStorage.setItem("po-token", TOKEN); history.replaceState(null, "", location.pathname); }
+async function api(path, options) {
+  const res = await fetch(path, { ...options, headers: { "X-Photo-Offloader-Token": TOKEN, ...(options && options.headers) } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok && !body.needs_choice) { const e = new Error(body.message || body.error || res.statusText); e.body = body; throw e; }
+  return body;
+}
+const act = (name, params) => api("/api/action/" + name, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params || {}) });
+
+let toastTimer;
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 4200);
+}
+async function run(name, params, quiet) {
+  try { const r = await act(name, params); if (!quiet && r.message) toast(r.message); refresh(true); return r; }
+  catch (e) { toast(e.message || "That did not work."); return null; }
+}
+
+// ---- rendering (a section is only rebuilt when its data changed, so keyboard focus survives polling)
+const sigs = {};
+function changed(key, value) { const s = JSON.stringify(value); if (sigs[key] === s) return false; sigs[key] = s; return true; }
+const TONE_ICON = { success: "check", idle: "camera", active: "arrow", warning: "alert", error: "xcircle", stopped: "power" };
+const KIND_ICON = { import: "arrow", usb_backup: "plug", catalog: "refresh", upload: "up" };
+let LAST = null, HISTORY = [];
+
+function renderHero(s) {
+  const head = s.headline, a = s.activity, now = s.generated_at;
+  const key = [head, a, s.last_transfer && s.last_transfer.id, s.interrupted];
+  if (!changed("hero", key)) return;
+  const hero = $("#hero"); hero.dataset.tone = head.tone;
+  hero.classList.toggle("resting", !a);
+  const dismissable = !a && (s.interrupted || (s.last_transfer && ["success", "error", "warning"].includes(head.tone)));
+  const kids = [h("div", { class: "hero-top" },
+    h("div", { class: "badge" }, icon((a && KIND_ICON[a.kind]) || TONE_ICON[head.tone] || "camera")),
+    h("div", { class: "grow" }, h("h2", { text: head.title, title: head.title }), h("p", { text: head.detail || "", title: head.detail || "" })))];
+  if (a) {
+    // Every part below is always present while something runs; values that are not
+    // known yet show a dash instead of disappearing, so nothing flashes or moves.
+    const p = a.percent, none = "—";
+    const slot = (k, v) => h("div", { class: "slot" }, h("span", { class: "k", text: k }), h("span", { class: "v" + (v == null ? " none" : ""), text: v == null ? none : v }));
+    kids.push(h("div", { class: "stages", "aria-label": "Steps" },
+      (a.stages || []).map(st => h("span", { "data-state": st.state, text: st.label, title: st.label + " (" + st.state + ")" }))));
+    kids.push(h("div", { class: "progress" },
+      h("div", { class: "bar" + (a.indeterminate ? " indeterminate" : ""), role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": p == null ? null : Math.round(p) },
+        h("div", { style: `width:${a.indeterminate ? 35 : Math.max(2, p || 0)}%` })),
+      h("div", { class: "slots" },
+        slot("Progress", p == null ? null : Math.round(p) + "%" + (a.bytes_total ? " · " + fmtRange(a.bytes_done, a.bytes_total) : "")),
+        slot("Speed", a.speed_bps > 0 ? fmtBytes(a.speed_bps) + "/s" : null),
+        slot("Files", a.files_total ? fmtCount(a.files_done) + " of " + fmtCount(a.files_total) + (a.new_files ? " · " + fmtCount(a.new_files) + " new" : "") : null),
+        slot("Elapsed", a.elapsed_seconds > 0 ? fmtDuration(a.elapsed_seconds) : null),
+        slot("Remaining", a.eta_seconds != null ? fmtDuration(a.eta_seconds) : null))));
+    const svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("class", "spark"); svg.setAttribute("viewBox", "0 0 600 44"); svg.setAttribute("preserveAspectRatio", "none"); svg.setAttribute("aria-hidden", "true");
+    const sp = sparkPaths(a.speed_history, 600, 44);
+    const paths = [["base", "M0 43 L600 43"]].concat(sp ? [["area", sp.area], ["line", sp.line]] : []);
+    for (const [cls, d] of paths) { const path = document.createElementNS(SVGNS, "path"); path.setAttribute("class", cls); path.setAttribute("d", d); path.setAttribute("vector-effect", "non-scaling-stroke"); svg.append(path); }
+    kids.push(svg);
+  }
+  if (dismissable) kids.push(h("button", { class: "dismiss", "aria-label": "Dismiss", title: "Dismiss", onclick: () => run("dismiss_last", {}, true) }, icon("x")));
+  hero.replaceChildren(...kids);
+}
+
+function renderPipeline(s) {
+  if (!changed("pipeline", s.pipeline)) return;
+  $("#pipeline").replaceChildren(...s.pipeline.map(st => h("div", { class: "step", "data-state": st.state },
+    h("div", { class: "step-head" }, h("span", { text: st.label }), h("span", { class: "dot", "aria-hidden": "true" })),
+    h("h3", { text: st.headline }),
+    h("div", { class: "detail", text: st.detail }),
+    st.percent != null && h("div", { class: "mini" }, h("div", { style: `width:${Math.max(2, st.percent)}%` })),
+    st.action && h("button", { class: "action", onclick: () => run(st.action.id) }, st.action.label))));
+}
+
+const OUTCOME_ICON = { success: "check", warning: "alert", error: "xcircle" };
+function renderHistory(now) {
+  const rows = HISTORY;
+  if (!changed("history", [rows, Math.floor(now / 60)])) return;
+  $("#clear-history").hidden = HISTORY.length === 0;
+  const list = $("#history");
+  if (!HISTORY.length) { list.replaceChildren(h("div", { class: "empty", text: "Imports and backups will appear here." })); return; }
+  const kids = rows.map(r => h("div", { class: "row", "data-tone": r.tone },
+    h("div", { class: "ico" }, icon(OUTCOME_ICON[r.tone] || "check")),
+    h("div", { class: "grow" }, h("div", { class: "t", text: r.title }), h("div", { class: "s", text: r.summary || (r.outcome === "complete" ? "Completed" : "") })),
+    h("time", { datetime: new Date(r.finished_at * 1000).toISOString(), title: new Date(r.finished_at * 1000).toLocaleString(), text: relTime(r.finished_at, now) })));
+  list.replaceChildren(...kids);
+}
+
+function renderMenu(s) {
+  const run_ = s.service.running, busy = !!s.busy, usb = s.pipeline.find(x => x.id === "usb"), cloud = s.pipeline.find(x => x.id === "cloud");
+  const set = (id, label, ic, disabled) => { const b = $(id); b.replaceChildren(icon(ic), h("span", { class: "label", text: label })); b.disabled = !!disabled; };
+  set("#m-pause", s.service.paused ? "Resume automatic imports" : "Pause automatic imports", s.service.paused ? "play" : "pause", !run_);
+  $("#m-catalog").disabled = busy || !run_;
+  $("#m-usb").disabled = busy || usb.state === "off";
+  $("#m-google").disabled = busy || cloud.state === "off" || cloud.state === "active";
+  $("#m-eject").setAttribute("aria-checked", String(s.settings.auto_eject));
+  $("#m-terminal").setAttribute("aria-checked", String(s.settings.terminal_output));
+  set("#m-service", run_ ? "Stop Photo Offloader…" : "Start Photo Offloader", run_ ? "power" : "play", false);
+  $("#m-service").className = run_ ? "danger" : "";
+  if (!themePending) applyTheme(s.settings.theme || "system");
+}
+
+// ---- appearance (saved by the server, so it survives restarts; cached locally for first paint)
+let themePending = false;
+function applyTheme(theme) {
+  if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+  else document.documentElement.removeAttribute("data-theme");
+  document.querySelectorAll("[data-theme-choice]").forEach(b => b.setAttribute("aria-checked", String(b.dataset.themeChoice === theme)));
+  try { localStorage.setItem("po-theme", theme); } catch (e) { /* storage unavailable */ }
+}
+try { applyTheme(localStorage.getItem("po-theme") || "system"); } catch (e) { applyTheme("system"); }
+document.querySelectorAll("[data-theme-choice]").forEach(b => b.addEventListener("click", async () => {
+  themePending = true; applyTheme(b.dataset.themeChoice);
+  await run("set_theme", { theme: b.dataset.themeChoice }, true);
+  themePending = false;
+}));
+
+function renderChrome(s) {
+  const head = s.headline;
+  $("#pill").dataset.tone = head.tone;
+  $("#pill-text").textContent = { idle: "Ready", success: "Done", active: "Working", warning: "Attention", error: "Needs attention", stopped: "Stopped" }[head.tone] || "Ready";
+  // When stopped, the banner is the hero: say it once, and dim the (stale) cards below.
+  $("#banner").hidden = s.service.running;
+  $("#hero").hidden = !s.service.running;
+  $("#pipeline").classList.toggle("dim", !s.service.running);
+  $("#version").textContent = s.version ? "v" + s.version : "";
+  document.title = (s.activity ? s.activity.title + " · " : "") + "Photo Offloader";
+}
+
+let failures = 0;
+async function refresh(withHistory) {
+  try {
+    const s = await api("/api/state");
+    failures = 0; LAST = s;
+    renderChrome(s); renderHero(s); renderPipeline(s); renderMenu(s);
+    const lastId = s.last_transfer ? s.last_transfer.id : 0;
+    if (withHistory === true || lastId !== refresh.lastId || !refresh.at || Date.now() - refresh.at > 15000) {
+      refresh.lastId = lastId; refresh.at = Date.now();
+      HISTORY = (await api("/api/history?limit=100")).history;
+    }
+    renderHistory(s.generated_at);
+  } catch (e) {
+    if (++failures >= 3) { $("#pill").dataset.tone = "error"; $("#pill-text").textContent = "Disconnected"; }
+  }
+}
+function schedule() { setTimeout(async () => { await refresh(); schedule(); }, document.hidden ? 5000 : 1000); }
+
+// ---- menu + dialog wiring
+const menu = $("#menu"), menuButton = $("#menu-button");
+function setMenu(open) { menu.hidden = !open; menuButton.setAttribute("aria-expanded", String(open)); if (open) { const f = menu.querySelector("button:not(:disabled)"); f && f.focus(); } }
+menuButton.addEventListener("click", (e) => { e.stopPropagation(); setMenu(menu.hidden); });
+document.addEventListener("click", (e) => { if (!menu.hidden && !menu.contains(e.target)) setMenu(false); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !menu.hidden) { setMenu(false); menuButton.focus(); }
+  if (!menu.hidden && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+    const items = [...menu.querySelectorAll("button:not(:disabled)")], i = items.indexOf(document.activeElement);
+    items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus(); e.preventDefault();
+  }
+});
+// Actions close the menu; settings (switches, appearance) leave it open so you can see the change.
+menu.addEventListener("click", (e) => { const b = e.target.closest("button"); if (b && !b.hasAttribute("data-keep-open")) setMenu(false); });
+$("#m-pause").onclick = () => run(LAST && LAST.service.paused ? "resume" : "pause");
+$("#m-catalog").onclick = () => run("update_catalog");
+document.querySelectorAll("[data-log]").forEach(b => b.addEventListener("click", () => run("open_log", { log: b.dataset.log })));
+$("#m-usb").onclick = () => run("usb_backup");
+$("#m-google").onclick = () => run("google_sync");
+$("#m-eject").onclick = () => run("toggle_auto_eject");
+$("#m-terminal").onclick = () => run("toggle_terminal_output");
+$("#banner-start").onclick = () => run("service_start");
+$("#m-service").onclick = () => { if (LAST && LAST.service.running) askStop(); else run("service_start"); };
+
+function askStop() {
+  const dlg = $("#stop-dialog"), actions = $("#stop-actions"), busy = LAST && LAST.activity;
+  $("#stop-title").textContent = busy ? "A transfer is in progress" : "Stop Photo Offloader?";
+  $("#stop-text").textContent = busy ? "Stop once it finishes, or cancel it now. A canceled copy is safe to resume later."
+    : "Camera cards will not be imported until you start it again. You can start it from this window or the menu bar.";
+  const close = () => dlg.close();
+  const choice = (label, cls, fn) => h("button", { class: "btn " + cls, onclick: () => { close(); fn(); } }, label);
+  actions.replaceChildren(h("button", { class: "btn secondary", onclick: close }, busy ? "Keep running" : "Cancel"),
+    ...(busy ? [choice("Cancel transfer and stop", "danger", () => run("service_stop", { mode: "force" })), choice("Stop after transfer", "", () => run("service_stop", { mode: "wait" }))]
+             : [choice("Stop", "danger", () => run("service_stop", {}))]));
+  dlg.showModal();
+}
+
+let clearArmed = 0;
+$("#clear-history").onclick = (e) => {
+  const b = e.currentTarget;
+  if (!clearArmed) { clearArmed = setTimeout(() => { clearArmed = 0; b.textContent = "Clear"; }, 4000); b.textContent = "Confirm clear"; return; }
+  clearTimeout(clearArmed); clearArmed = 0; b.textContent = "Clear"; run("clear_history");
+};
+
+refresh(true).then(schedule);
+</script>
+</body>
+</html>
