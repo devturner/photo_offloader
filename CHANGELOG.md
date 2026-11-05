@@ -13,6 +13,9 @@ All notable changes to Photo Offloader are documented here.
 - Dashboard server hardening: per-session token in a custom header, `Host` and `Origin` validation, JSON-only writes, single-file static serving with a Content-Security-Policy, no CORS, and idle shutdown. The launcher is single-instance and serialised by a lock.
 - `photo_offloader_service.sh stop --keep-ui` stops only the trigger and leaves the menu bar and dashboards running.
 
+### Changed
+- **Fresh cards start copying minutes sooner.** Capture date and camera model for new RAW and video files are read in batched ExifTool runs right after the card scan, instead of starting ExifTool twice per file. On a 1,188-RAW Nikon Z 8 card this took 20 s instead of about 340 s. Results go to the catalog in one transaction; the archive layout is unchanged.
+
 ### Fixed
 - **Re-inserting the same card after shooting more never imported the new photos.** The dashboard said "waiting to start import" but the trigger kept the card's successful handled-state across the unmount indefinitely. The trigger now records when the card disappeared; if the same card returns after the grace period (20 s, `PHOTO_OFFLOADER_REMOUNT_GRACE_SECONDS`) it starts a new session, which copies only new files. A card that is already imported is shown as such, with an **Import now** action, instead of "waiting".
 - **After a daylight-saving change the whole card was re-hashed and re-read for metadata.** Cameras store FAT/exFAT timestamps in local time, so after DST ended every file on the card read exactly one hour later and counted as changed (2,346 of 2,364 files in the reported log; about 6 minutes for 18 new photos). Card-manifest and catalog lookups now treat an exact whole-hour mtime shift (up to 24 h) with the same size as unchanged.

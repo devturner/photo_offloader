@@ -487,56 +487,80 @@ def catalog_row(path: Path, fingerprint: Optional[FileFingerprint] = None) -> Op
     return None
 
 
+def _catalog_upsert(db: sqlite3.Connection, path: Path, sha256: Optional[str] = None,
+                    capture_month: Optional[str] = None, camera_model: Optional[str] = None,
+                    media_folder: Optional[str] = None) -> None:
+    fingerprint = file_fingerprint(path)
+    resolved = path.resolve()
+    known_root = next(
+        (candidate.resolve() for candidate in (LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT, USB_DEST_ROOT)
+         if resolved == candidate.resolve() or candidate.resolve() in resolved.parents),
+        None,
+    )
+    if known_root is not None:
+        root = str(known_root)
+        relative = str(resolved.relative_to(known_root))
+    else:
+        # Camera-card paths are still catalogued by their absolute location.
+        root = str(resolved.anchor)
+        relative = str(resolved).lstrip("/")
+    old = db.execute(
+        "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
+        "FROM file_locations WHERE path = ?", (str(resolved),)
+    ).fetchone()
+    same = bool(old) and old[2] == fingerprint.inode and card_fingerprint_unchanged(
+        {"size": old[0], "mtime_ns": old[1]}, fingerprint)
+    values = (
+        str(resolved), root, relative, fingerprint.size, fingerprint.mtime_ns,
+        fingerprint.inode,
+        sha256 if sha256 is not None else (old[3] if same else None),
+        capture_month if capture_month is not None else (old[4] if same else None),
+        camera_model if camera_model is not None else (old[5] if same else None),
+        media_folder if media_folder is not None else (old[6] if same else None),
+        time.time(),
+    )
+    db.execute("""
+        INSERT INTO file_locations
+        (path, root, relative_path, size, mtime_ns, inode, sha256,
+         capture_month, camera_model, media_folder, indexed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET
+            root=excluded.root, relative_path=excluded.relative_path,
+            size=excluded.size, mtime_ns=excluded.mtime_ns, inode=excluded.inode,
+            sha256=excluded.sha256, capture_month=excluded.capture_month,
+            camera_model=excluded.camera_model, media_folder=excluded.media_folder,
+            indexed_at=excluded.indexed_at
+    """, values)
+
+
 def catalog_record(path: Path, *, sha256: Optional[str] = None,
                    capture_month: Optional[str] = None,
                    camera_model: Optional[str] = None,
                    media_folder: Optional[str] = None) -> None:
     """Record a file location while preserving cached fields for an unchanged file."""
     try:
-        fingerprint = file_fingerprint(path)
-        resolved = path.resolve()
-        known_root = next(
-            (candidate.resolve() for candidate in (LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT, USB_DEST_ROOT)
-             if resolved == candidate.resolve() or candidate.resolve() in resolved.parents),
-            None,
-        )
-        if known_root is not None:
-            root = str(known_root)
-            relative = str(resolved.relative_to(known_root))
-        else:
-            # Camera-card paths are still catalogued by their absolute location.
-            root = str(resolved.anchor)
-            relative = str(resolved).lstrip("/")
         with catalog_db() as db:
-            old = db.execute(
-                "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
-                "FROM file_locations WHERE path = ?", (str(resolved),)
-            ).fetchone()
-            same = old and old[:3] == (fingerprint.size, fingerprint.mtime_ns, fingerprint.inode)
-            values = (
-                str(resolved), root, relative, fingerprint.size, fingerprint.mtime_ns,
-                fingerprint.inode,
-                sha256 if sha256 is not None else (old[3] if same else None),
-                capture_month if capture_month is not None else (old[4] if same else None),
-                camera_model if camera_model is not None else (old[5] if same else None),
-                media_folder if media_folder is not None else (old[6] if same else None),
-                time.time(),
-            )
-            db.execute("""
-                INSERT INTO file_locations
-                (path, root, relative_path, size, mtime_ns, inode, sha256,
-                 capture_month, camera_model, media_folder, indexed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET
-                    root=excluded.root, relative_path=excluded.relative_path,
-                    size=excluded.size, mtime_ns=excluded.mtime_ns, inode=excluded.inode,
-                    sha256=excluded.sha256, capture_month=excluded.capture_month,
-                    camera_model=excluded.camera_model, media_folder=excluded.media_folder,
-                    indexed_at=excluded.indexed_at
-            """, values)
+            _catalog_upsert(db, path, sha256, capture_month, camera_model, media_folder)
     except (OSError, sqlite3.Error) as exc:
         # Catalog is an optimization, never a reason to interrupt a safe import.
         logger.debug("Could not update file catalog for %s: %s", path, exc)
+
+
+def catalog_record_many(entries: Sequence[Tuple[Path, Dict[str, Optional[str]]]]) -> int:
+    """Record many files in one transaction; files that vanished are skipped."""
+    written = 0
+    try:
+        with catalog_db() as db:
+            for path, fields in entries:
+                try:
+                    _catalog_upsert(db, path, **fields)
+                    written += 1
+                except OSError as exc:
+                    logger.debug("Could not catalog %s: %s", path, exc)
+    except sqlite3.Error as exc:
+        logger.debug("Could not update file catalog in bulk: %s", exc)
+        return 0
+    return written
 
 
 def catalog_hash_matches(source: Path, destination: Path) -> Optional[bool]:
@@ -1290,18 +1314,66 @@ def get_camera_model(path: Path) -> str:
     return model or "Unknown-Camera"
 
 
+def _month_from_file_time(source: Path) -> str:
+    info = source.stat()
+    birth = getattr(info, "st_birthtime", None) if USE_FILE_BIRTH_TIME else None
+    return datetime.fromtimestamp(birth if birth is not None else info.st_mtime).strftime("%Y-%m")
+
+
 def get_month_folder(source: Path) -> str:
     cached = catalog_row(source)
     if cached and cached[4]:
         return str(cached[4])
     timestamp = get_exif_datetime(source)
-    if timestamp is None:
-        info = source.stat()
-        birth = getattr(info, "st_birthtime", None) if USE_FILE_BIRTH_TIME else None
-        timestamp = datetime.fromtimestamp(birth if birth is not None else info.st_mtime)
-    month = timestamp.strftime("%Y-%m")
+    month = timestamp.strftime("%Y-%m") if timestamp is not None else _month_from_file_time(source)
     catalog_record(source, capture_month=month)
     return month
+
+
+EXIF_DATE_TAGS = ("DateTimeOriginal", "CreateDate", "DateTimeDigitized", "ModifyDate")
+
+
+def prefetch_card_metadata(files: Dict[str, List[Path]]) -> int:
+    """Read capture month and camera for uncached RAW/video files in batched ExifTool runs.
+
+    The per-file path (get_month_folder/get_camera_model) starts ExifTool twice per
+    RAW, about 0.3 s each time; for a fresh card of ~1,200 RAWs that is minutes
+    before copying starts. Results are cached in the catalog, which the per-file
+    path then reads. It produces the same values as the per-file path: RAW months
+    come from EXIF dates, video months from file time (see get_exif_datetime).
+    Anything the batch cannot answer is left to the per-file path.
+    """
+    candidates: List[Path] = []
+    for category in ("RAW", "VIDEO"):
+        for path in files.get(category, []):
+            row = catalog_row(path)
+            if not (row and row[4] and row[5]):
+                candidates.append(path)
+    if not candidates or not find_exiftool():
+        return 0
+    update_status(state="scanning", phase="card-to-ssd", stage="metadata", current_file="",
+                  message=f"Reading photo info for {len(candidates):,} new files")
+    metadata = get_exiftool_metadata_batch(candidates, [f"-{tag}" for tag in EXIF_DATE_TAGS] + ["-Make", "-Model"])
+    entries: List[Tuple[Path, Dict[str, Optional[str]]]] = []
+    for path in candidates:
+        record = metadata.get(str(path.resolve()))
+        if not record:
+            continue
+        timestamp = None
+        if path.suffix.lower() in RAW_EXTENSIONS:
+            for tag in EXIF_DATE_TAGS:
+                value = record.get(tag)
+                if isinstance(value, str):
+                    timestamp = _parse_exif_datetime_value(value)
+                    if timestamp:
+                        break
+        try:
+            month = timestamp.strftime("%Y-%m") if timestamp else _month_from_file_time(path)
+        except OSError:
+            continue
+        entries.append((path, {"capture_month": month,
+                               "camera_model": normalize_camera_model(record.get("Make"), record.get("Model"))}))
+    return catalog_record_many(entries)
 
 
 def get_media_type_folder(source: Path) -> str:
@@ -2087,6 +2159,11 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             # Record discovery immediately, but do not advance successful timestamps
             # until destination copies have been verified.
             update_card_scan_history(dcim_folder, files, "scanning", 0, total_found)
+            metadata_started = time.monotonic()
+            prefetched = prefetch_card_metadata(files)
+            if prefetched:
+                logger.info("Read photo info for %d new RAW/video files in %.1fs.",
+                            prefetched, time.monotonic() - metadata_started)
 
             usb_expected = not args.no_usb and usb_is_mounted()
             usb_identity = get_volume_identity(USB_DEST_VOLUME) if usb_expected else None

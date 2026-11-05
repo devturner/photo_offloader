@@ -419,6 +419,64 @@ class TestCameraOffloader(unittest.TestCase):
         self.shift_mtime(source, 1)  # not a whole-hour shift: cache must miss
         self.assertIsNone(app.catalog_row(source))
 
+    # ------------------------------------------- batched card metadata (fresh-card speed)
+    def fake_exiftool(self):
+        """An exiftool stand-in that answers every file and logs each process start."""
+        calls = self.root / "exiftool-calls.txt"
+        script = self.root / "exiftool"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            f"open({str(calls)!r}, 'a').write('call\\n')\n"
+            "files = [a for a in sys.argv[1:] if not a.startswith('-') and a != 'filename=UTF8']\n"
+            "print(json.dumps([{'SourceFile': f, 'Make': 'NIKON CORPORATION', 'Model': 'NIKON Z 8',\n"
+            "                   'DateTimeOriginal': '2026:09:14 10:00:00'} for f in files]))\n")
+        script.chmod(0o755)
+        patcher = patch.object(app, "find_exiftool", return_value=str(script))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return lambda: len(calls.read_text().splitlines()) if calls.exists() else 0
+
+    def card_files(self, count):
+        folder = self.dcim / "100NCZ_8"
+        folder.mkdir(parents=True, exist_ok=True)
+        raws = [folder / f"DSC_{index:04d}.NEF" for index in range(count)]
+        for index, path in enumerate(raws):
+            path.write_bytes(b"raw%d" % index)
+        clip = folder / "DSC_9999.MOV"
+        clip.write_bytes(b"video")
+        return {"JPG": [], "RAW": raws, "VIDEO": [clip], "OTHER": []}
+
+    def test_fresh_card_metadata_is_read_in_one_exiftool_process(self):
+        # User card 2026-11-04: two ExifTool processes per RAW cost ~340 s for
+        # 1,188 files; one batched process takes ~19 s.
+        exiftool_calls = self.fake_exiftool()
+        files = self.card_files(25)
+        app.prefetch_card_metadata(files)
+        self.assertEqual(exiftool_calls(), 1)
+        destinations = [app.build_destination_path(p, self.dcim, self.local) for p in files["RAW"]]
+        self.assertEqual(exiftool_calls(), 1, "per-file ExifTool calls still happened after the prefetch")
+        self.assertEqual(destinations[0].parent, self.local / "2026-09" / "NIKON-Z-8" / "Raws")
+
+    def test_prefetch_matches_the_per_file_lookup(self):
+        # Video months come from file time, not EXIF, in the per-file path; the
+        # batch must produce exactly the same folders or files would move.
+        self.fake_exiftool()
+        files = self.card_files(2)
+        everything = files["RAW"] + files["VIDEO"]
+        per_file = [app.build_destination_path(p, self.dcim, self.local) for p in everything]
+        app.CATALOG_DB_PATH.unlink()
+        app._CATALOG_INITIALIZED_PATH = None
+        app.prefetch_card_metadata(files)
+        self.assertEqual([app.build_destination_path(p, self.dcim, self.local) for p in everything], per_file)
+
+    def test_prefetch_skips_files_whose_metadata_is_cached(self):
+        exiftool_calls = self.fake_exiftool()
+        files = self.card_files(3)
+        app.prefetch_card_metadata(files)
+        app.prefetch_card_metadata(files)
+        self.assertEqual(exiftool_calls(), 1)
+
     def test_reconcile_treats_whole_hour_shift_as_unchanged_but_not_other_shifts(self):
         media = self.media()
         app.save_card_manifest(self.dcim, {})
@@ -776,6 +834,16 @@ class TestCameraOffloader(unittest.TestCase):
             result = app.main(["--source", str(self.card)])
         self.assertEqual(result, 0)
         eject.assert_called_once_with(self.card.resolve())
+
+    @patch("camera_offloader_v2.eject_volume", return_value=True)
+    @patch("camera_offloader_v2.usb_is_mounted", return_value=False)
+    @patch("camera_offloader_v2.notify")
+    def test_import_reads_card_metadata_in_one_batch(self, notify, mounted, eject):
+        exiftool_calls = self.fake_exiftool()
+        self.card_files(12)
+        with patch("camera_offloader_v2.time.sleep"):
+            self.assertEqual(app.main(["--source", str(self.card), "--no-usb"]), 0)
+        self.assertEqual(exiftool_calls(), 1)
 
     @patch("camera_offloader_v2.eject_volume")
     @patch("camera_offloader_v2.usb_is_mounted", return_value=False)
