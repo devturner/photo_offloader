@@ -8,6 +8,7 @@ dashboard can do (pause, back up, sync, stop, ...). Everything that touches the 
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -458,7 +459,7 @@ class DashboardCore:
             if not self.paths.catalog_db.is_file():
                 return {"local": 0, "usb": 0, "uploaded": 0, "local_updated": None, "usb_updated": None}
             try:
-                with sqlite3.connect(f"file:{self.paths.catalog_db}?mode=ro", uri=True, timeout=0.5) as db:
+                with contextlib.closing(sqlite3.connect(f"file:{self.paths.catalog_db}?mode=ro", uri=True, timeout=0.5)) as db:
                     local_roots = [str(root.resolve()) for root in self.paths.local_archives]
                     usb_roots = [str(root.resolve()) for root in self.paths.usb_archives]
                     marks = ",".join("?" * len(local_roots))

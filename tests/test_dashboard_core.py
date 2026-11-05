@@ -575,6 +575,23 @@ class TestTheme(Fixture):
         self.assertEqual(self.core.state()["settings"]["theme"], "system")
 
 
+class TestCatalogConnection(Fixture):
+    def test_archive_counts_closes_its_connection(self):
+        catalog.catalog_connection().close()
+        opened = []
+        real_connect = sqlite3.connect
+
+        def connect(*args, **kwargs):
+            opened.append(real_connect(*args, **kwargs))
+            return opened[-1]
+
+        with patch.object(core.sqlite3, "connect", connect):
+            self.assertEqual(self.core.archive_counts()["local"], 0)
+        self.assertEqual(len(opened), 1)
+        with self.assertRaisesRegex(sqlite3.ProgrammingError, "closed"):
+            opened[0].execute("SELECT 1")
+
+
 class TestPipeline(Fixture):
     def test_a_fresh_machine_shows_every_step_as_waiting(self):
         states = {step["id"]: step["state"] for step in self.core.state()["pipeline"]}

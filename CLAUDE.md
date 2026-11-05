@@ -8,10 +8,13 @@ app sit on top. Open work and its reasons are in `scratch/todo.md` (gitignored);
 first when asked to "continue".
 
 ## Commands
-- Tests: `.venv/bin/python -m unittest discover` (about 320 tests, about 60 s). Use the
+- Tests: `.venv/bin/python -m unittest discover` (about 360 tests, about 80 s). Use the
   project `.venv`, not the system `python3`, which has no Pillow.
 - One module or test: `.venv/bin/python -m unittest tests.test_usb_backup`, or add
   `.TestBackupLauncher.test_request_runs_importer_when_lock_is_free`. Filter by name with `-k`.
+- Browser tests: `.venv/bin/python -m unittest tests.browser.test_dashboard_page` (about 20 s). They
+  are part of `discover` and skip without Playwright's Chromium (`.venv/bin/python -m playwright
+  install chromium`). See "How the user likes to work" for screenshots.
 - Lint: `.venv/bin/python -m ruff check .`. ruff enforces max complexity 15 (C901), so
   split functions instead of raising the limit.
 - Shell syntax: `bash -n install.sh uninstall.sh scripts/*.sh tools/*.sh`. macOS ships
@@ -37,8 +40,8 @@ Two consequences:
 - **A source checkout uses the real data.** Only code paths follow `APP_ROOT`; the archives,
   catalog and `status.json` always resolve to the real locations. Running `bin/` programs from
   the repo acts on the live install, and the dashboard also launches the installed programs
-  (`PHOTO_OFFLOADER_INSTALL_DIR` redirects it). Use `scratch/dashboard_shots_harness.py` to
-  see the page against a sandbox.
+  (`PHOTO_OFFLOADER_INSTALL_DIR` redirects it). `tests/browser/harness.py` runs the page
+  against a sandbox.
 
 ## Safety invariants
 - Never delete from a card and never overwrite a destination file. A differing file with the
@@ -93,6 +96,7 @@ Two consequences:
   separate from moves and renames.
 - Work on a branch from `main` and open a PR; merge with a merge commit (not squash).
 - UI preferences: a modern look, controls hidden until needed, one fixed-size transfer
-  panel for the whole run, nothing that flashes in or out. Check page changes with
-  headless-Chrome screenshots (`scratch/dashboard_shots_harness.py`) until the
-  Playwright tests from the to-do exist.
+  panel for the whole run, nothing that flashes in or out. Check page changes with the
+  browser tests, and look at the result: set `PHOTO_OFFLOADER_TEST_SCREENSHOTS=<folder>` and run
+  `tests.browser.test_dashboard_page.TestScreenshots`. A new page state gets a scenario in
+  `tests/browser/harness.py`.

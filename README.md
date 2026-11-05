@@ -310,6 +310,19 @@ python -m ruff check .
 
 The test suite includes filesystem-level copy tests, catalog caching/invalidation, hardening regressions, lock behavior, USB identity checks, video camera metadata detection, and trigger tests covering volume names with spaces and repeated `/Volumes` events.
 
+The dashboard page has browser tests in `tests/browser/`. They need one extra download; without it they skip and the rest of the suite runs as usual:
+
+```bash
+python -m playwright install chromium
+python -m unittest tests.browser.test_dashboard_page
+```
+
+To look at the page in every state, in light, dark and at the narrow width, save screenshots to a folder of your choice:
+
+```bash
+PHOTO_OFFLOADER_TEST_SCREENSHOTS=/tmp/dashboard-shots python -m unittest tests.browser.test_dashboard_page.TestScreenshots
+```
+
 ## 🗂️ Repository layout
 
 ```text
@@ -327,6 +340,7 @@ photo_offloader/  the Python package:
 scripts/          trigger.sh (launchd), import_supervisor.sh, service.sh (start/stop/status)
 tools/            benchmark and one-off migration scripts
 tests/            unittest suite: python -m unittest discover
+                    browser/  the dashboard page in Chromium (Playwright)
 install.sh        installs the same layout into ~/Library/Application Support/PhotoOffloader
 ```
 
