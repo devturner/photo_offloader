@@ -118,6 +118,44 @@ class TestHeadline(Fixture):
         head = self.core.state()["headline"]
         self.assertEqual(head["title"], "NIKON Z 8 is mounted")
 
+    def mark_card_handled(self, name="NIKON Z 8"):
+        (self.install / ".last_camera_source").write_text(str(self.volumes / name / "DCIM") + "\n")
+
+    def test_an_already_imported_card_says_so_instead_of_waiting(self):
+        # User report 2026-11-04: a re-inserted card showed "Waiting to start the
+        # import" although the trigger had already handled it and would never start.
+        self.add_card("NIKON Z 8")
+        self.mark_card_handled()
+        head = self.core.state()["headline"]
+        self.assertEqual(head["title"], "NIKON Z 8 was already imported")
+        self.assertNotIn("Waiting", head["detail"])
+        self.assertEqual(self.pipeline("card")["action"], {"id": "import_card", "label": "Import now"})
+
+    def test_import_now_is_hidden_while_the_importer_is_busy(self):
+        self.add_card("NIKON Z 8")
+        self.mark_card_handled()
+        self.importer_up = True
+        self.write_status(state="copying", source=str(self.volumes / "NIKON Z 8" / "DCIM"),
+                          files_done=1, files_total=10)
+        self.assertIsNone(self.pipeline("card")["action"])
+
+    def test_import_now_forgets_the_handled_card_and_rechecks(self):
+        self.add_card("NIKON Z 8")
+        self.mark_card_handled()
+        result = self.core.act("import_card")
+        self.assertTrue(result["ok"], result)
+        self.assertFalse((self.install / ".last_camera_source").exists())
+        self.assertTrue(self.spawned[-1][1].endswith("camera_offloader_trigger.sh"))
+
+    def test_import_now_refuses_while_paused(self):
+        self.add_card("NIKON Z 8")
+        self.mark_card_handled()
+        (self.install / ".paused").touch()
+        result = self.core.act("import_card")
+        self.assertFalse(result["ok"])
+        self.assertTrue((self.install / ".last_camera_source").exists())
+        self.assertEqual(self.spawned, [])
+
     def test_other_volumes_without_dcim_are_ignored(self):
         (self.volumes / "Macintosh HD").mkdir()
         self.assertFalse(self.core.state()["card"]["mounted"])

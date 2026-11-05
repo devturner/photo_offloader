@@ -20,6 +20,11 @@ STATE_FILE="${PHOTO_OFFLOADER_TRIGGER_STATE:-$INSTALL_DIR/.last_camera_source}"
 # Identity (volume UUID) of the card that STATE_FILE refers to. The path alone is
 # not enough: every card from the same camera mounts under the same volume name.
 IDENTITY_FILE="${PHOTO_OFFLOADER_TRIGGER_IDENTITY:-$STATE_FILE.identity}"
+# Epoch seconds when a successfully handled card was first seen missing. If the
+# same card is back within REMOUNT_GRACE_SECONDS it was mount churn; after that
+# it was really removed (e.g. to shoot more) and re-inserting starts a new session.
+ABSENT_FILE="${PHOTO_OFFLOADER_TRIGGER_ABSENT:-$STATE_FILE.absent}"
+REMOUNT_GRACE_SECONDS="${PHOTO_OFFLOADER_REMOUNT_GRACE_SECONDS:-20}"
 PAUSE_FILE="${PHOTO_OFFLOADER_PAUSE_FILE:-$INSTALL_DIR/.paused}"
 LOCK_DIR="${PHOTO_OFFLOADER_TRIGGER_LOCK:-$INSTALL_DIR/.trigger.lock}"
 SETTLE_SECONDS="${PHOTO_OFFLOADER_TRIGGER_SETTLE_SECONDS:-1}"
@@ -202,6 +207,16 @@ if [[ -n "$camera_dcim" ]]; then
             rm -f "$STATE_FILE" "$EJECT_STATE_FILE" "$IDENTITY_FILE"
         fi
     fi
+    if [[ -f "$ABSENT_FILE" && -f "$STATE_FILE" && "$(cat "$STATE_FILE" 2>/dev/null)" == "$camera_dcim" ]]; then
+        absent_since="$(cat "$ABSENT_FILE" 2>/dev/null || true)"
+        [[ "$absent_since" =~ ^[0-9]+$ ]] || absent_since=0
+        absent_for=$(( $(date +%s) - absent_since ))
+        if (( absent_for >= REMOUNT_GRACE_SECONDS )); then
+            log "Card re-inserted after ${absent_for}s away; starting a new import session to pick up new files: $camera_dcim"
+            rm -f "$STATE_FILE" "$EJECT_STATE_FILE" "$IDENTITY_FILE"
+        fi
+    fi
+    rm -f "$ABSENT_FILE"
 fi
 
 if [[ -z "$camera_dcim" ]]; then
@@ -215,12 +230,15 @@ if [[ -z "$camera_dcim" ]]; then
         handled_source="$(cat "$STATE_FILE" 2>/dev/null || true)"
     fi
     if [[ -n "$handled_source" ]] && grep -Fq "success|$handled_source|" "$IMPORT_STATUS_FILE" 2>/dev/null; then
-        log "No recognized camera DCIM currently mounted; preserving successful handled-state through mount visibility gap: $handled_source"
+        if [[ ! -f "$ABSENT_FILE" ]]; then
+            date +%s > "$ABSENT_FILE"
+            log "No recognized camera DCIM currently mounted; preserving successful handled-state through mount visibility gap: $handled_source"
+        fi
     elif [[ -f "$STATE_FILE" ]]; then
-        rm -f "$STATE_FILE" "$EJECT_STATE_FILE" "$IDENTITY_FILE"
+        rm -f "$STATE_FILE" "$EJECT_STATE_FILE" "$IDENTITY_FILE" "$ABSENT_FILE"
         log "No recognized camera DCIM currently mounted; cleared incomplete handled-state."
     else
-        rm -f "$EJECT_STATE_FILE" "$IDENTITY_FILE"  # idle poll: nothing to report
+        rm -f "$EJECT_STATE_FILE" "$IDENTITY_FILE" "$ABSENT_FILE"  # idle poll: nothing to report
     fi
     exit 0
 fi

@@ -249,6 +249,15 @@ class DashboardCore:
             return None
         return self._cached("card", 3.0, probe)
 
+    def card_handled(self, card: Optional[Path]) -> bool:
+        """True when the trigger has already dealt with this mounted card and will not start again."""
+        if card is None:
+            return False
+        try:
+            return self.paths.handled_state_file.read_text().strip() == str(card / "DCIM")
+        except OSError:
+            return False
+
     def usb_mounted(self) -> bool:
         return self._cached("usb", 3.0, lambda: self.paths.usb_volume.is_mount()
                             or self.paths.usb_volume.is_dir())
@@ -528,7 +537,8 @@ class DashboardCore:
         busy = import_activity is not None          # the importer is working (uploads don't block it)
         activity = import_activity or self._upload_activity(google)
 
-        headline = self._headline(running, paused, card, activity, interrupted, last, status, google)
+        handled = self.card_handled(card)
+        headline = self._headline(running, paused, card, activity, interrupted, last, status, google, handled)
         return {
             "generated_at": now,
             "version": read_json(self.paths.install_dir / "build_info.json").get("version", ""),
@@ -539,7 +549,8 @@ class DashboardCore:
             "activity": activity,
             "interrupted": interrupted,
             "last_transfer": last,
-            "pipeline": self._pipeline(card, import_activity, counts, usb_mounted, google, busy, now),
+            "pipeline": self._pipeline(card, import_activity, counts, usb_mounted, google, busy, now,
+                                       handled and running and not paused),
             "upload": google["progress"],
             "settings": {
                 "auto_eject": self.paths.auto_eject_file.exists(),
@@ -550,7 +561,7 @@ class DashboardCore:
     @staticmethod
     def _headline(running: bool, paused: bool, card: Optional[Path], activity: Optional[Dict[str, Any]],
                   interrupted: bool, last: Optional[Dict[str, Any]], status: Dict[str, Any],
-                  google: Dict[str, Any]) -> Dict[str, str]:
+                  google: Dict[str, Any], card_handled: bool = False) -> Dict[str, str]:
         if not running:
             return {"tone": "stopped", "title": "Photo Offloader is stopped",
                     "detail": "Camera cards will not be imported until you start it."}
@@ -574,14 +585,17 @@ class DashboardCore:
                     "detail": "Cards will not be imported until you resume."}
         if last:
             return {"tone": "success", "title": last["title"], "detail": last["summary"]}
+        if card and card_handled:
+            return {"tone": "idle", "title": f"{card.name} was already imported",
+                    "detail": "Shot more since? Choose Import now, or eject and re-insert the card."}
         if card:
             return {"tone": "idle", "title": f"{card.name} is mounted",
-                    "detail": "Waiting to start the import."}
+                    "detail": "The import will start in a moment."}
         return {"tone": "idle", "title": "Ready", "detail": "Insert a camera card to begin."}
 
     def _pipeline(self, card: Optional[Path], activity: Optional[Dict[str, Any]],
                   counts: Optional[Dict[str, Any]], usb_mounted: bool, google: Dict[str, Any],
-                  busy: bool, now: float) -> List[Dict[str, Any]]:
+                  busy: bool, now: float, can_reimport: bool = False) -> List[Dict[str, Any]]:
         kind = activity["kind"] if activity else None
         local = counts["local"] if counts else None
         usb = counts["usb"] if counts else None
@@ -594,7 +608,8 @@ class DashboardCore:
         if kind == "import" and activity and activity["title"].startswith("Reading"):
             card_step = step("card", "Camera card", "active", card.name if card else "Card", "Reading files")
         elif card:
-            card_step = step("card", "Camera card", "ok", card.name, "Mounted")
+            card_step = step("card", "Camera card", "ok", card.name, "Already imported" if can_reimport else "Mounted",
+                             {"id": "import_card", "label": "Import now"} if can_reimport and not busy else None)
         else:
             card_step = step("card", "Camera card", "off", "No card", "Insert a card to begin")
 
@@ -650,7 +665,7 @@ class DashboardCore:
         params = params or {}
         handlers: Dict[str, Callable[[], Dict[str, Any]]] = {
             "pause": self._pause, "resume": self._resume,
-            "usb_backup": self._usb_backup, "update_catalog": self._update_catalog,
+            "import_card": self._import_card, "usb_backup": self._usb_backup, "update_catalog": self._update_catalog,
             "google_sync": self._google_sync,
             "toggle_auto_eject": lambda: self._toggle(self.paths.auto_eject_file, "Auto-eject"),
             "toggle_terminal_output": lambda: self._toggle(self.paths.terminal_output_file, "Terminal windows"),
@@ -680,6 +695,18 @@ class DashboardCore:
         if self.paths.trigger_script.is_file():
             self._spawn(["/bin/bash", str(self.paths.trigger_script)])
         return {"ok": True, "message": "Automatic imports resumed. Checking for a card now."}
+
+    def _import_card(self) -> Dict[str, Any]:
+        if self.paths.pause_file.exists():
+            return {"ok": False, "message": "Automatic imports are paused. Resume them first."}
+        if self.mounted_card() is None:
+            return {"ok": False, "message": "No camera card is mounted."}
+        # Forget that this card was handled and let the trigger start a normal import;
+        # only files that are new or changed since the last run are copied.
+        self.paths.handled_state_file.unlink(missing_ok=True)
+        if self.paths.trigger_script.is_file():
+            self._spawn(["/bin/bash", str(self.paths.trigger_script)])
+        return {"ok": True, "message": "Checking the card for new photos."}
 
     def _usb_backup(self) -> Dict[str, Any]:
         if not self.usb_mounted():

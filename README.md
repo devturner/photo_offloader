@@ -22,7 +22,7 @@ The installed `build_info.json` records the revision and checkout state at insta
 
 Any mounted volume with a top-level `DCIM` directory is treated as a camera card, whatever its name or manufacturer. A volume such as `/Volumes/Photos` is ignored as a source.
 
-Cards are tracked by their **volume UUID**, not just their mount path. Every card from the same camera body mounts under the same name (`NIKON Z 8`, `EOS_DIGITAL`), so a second card inserted after the first one finished is recognised as a new card and imported. Re-inserting the *same* card is still not re-imported automatically.
+Cards are tracked by their **volume UUID**, not just their mount path. Every card from the same camera body mounts under the same name (`NIKON Z 8`, `EOS_DIGITAL`), so a second card inserted after the first one finished is recognised as a new card and imported. Re-inserting the *same* card after it has been out for more than 20 seconds (for example to shoot more) starts a new import that copies only the new files; shorter gaps are treated as mount churn and ignored (`PHOTO_OFFLOADER_REMOUNT_GRACE_SECONDS` changes the window). If a mounted card was already imported, the dashboard says so and offers **Import now**.
 
 The importer also accepts a volume or `DCIM` path through `--source`.
 
@@ -101,7 +101,7 @@ macOS can generate multiple `/Volumes` events while removable media is mounting.
 3. Trigger state prevents the same mounted camera from launching repeatedly.
 4. The importer has its own process lock as the final concurrency safeguard.
 
-The state is cleared when no recognized camera volume is mounted, allowing the same card to be processed again after it is unmounted and remounted.
+Failed or incomplete state is cleared as soon as no camera volume is mounted. After a successful import the state survives brief mount gaps; if the same card comes back after more than `PHOTO_OFFLOADER_REMOUNT_GRACE_SECONDS` (default 20) it is treated as a new session.
 
 ### 💾 Local + external backup
 

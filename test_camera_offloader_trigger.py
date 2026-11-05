@@ -352,6 +352,52 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         time.sleep(0.5)
         self.assertFalse(self.background_args.exists(), "same card must not be re-imported")
 
+    def remove_card_and_backdate_absence(self, seconds_ago):
+        """Unmount the card, let the trigger notice, then pretend that was `seconds_ago`."""
+        uuid = (self.card / ".test-volume-uuid").read_text()
+        shutil.rmtree(self.card)
+        self.assertEqual(self.run_trigger().returncode, 0)
+        absent = Path(str(self.state) + ".absent")
+        self.assertTrue(absent.exists(), "trigger did not record when the card went away")
+        absent.write_text(f"{int(time.time()) - seconds_ago}\n")
+        self.background_args.unlink(missing_ok=True)
+        self.dcim.mkdir(parents=True)
+        (self.card / ".test-volume-uuid").write_text(uuid)
+
+    def test_same_card_reinserted_after_real_removal_is_imported_again(self):
+        # User report 2026-11-04: eject, shoot more, re-insert -> "waiting to
+        # start import" forever. A removal longer than the mount-churn grace
+        # period starts a new session; the importer only copies new files.
+        (self.install / ".terminal-output-enabled").unlink()
+        self.insert_card_in_background_mode("AAAA-AAAA")
+        self.remove_card_and_backdate_absence(seconds_ago=120)
+
+        self.assertEqual(self.run_trigger().returncode, 0)
+        self.assertTrue(self.wait_for(self.background_args.exists),
+                        "re-inserted card with new photos was never imported")
+        self.assertTrue(self.wait_for_workers())
+        self.assertIn("re-inserted", self.log.read_text())
+
+    def test_brief_absence_of_same_card_is_still_treated_as_mount_churn(self):
+        (self.install / ".terminal-output-enabled").unlink()
+        self.insert_card_in_background_mode("AAAA-AAAA")
+        self.remove_card_and_backdate_absence(seconds_ago=2)
+
+        self.assertEqual(self.run_trigger().returncode, 0)
+        time.sleep(0.5)
+        self.assertFalse(self.background_args.exists(), "a brief mount gap must not re-import")
+        self.assertFalse(Path(str(self.state) + ".absent").exists(),
+                         "absence marker must be cleared once the card is seen again")
+
+    def test_remount_grace_period_is_configurable(self):
+        (self.install / ".terminal-output-enabled").unlink()
+        self.insert_card_in_background_mode("AAAA-AAAA")
+        self.remove_card_and_backdate_absence(seconds_ago=120)
+
+        self.assertEqual(self.run_trigger(PHOTO_OFFLOADER_REMOUNT_GRACE_SECONDS="600").returncode, 0)
+        time.sleep(0.5)
+        self.assertFalse(self.background_args.exists())
+
     # ---------------------------------------------------- log growth (user report)
     def test_trigger_log_is_size_capped(self):
         self.log.write_text("x" * 5000 + "\n")
