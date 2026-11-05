@@ -16,6 +16,8 @@ All notable changes to Photo Offloader are documented here.
 ### Changed
 - **The dashboard says what an import is actually doing and no longer jumps around.** The headline names the step (*Scanning card*, *Reading photo info*, *Checking for new files*, *Copying new files*, *Backing up to USB*, *Updating file index*) above a step strip. The progress panel has one fixed size; progress, speed, files (checked, total, new), elapsed and remaining time have fixed slots that show a dash when unknown; progress uses one overall measure; and the speed graph is a steady one-minute window. Previously every file flipped the status between checking and copying, so the title, bar, timers and graph flashed and the panel resized.
 - **Recent activity shows what each session backed up**: new files by type and size, then the card total, and USB copies.
+- **View logs** in the dashboard **⋯** menu (import, card detection, Google Photos) and **View Import Log** in the menu bar open the log in Console, which follows it live. Only those three logs can be opened.
+- The dashboard window has a fixed size (960×860); Recent activity fills the rest of it and scrolls, showing up to 100 runs instead of a *Show more* link.
 - **Appearance setting** (Auto/Light/Dark) in the **⋯** menu, remembered across restarts. Switches and Appearance leave the menu open.
 - **Fresh cards start copying minutes sooner.** Capture date and camera model for new RAW and video files are read in batched ExifTool runs right after the card scan, instead of starting ExifTool twice per file. On a 1,188-RAW Nikon Z 8 card this took 20 s instead of about 340 s. Results go to the catalog in one transaction; the archive layout is unchanged.
 

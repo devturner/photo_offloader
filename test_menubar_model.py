@@ -13,7 +13,13 @@ def keys(snapshot):
 class TestMenuEntries(unittest.TestCase):
     def test_running_menu_is_short(self):
         self.assertEqual(keys(Snapshot(running=True)),
-                         ["open_dashboard", "pause", None, "stop", "quit"])
+                         ["open_dashboard", "pause", None, "view_log", None, "stop", "quit"])
+
+    def test_the_import_log_can_always_be_opened(self):
+        # User question 2026-11-04: the old UI had a debug/log view.
+        for snapshot in (Snapshot(running=True), Snapshot(running=False), Snapshot(running=True, transfer=True)):
+            entry = next(e for e in model.menu_entries(snapshot) if e.key == "view_log")
+            self.assertTrue(entry.enabled)
 
     def test_usb_backup_is_offered_only_when_a_drive_is_connected_and_nothing_is_running(self):
         self.assertIn("copy_usb", keys(Snapshot(running=True, usb=True)))

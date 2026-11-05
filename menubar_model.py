@@ -46,6 +46,9 @@ def menu_title(snapshot: Snapshot) -> str:
     return "📷"
 
 
+VIEW_LOG = Entry("view_log", "View Import Log")
+
+
 def menu_entries(snapshot: Snapshot) -> List[Entry]:
     quit_entry = Entry("quit", "Quit Menu Bar (Service Keeps Running)" if snapshot.running else "Quit Menu Bar")
     if not snapshot.running:
@@ -54,11 +57,13 @@ def menu_entries(snapshot: Snapshot) -> List[Entry]:
             Entry("start", "Start Photo Offloader"),
             Entry("open_dashboard", "Open Dashboard"),
             Entry(None),
+            VIEW_LOG,
+            Entry(None),
             quit_entry,
         ]
     entries = [Entry("open_dashboard", "Open Dashboard")]
     if snapshot.usb and not snapshot.transfer:
         entries.append(Entry("copy_usb", "Copy to USB Drive"))
     entries.append(Entry("pause", "Resume Automatic Imports" if snapshot.paused else "Pause Automatic Imports"))
-    entries += [Entry(None), Entry("stop", "Stop Photo Offloader…"), quit_entry]
+    entries += [Entry(None), VIEW_LOG, Entry(None), Entry("stop", "Stop Photo Offloader…"), quit_entry]
     return entries

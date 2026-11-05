@@ -36,7 +36,7 @@ class PhotoOffloaderMenuBar(rumps.App):
         self.handlers = {
             "open_dashboard": self.open_dashboard, "copy_usb": self.copy_to_usb,
             "pause": self.toggle_pause, "stop": self.stop_service,
-            "start": self.start_service, "quit": self.quit_app,
+            "start": self.start_service, "quit": self.quit_app, "view_log": self.view_log,
         }
         self._snapshot: Optional[Snapshot] = None
         self.refresh()
@@ -84,6 +84,15 @@ class PhotoOffloaderMenuBar(rumps.App):
 
     def open_dashboard(self, _sender: object = None) -> None:
         subprocess.Popen([str(PYTHON), str(DASHBOARD_SCRIPT)],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def view_log(self, _sender: object = None) -> None:
+        """Open the import log in Console, which follows new lines as they are written."""
+        log = Path.home() / ".camera_transfer.log"
+        if not log.is_file():
+            rumps.notification("Photo Offloader", "No import log yet", "It is created by the first import.")
+            return
+        subprocess.Popen(["/usr/bin/open", "-a", "Console", str(log)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def toggle_pause(self, _sender: object = None) -> None:

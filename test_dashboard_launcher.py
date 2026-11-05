@@ -92,6 +92,14 @@ class TestStartingTheDashboard(LauncherCase):
         self.assertEqual(reachable, [200])
         self.assertEqual(self.opened, [], "a native window must not also open a browser tab")
 
+    def test_the_native_window_has_a_fixed_size(self):
+        # User request 2026-11-04: fixed-size window; Recent activity scrolls inside it.
+        webview = FakeWebview()
+        self.launch(webview_module=webview)
+        (_title, _url, kwargs), = webview.windows
+        self.assertEqual((kwargs["width"], kwargs["height"]), ui.WINDOW_SIZE)
+        self.assertIs(kwargs["resizable"], False)
+
     def test_the_instance_record_is_private_and_removed_on_exit(self):
         seen = {}
 

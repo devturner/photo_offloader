@@ -183,6 +183,15 @@ class Paths:
         return self.install_dir / "google_photos_status.json"
 
     @property
+    def import_log_file(self) -> Path:
+        return Path(os.environ.get("PHOTO_OFFLOADER_IMPORT_LOG", str(Path.home() / ".camera_transfer.log")))
+
+    @property
+    def trigger_log_file(self) -> Path:
+        return Path(os.environ.get("PHOTO_OFFLOADER_TRIGGER_LOG",
+                                   str(Path.home() / ".camera_transfer_trigger.log")))
+
+    @property
     def google_log_file(self) -> Path:
         return self.install_dir / "google_photos_sync.log"
 
@@ -757,6 +766,7 @@ class DashboardCore:
             "service_stop": lambda: self._service_stop(str(params.get("mode", ""))),
             "dismiss_last": self._dismiss_last, "clear_history": self._clear_history,
             "set_theme": lambda: self._set_theme(str(params.get("theme", ""))),
+            "open_log": lambda: self._open_log(str(params.get("log", ""))),
         }
         handler = handlers.get(name)
         if handler is None:
@@ -780,6 +790,20 @@ class DashboardCore:
         if self.paths.trigger_script.is_file():
             self._spawn(["/bin/bash", str(self.paths.trigger_script)])
         return {"ok": True, "message": "Automatic imports resumed. Checking for a card now."}
+
+    def _open_log(self, log_id: str) -> Dict[str, Any]:
+        # Only these ids are accepted; the page never sends a path.
+        logs = {"import": ("Import log", self.paths.import_log_file),
+                "trigger": ("Card detection log", self.paths.trigger_log_file),
+                "google": ("Google Photos log", self.paths.google_log_file)}
+        if log_id not in logs:
+            return {"ok": False, "message": "Unknown log."}
+        label, path = logs[log_id]
+        if not path.is_file():
+            return {"ok": False, "message": f"There is no {label.lower()} yet."}
+        # Console follows the file live, like the old debug log window did.
+        self._spawn(["/usr/bin/open", "-a", "Console", str(path)])
+        return {"ok": True, "message": f"Opening the {label.lower()} in Console."}
 
     def theme(self) -> str:
         theme = str(self._dashboard_state().get("theme", "system"))

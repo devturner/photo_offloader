@@ -31,8 +31,8 @@ from dashboard_server import DashboardServer, find_running_instance, write_insta
 
 BROWSER_IDLE_TIMEOUT = 180.0  # tolerant: browsers throttle polling in background tabs
 PAGE_OPEN_WITHIN_SECONDS = 30.0  # a page that polled this recently is considered still open
-WINDOW_SIZE = (980, 780)
-WINDOW_MIN_SIZE = (520, 480)
+# Fixed size: the page fills it exactly and Recent activity scrolls inside it.
+WINDOW_SIZE = (960, 860)
 
 
 def _import_webview() -> Any:
@@ -106,7 +106,7 @@ def main(
     try:
         if window:
             webview.create_window("Photo Offloader", server.url, width=WINDOW_SIZE[0],
-                                  height=WINDOW_SIZE[1], min_size=WINDOW_MIN_SIZE)
+                                  height=WINDOW_SIZE[1], resizable=False)
             webview.start()  # blocks until the window is closed
         else:
             open_browser(server.url)

@@ -43,10 +43,13 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
 body { min-height: 100vh; }
+/* The page fills the (fixed-size) window: Recent activity takes what is left and scrolls. */
+.wrap { height: 100vh; display: flex; flex-direction: column; }
+.wrap > * { flex: none; }
 button { font: inherit; color: inherit; cursor: pointer; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
 .icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; flex: none; }
-.wrap { max-width: 920px; margin: 0 auto; padding: 24px 24px 40px; }
+.wrap { max-width: 920px; margin: 0 auto; padding: 24px 24px 16px; }
 
 /* header */
 header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
@@ -158,7 +161,7 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .link { border: 0; background: none; color: var(--accent); font-size: 13px; font-weight: 550; padding: 2px 4px; }
 .link:hover { text-decoration: underline; }
 .link[hidden] { display: none; }
-.history { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.history { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow-y: auto; flex: 1 1 auto !important; min-height: 150px; overscroll-behavior: contain; }
 .row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--border); }
 .row:first-child { border-top: 0; }
 .row .ico { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; flex: none; }
@@ -171,7 +174,7 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .row .s { color: var(--text-2); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .row time { color: var(--text-3); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .empty { padding: 28px 16px; text-align: center; color: var(--text-3); }
-footer { margin-top: 18px; text-align: center; color: var(--text-3); font-size: 12px; }
+footer { margin-top: 12px; text-align: center; color: var(--text-3); font-size: 12px; }
 
 /* toast + dialog */
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-weight: 520; box-shadow: 0 8px 30px rgba(0,0,0,.25); transition: opacity .2s, transform .2s; max-width: calc(100vw - 48px); }
@@ -216,6 +219,14 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
             <button role="menuitemradio" data-theme-choice="system" data-keep-open aria-checked="true">Auto</button>
             <button role="menuitemradio" data-theme-choice="light" data-keep-open aria-checked="false">Light</button>
             <button role="menuitemradio" data-theme-choice="dark" data-keep-open aria-checked="false">Dark</button>
+          </div>
+        </div>
+        <hr>
+        <div class="appearance"><span class="label">View logs</span>
+          <div class="segmented">
+            <button role="menuitem" data-log="import" title="What each import did">Import</button>
+            <button role="menuitem" data-log="trigger" title="Card detection">Cards</button>
+            <button role="menuitem" data-log="google" title="Google Photos uploads">Google</button>
           </div>
         </div>
         <hr>
@@ -354,7 +365,7 @@ const sigs = {};
 function changed(key, value) { const s = JSON.stringify(value); if (sigs[key] === s) return false; sigs[key] = s; return true; }
 const TONE_ICON = { success: "check", idle: "camera", active: "arrow", warning: "alert", error: "xcircle", stopped: "power" };
 const KIND_ICON = { import: "arrow", usb_backup: "plug", catalog: "refresh", upload: "up" };
-let LAST = null, HISTORY = [], showAll = false;
+let LAST = null, HISTORY = [];
 
 function renderHero(s) {
   const head = s.headline, a = s.activity, now = s.generated_at;
@@ -405,8 +416,8 @@ function renderPipeline(s) {
 
 const OUTCOME_ICON = { success: "check", warning: "alert", error: "xcircle" };
 function renderHistory(now) {
-  const rows = showAll ? HISTORY : HISTORY.slice(0, 6);
-  if (!changed("history", [rows, Math.floor(now / 60), HISTORY.length])) return;
+  const rows = HISTORY;
+  if (!changed("history", [rows, Math.floor(now / 60)])) return;
   $("#clear-history").hidden = HISTORY.length === 0;
   const list = $("#history");
   if (!HISTORY.length) { list.replaceChildren(h("div", { class: "empty", text: "Imports and backups will appear here." })); return; }
@@ -414,7 +425,6 @@ function renderHistory(now) {
     h("div", { class: "ico" }, icon(OUTCOME_ICON[r.tone] || "check")),
     h("div", { class: "grow" }, h("div", { class: "t", text: r.title }), h("div", { class: "s", text: r.summary || (r.outcome === "complete" ? "Completed" : "") })),
     h("time", { datetime: new Date(r.finished_at * 1000).toISOString(), title: new Date(r.finished_at * 1000).toLocaleString(), text: relTime(r.finished_at, now) })));
-  if (HISTORY.length > 6) kids.push(h("div", { class: "row" }, h("button", { class: "link", onclick: () => { showAll = !showAll; renderHistory(Date.now() / 1000 + Math.random()); } }, showAll ? "Show less" : "Show " + (HISTORY.length - 6) + " more")));
   list.replaceChildren(...kids);
 }
 
@@ -468,7 +478,7 @@ async function refresh(withHistory) {
     const lastId = s.last_transfer ? s.last_transfer.id : 0;
     if (withHistory === true || lastId !== refresh.lastId || !refresh.at || Date.now() - refresh.at > 15000) {
       refresh.lastId = lastId; refresh.at = Date.now();
-      HISTORY = (await api("/api/history?limit=30")).history;
+      HISTORY = (await api("/api/history?limit=100")).history;
     }
     renderHistory(s.generated_at);
   } catch (e) {
@@ -493,6 +503,7 @@ document.addEventListener("keydown", (e) => {
 menu.addEventListener("click", (e) => { const b = e.target.closest("button"); if (b && !b.hasAttribute("data-keep-open")) setMenu(false); });
 $("#m-pause").onclick = () => run(LAST && LAST.service.paused ? "resume" : "pause");
 $("#m-catalog").onclick = () => run("update_catalog");
+document.querySelectorAll("[data-log]").forEach(b => b.addEventListener("click", () => run("open_log", { log: b.dataset.log })));
 $("#m-usb").onclick = () => run("usb_backup");
 $("#m-google").onclick = () => run("google_sync");
 $("#m-eject").onclick = () => run("toggle_auto_eject");

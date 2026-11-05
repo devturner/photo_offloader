@@ -400,6 +400,34 @@ class TestLastTransferAndHistory(Fixture):
         self.assertEqual(rows[1]["summary"], "12 copied · 30 already there")
 
 
+class TestLogs(Fixture):
+    # User question 2026-11-04: the old UI had a way to view logs.
+    def setUp(self):
+        super().setUp()
+        os.environ["PHOTO_OFFLOADER_IMPORT_LOG"] = str(self.install / "import.log")
+        os.environ["PHOTO_OFFLOADER_TRIGGER_LOG"] = str(self.install / "trigger.log")
+
+    def test_each_log_opens_in_console(self):
+        for log_id, path in (("import", self.install / "import.log"), ("trigger", self.install / "trigger.log"),
+                             ("google", self.install / "google_photos_sync.log")):
+            with self.subTest(log=log_id):
+                path.write_text("line\n")
+                self.assertTrue(self.core.act("open_log", {"log": log_id})["ok"])
+                self.assertEqual(self.spawned[-1], ["/usr/bin/open", "-a", "Console", str(path)])
+
+    def test_only_known_logs_can_be_opened(self):
+        for bad in ("../../etc/passwd", "/etc/passwd", "", "catalog"):
+            with self.subTest(log=bad):
+                self.assertFalse(self.core.act("open_log", {"log": bad})["ok"])
+        self.assertEqual(self.spawned, [])
+
+    def test_a_log_that_does_not_exist_yet_says_so(self):
+        result = self.core.act("open_log", {"log": "google"})
+        self.assertFalse(result["ok"])
+        self.assertIn("no", result["message"].lower())
+        self.assertEqual(self.spawned, [])
+
+
 class TestTheme(Fixture):
     # User feedback 2026-11-04: no way to switch light/dark from the dashboard.
     def test_theme_defaults_to_following_the_system(self):
