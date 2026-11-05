@@ -177,17 +177,89 @@ class TestActivity(Fixture):
         self.write_status(**fields)
 
     def test_copy_progress_is_reported(self):
-        self.copying()
+        self.copying(stage="copy", category="RAW", files_done=40, files_total=160, new_files=3)
         state = self.core.state()
         activity = state["activity"]
-        self.assertEqual(activity["title"], "Copying to Mac archive")
+        self.assertEqual(activity["title"], "Copying new files")
         self.assertAlmostEqual(activity["percent"], 25.0)
-        self.assertEqual(activity["detail"], "DSC_0142.NEF")
-        self.assertEqual(state["headline"]["title"], "Importing from NIKON Z 8")
-        self.assertEqual(state["headline"]["detail"], "Copying to Mac archive · DSC_0142.NEF")
+        self.assertEqual(activity["detail"], "RAW · DSC_0142.NEF")
+        self.assertEqual((activity["files_done"], activity["files_total"], activity["new_files"]), (40, 160, 3))
+        self.assertEqual(state["headline"]["title"], "Copying new files")
+        self.assertEqual(state["headline"]["detail"], "NIKON Z 8 · RAW · DSC_0142.NEF")
         archive = self.pipeline("archive")
         self.assertEqual((archive["state"], archive["headline"], archive["detail"]),
-                         ("active", "Copying", "DSC_0142.NEF"))
+                         ("active", "Copying", "RAW · DSC_0142.NEF"))
+
+    def checking(self, **extra):
+        # Between copies the importer reports each file's copy decision as "scanning".
+        fields = dict(state="scanning", phase="copy-decision", stage="copy", category="RAW",
+                      decision_files_checked=5, decision_files_total=1188)
+        fields.update(extra)
+        self.copying(**fields)
+
+    def test_activity_tells_what_it_is_actually_doing(self):
+        # User feedback 2026-11-04: "Activity is too generic".
+        expectations = [
+            (dict(state="scanning", phase="card-to-ssd", stage="scan"), "Scanning card"),
+            (dict(state="scanning", phase="card-to-ssd", stage="metadata"), "Reading photo info"),
+            (dict(state="scanning", phase="copy-decision", stage="copy", new_files=0), "Checking for new files"),
+            (dict(state="scanning", phase="USB backup", stage="usb"), "Comparing with USB backup"),
+            (dict(state="copying", phase="USB backup", stage="usb"), "Backing up to USB"),
+            (dict(state="scanning", phase="catalog-update", stage="catalog"), "Updating file index"),
+        ]
+        for fields, title in expectations:
+            with self.subTest(title=title):
+                self.copying(**fields)
+                self.assertEqual(self.core.state()["activity"]["title"], title)
+
+    def test_title_progress_and_graph_hold_steady_between_check_and_copy(self):
+        # User report: the box, timers and graph flashed in and out because each file
+        # alternates between a "checking" and a "copying" status.
+        seen = []
+        for step in range(6):
+            self.advance(1)
+            transferred = (100 + step * 10) * 1024**2
+            if step % 2:
+                self.checking(new_files=2, bytes_done=transferred, bytes_transferred=transferred)
+            else:
+                self.copying(stage="copy", category="RAW", new_files=2,
+                             bytes_done=transferred, bytes_transferred=transferred)
+            seen.append(self.core.state()["activity"])
+        self.assertEqual({a["title"] for a in seen}, {"Copying new files"})
+        percents = [a["percent"] for a in seen]
+        self.assertEqual(percents, sorted(percents), "progress must not jump between measures")
+        self.assertEqual([len(a["speed_history"]) for a in seen], [0, 1, 2, 3, 4, 5])
+        self.assertTrue(all(a["eta_seconds"] is not None for a in seen[1:]))
+        self.assertTrue(all(a["speed_bps"] > 0 for a in seen[1:]))
+
+    def test_while_scanning_the_card_step_is_active_not_the_archive(self):
+        self.add_card("NIKON Z 8")
+        self.copying(state="scanning", phase="card-to-ssd", stage="metadata")
+        self.assertEqual((self.pipeline("card")["state"], self.pipeline("card")["detail"]),
+                         ("active", "Reading photo info"))
+        self.assertNotEqual(self.pipeline("archive")["state"], "active")
+
+    def test_speed_does_not_blank_out_while_unchanged_files_are_checked(self):
+        transferred = 100 * 1024**2
+        self.copying(stage="copy", new_files=1, bytes_transferred=transferred)
+        self.core.state()
+        self.advance(1)
+        self.copying(stage="copy", new_files=1, bytes_transferred=transferred + 50 * 1024**2)
+        self.core.state()
+        for _ in range(5):  # five seconds of checks: nothing transferred
+            self.advance(1)
+            self.checking(new_files=1, bytes_transferred=transferred + 50 * 1024**2)
+            activity = self.core.state()["activity"]
+            self.assertGreater(activity["speed_bps"], 0)
+
+    def test_import_stages_are_listed_with_progress(self):
+        self.checking(usb_planned=False)
+        stages = self.core.state()["activity"]["stages"]
+        self.assertEqual([(s["id"], s["state"]) for s in stages],
+                         [("scan", "done"), ("metadata", "done"), ("copy", "active"), ("usb", "skipped")])
+        self.copying(stage="usb", phase="USB backup", usb_planned=True)
+        stages = self.core.state()["activity"]["stages"]
+        self.assertEqual([s["state"] for s in stages], ["done", "done", "done", "active"])
 
     def test_usb_backup_is_recognised_by_phase(self):
         self.importer_up = True
@@ -254,12 +326,26 @@ class TestActivity(Fixture):
 
 class TestLastTransferAndHistory(Fixture):
     def test_a_finished_import_is_summarised(self):
-        self.record()
+        self.record(details={"new": {"JPG": 7, "RAW": 7, "OTHER": 1}, "new_bytes": 280 * 1024**2})
         state = self.core.state()
         last = state["last_transfer"]
         self.assertEqual(last["title"], "Imported from NIKON Z 8")
-        self.assertEqual(last["summary"], "214 files · 420.0 MB")
+        # User feedback 2026-11-04: say what this session backed up, then the card total.
+        self.assertEqual(last["summary"], "15 new: 7 photos, 7 RAW, 1 other · 280.0 MB · 214 on card, all backed up")
         self.assertEqual(state["headline"]["tone"], "success")
+
+    def test_an_import_with_nothing_new_says_so(self):
+        self.record(copied=0, skipped=214, details={"new": {}, "new_bytes": 0})
+        self.assertEqual(self.core.history()[0]["summary"], "No new files · 214 on card, all backed up")
+
+    def test_usb_copies_of_the_session_are_counted(self):
+        self.record(usb=True, details={"new": {"RAW": 2}, "new_bytes": 60 * 1024**2, "usb_copied": 2})
+        self.assertEqual(self.core.history()[0]["summary"],
+                         "2 new: 2 RAW · 60.0 MB · 214 on card, all backed up · 2 copied to USB")
+
+    def test_runs_recorded_before_session_details_still_read_sensibly(self):
+        self.record(copied=12)
+        self.assertEqual(self.core.history()[0]["summary"], "12 new · 214 on card, all backed up")
 
     def test_successful_results_fade_after_the_timeout(self):
         self.record()
@@ -311,6 +397,21 @@ class TestLastTransferAndHistory(Fixture):
         self.assertEqual(rows[0]["title"], "Import from NIKON Z 8 canceled")
         self.assertEqual(rows[0]["tone"], "warning")
         self.assertEqual(rows[1]["summary"], "12 copied · 30 already there")
+
+
+class TestTheme(Fixture):
+    # User feedback 2026-11-04: no way to switch light/dark from the dashboard.
+    def test_theme_defaults_to_following_the_system(self):
+        self.assertEqual(self.core.state()["settings"]["theme"], "system")
+
+    def test_theme_choice_is_saved_and_survives_a_restart(self):
+        self.assertTrue(self.core.act("set_theme", {"theme": "dark"})["ok"])
+        restarted = core.DashboardCore(self.paths)
+        self.assertEqual(restarted.state()["settings"]["theme"], "dark")
+
+    def test_unknown_theme_is_refused(self):
+        self.assertFalse(self.core.act("set_theme", {"theme": "neon"})["ok"])
+        self.assertEqual(self.core.state()["settings"]["theme"], "system")
 
 
 class TestPipeline(Fixture):

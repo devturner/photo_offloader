@@ -70,6 +70,46 @@ def format_clock(value: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+CATEGORY_LABELS = {"JPG": "JPG", "RAW": "RAW", "VIDEO": "Video", "OTHER": "Other"}
+IMPORT_STAGES = (("scan", "Scan card"), ("metadata", "Read photo info"),
+                 ("copy", "Copy new files"), ("usb", "Back up to USB"))
+THEMES = ("system", "light", "dark")
+SPEED_WINDOW_SAMPLES = 10
+
+
+def activity_stage(status: Dict[str, Any]) -> str:
+    """Which step the importer is on; older importers only report phase/state."""
+    stage = str(status.get("stage", "") or "")
+    if stage in ("scan", "metadata", "copy", "usb", "catalog"):
+        return stage
+    phase = str(status.get("phase", "") or "")
+    operation = f"{status.get('operation', '')} {status.get('message', '')}".lower()
+    destination = str(status.get("destination", "") or "").lower()
+    if phase == "catalog-update":
+        return "catalog"
+    if phase.lower() in ("usb-backup", "usb backup") or "usb" in operation or "/volumes/photos" in destination:
+        return "usb"
+    if phase == "copy-decision" or status.get("state") == "copying":
+        return "copy"
+    return "scan"
+
+
+def import_stages(status: Dict[str, Any], stage: str) -> Optional[List[Dict[str, str]]]:
+    """The steps of a card import with done/active/pending/skipped, or None for other runs."""
+    if "usb_planned" not in status or stage not in dict(IMPORT_STAGES):
+        return None
+    order = [step_id for step_id, _ in IMPORT_STAGES]
+    current = order.index(stage)
+    steps = []
+    for index, (step_id, label) in enumerate(IMPORT_STAGES):
+        if step_id == "usb" and not status.get("usb_planned"):
+            state = "skipped"
+        else:
+            state = "done" if index < current else "active" if index == current else "pending"
+        steps.append({"id": step_id, "label": label, "state": state})
+    return steps
+
+
 def plural(count: int, noun: str) -> str:
     return f"{count:,} {noun}{'' if count == 1 else 's'}"
 
@@ -309,54 +349,48 @@ class DashboardCore:
 
     def _activity(self, status: Dict[str, Any], now: float) -> Optional[Dict[str, Any]]:
         state = str(status.get("state", "idle"))
-        phase = str(status.get("phase", "") or "")
         if state not in ("scanning", "copying") or self._stale(status, now):
             self._samples.clear()
             self._last_sample = None
             return None
 
+        stage = activity_stage(status)
         done = int(status.get("bytes_done", 0) or 0)
         total = int(status.get("bytes_total", 0) or 0)
-        operation = f"{status.get('operation', '')} {status.get('message', '')}".lower()
-        destination = str(status.get("destination", "") or "")
         current_file = str(status.get("current_file", "") or "")
-        percent: Optional[float] = None
-        indeterminate = False
-        kind = "import"
+        category = CATEGORY_LABELS.get(str(status.get("category", "") or ""), "")
+        new_files = int(status.get("new_files", 0) or 0)
         detail = str(status.get("message", "") or "")
+        kind = {"catalog": "catalog", "usb": "usb_backup"}.get(stage, "import")
+        percent: Optional[float] = None
 
-        if state == "scanning" and phase == "catalog-update":
-            kind, title, indeterminate = "catalog", "Updating file catalog", True
-            detail = f"{int(status.get('catalog_scanned', 0) or 0):,} files scanned"
-        elif state == "scanning" and phase == "copy-decision":
-            checked = int(status.get("decision_files_checked", 0) or 0)
-            files_total = int(status.get("decision_files_total", 0) or 0)
-            title = "Checking files"
-            percent = min(100.0, checked / files_total * 100.0) if files_total else None
-            indeterminate = percent is None
-            detail = f"{checked:,} of {files_total:,} files checked" if files_total else "Comparing with the archive"
-        elif state == "scanning":
-            title, indeterminate = "Reading camera card", True
-            detail = detail or "Scanning for photos and video"
+        if stage == "catalog":
+            title = "Updating file index"
+            scanned = int(status.get("catalog_scanned", 0) or 0)
+            step = str(status.get("catalog_stage", "") or "")
+            detail = " · ".join(part for part in (step, f"{scanned:,} files scanned") if part)
+        elif stage == "usb":
+            title = "Backing up to USB" if state == "copying" else "Comparing with USB backup"
+            detail = current_file or (f"{format_bytes(done)} of {format_bytes(total)}" if total else detail)
+        elif stage == "copy":
+            # Every file is first checked, then copied if new: the status flips between the
+            # two per file. Name the step by what the session is doing overall so it holds still.
+            title = "Copying new files" if state == "copying" or new_files else "Checking for new files"
+            detail = " · ".join(part for part in (category, current_file) if part) or detail
+        elif stage == "metadata":
+            title = "Reading photo info"
         else:
-            usb = phase == "usb-backup" or "usb" in operation or "/volumes/photos" in destination.lower()
-            kind = "usb_backup" if usb else "import"
-            title = "Backing up to USB" if usb else "Copying to Mac archive"
-            percent = min(100.0, done / total * 100.0) if total else None
-            indeterminate = percent is None
-            if current_file:
-                detail = current_file
-            elif total:
-                detail = f"{format_bytes(done)} of {format_bytes(total)}"
+            title, detail = "Scanning card", detail or "Looking for photos and video"
+        if stage in ("copy", "usb") and total:
+            # One overall measure for checks and copies alike (skipped files count as done).
+            percent = min(100.0, done / total * 100.0)
 
-        run_key = f"{kind}|{status.get('source', '')}|{phase}"
+        run_key = f"{kind}|{status.get('source', '')}"
         transferred = int(status.get("bytes_transferred", 0) or 0)
-        speed = 0.0
-        if kind in ("import", "usb_backup") and state == "copying":
+        if stage in ("copy", "usb"):
             last = self._last_sample
             if last and last[2] == run_key and transferred >= last[1] and now > last[0]:
-                speed = (transferred - last[1]) / (now - last[0])
-                self._samples.append(speed)
+                self._samples.append((transferred - last[1]) / (now - last[0]))
             elif last is None or last[2] != run_key or transferred < last[1]:
                 self._samples.clear()  # new transfer: start a fresh graph
             self._last_sample = (now, transferred, run_key)
@@ -364,16 +398,25 @@ class DashboardCore:
             self._samples.clear()
             self._last_sample = None
 
-        speed_now = speed if speed > 0 else float(status.get("transfer_speed_bps", 0) or 0)
+        # Average over ~10 s of polls: between copies (checking unchanged files) no bytes
+        # move, and a shorter window would make the speed blink to nothing and back.
+        recent = list(self._samples)[-SPEED_WINDOW_SAMPLES:]
+        speed = sum(recent) / len(recent) if recent else float(status.get("transfer_speed_bps", 0) or 0)
         eta = float(status.get("eta_seconds", 0) or 0)
+        if eta <= 0 and speed > 0 and total > done:
+            eta = (total - done) / speed
+        moving = stage in ("copy", "usb")
         return {
-            "kind": kind, "title": title, "detail": detail, "percent": percent,
-            "indeterminate": indeterminate, "bytes_done": done, "bytes_total": total,
-            "speed_bps": speed_now if state == "copying" else 0.0,
-            "eta_seconds": eta if state == "copying" and total > done and speed_now > 0 else None,
+            "kind": kind, "stage": stage, "title": title, "detail": detail, "percent": percent,
+            "indeterminate": percent is None, "bytes_done": done, "bytes_total": total,
+            "files_done": int(status.get("files_done", 0) or 0),
+            "files_total": int(status.get("files_total", 0) or 0), "new_files": new_files,
+            "speed_bps": speed if moving else 0.0,
+            "eta_seconds": eta if moving and total > done and eta > 0 else None,
             "elapsed_seconds": float(status.get("elapsed_seconds", 0) or 0),
             "source": str(status.get("source", "") or ""),
             "speed_history": [round(sample) for sample in self._samples],
+            "stages": import_stages(status, stage),
         }
 
     # ---- catalog ------------------------------------------------------------------------
@@ -486,24 +529,39 @@ class DashboardCore:
         else:
             title, tone = done, "success"
         parts: List[str] = []
-        if kind == "import" and row["files"]:
-            parts.append(plural(int(row["files"]), "file"))
-            if row["bytes"]:
-                parts.append(format_bytes(int(row["bytes"])))
+        details = row.get("details") if isinstance(row.get("details"), dict) else {}
+        if kind == "import":
+            new = details.get("new")
+            if isinstance(new, dict):
+                count = sum(int(v) for v in new.values())
+                labels = {"JPG": lambda n: plural(n, "photo"), "RAW": lambda n: f"{n:,} RAW",
+                          "VIDEO": lambda n: plural(n, "video"), "OTHER": lambda n: f"{n:,} other"}
+                if count:
+                    parts.append(f"{count:,} new: " + ", ".join(
+                        labels[key](int(new[key])) for key in ("JPG", "RAW", "VIDEO", "OTHER") if new.get(key)))
+                    if details.get("new_bytes"):
+                        parts.append(format_bytes(int(details["new_bytes"])))
+                else:
+                    parts.append("No new files")
+            else:  # recorded before per-session details existed
+                parts.append(f"{int(row['copied']):,} new" if row["copied"] else "No new files")
+            if row["files"]:
+                safe = outcome == "complete" and not row["failed"]
+                parts.append(f"{int(row['files']):,} on card" + (", all backed up" if safe else ""))
             if row["failed"]:
                 parts.append(f"{int(row['failed'])} failed")
+            if "usb_copied" in details:
+                parts.append(f"{int(details['usb_copied']):,} copied to USB")
+            elif row["usb"] and outcome == "complete":
+                parts.append("backed up to USB")
         elif kind == "usb_backup":
             parts.append(f"{int(row['copied']):,} copied")
             if row["skipped"]:
                 parts.append(f"{int(row['skipped']):,} already there")
             if row["failed"]:
                 parts.append(f"{int(row['failed'])} failed")
-        elif kind == "import" and row["usb"]:
-            parts.append("also backed up to USB")
         if outcome != "complete" and row.get("message"):
             parts.append(str(row["message"]))
-        if kind == "import" and outcome == "complete" and row["usb"]:
-            parts.append("backed up to USB")
         return {**row, "title": title, "tone": tone, "summary": " · ".join(parts)}
 
     def history(self, limit: int = 15) -> List[Dict[str, Any]]:
@@ -555,6 +613,7 @@ class DashboardCore:
             "settings": {
                 "auto_eject": self.paths.auto_eject_file.exists(),
                 "terminal_output": self.paths.terminal_output_file.exists(),
+                "theme": self.theme(),
             },
         }
 
@@ -567,9 +626,9 @@ class DashboardCore:
                     "detail": "Camera cards will not be imported until you start it."}
         if activity:
             source = activity["source"].rsplit("/", 1)[-1] if activity["source"] else ""
-            if activity["kind"] == "import" and source and activity["title"] != "Checking files":
-                detail = activity["title"] + (f" · {activity['detail']}" if activity["detail"] else "")
-                return {"tone": "active", "title": f"Importing from {source}", "detail": detail}
+            if activity["kind"] == "import" and source:
+                detail = " · ".join(part for part in (source, activity["detail"]) if part)
+                return {"tone": "active", "title": activity["title"], "detail": detail}
             return {"tone": "active", "title": activity["title"], "detail": activity["detail"]}
         if interrupted:
             return {"tone": "warning", "title": "The last transfer was interrupted",
@@ -605,24 +664,25 @@ class DashboardCore:
             return {"id": step_id, "label": label, "state": state, "headline": headline,
                     "detail": detail, "action": action, "percent": percent}
 
-        if kind == "import" and activity and activity["title"].startswith("Reading"):
-            card_step = step("card", "Camera card", "active", card.name if card else "Card", "Reading files")
+        stage = activity.get("stage") if activity else None
+        if kind == "import" and stage in ("scan", "metadata"):
+            card_step = step("card", "Camera card", "active", card.name if card else "Card", activity["title"])
         elif card:
             card_step = step("card", "Camera card", "ok", card.name, "Already imported" if can_reimport else "Mounted",
                              {"id": "import_card", "label": "Import now"} if can_reimport and not busy else None)
         else:
             card_step = step("card", "Camera card", "off", "No card", "Insert a card to begin")
 
-        if kind == "import":
+        if kind == "import" and stage == "copy":
             archive_state, archive_head = "active", "Copying"
         else:
             archive_state, archive_head = "ok", "Up to date" if local else "Empty"
         archive_detail = (f"{local:,} files indexed" if local else "Nothing indexed yet") if local is not None \
             else "Catalog unavailable"
-        if kind == "import":
+        if kind == "import" and stage == "copy":
             archive_detail = activity["detail"] or archive_detail
         archive_step = step("archive", "Mac archive", archive_state, archive_head, archive_detail,
-                            None, activity["percent"] if kind == "import" else None)
+                            None, activity["percent"] if kind == "import" and stage == "copy" else None)
 
         if kind == "usb_backup":
             usb_step = step("usb", "USB backup", "active", "Backing up", activity["detail"],
@@ -672,6 +732,7 @@ class DashboardCore:
             "service_start": self._service_start,
             "service_stop": lambda: self._service_stop(str(params.get("mode", ""))),
             "dismiss_last": self._dismiss_last, "clear_history": self._clear_history,
+            "set_theme": lambda: self._set_theme(str(params.get("theme", ""))),
         }
         handler = handlers.get(name)
         if handler is None:
@@ -695,6 +756,16 @@ class DashboardCore:
         if self.paths.trigger_script.is_file():
             self._spawn(["/bin/bash", str(self.paths.trigger_script)])
         return {"ok": True, "message": "Automatic imports resumed. Checking for a card now."}
+
+    def theme(self) -> str:
+        theme = str(self._dashboard_state().get("theme", "system"))
+        return theme if theme in THEMES else "system"
+
+    def _set_theme(self, theme: str) -> Dict[str, Any]:
+        if theme not in THEMES:
+            return {"ok": False, "message": f"Unknown appearance: {theme}"}
+        self._save_dashboard_state(theme=theme)
+        return {"ok": True, "theme": theme}
 
     def _import_card(self) -> Dict[str, Any]:
         if self.paths.pause_file.exists():

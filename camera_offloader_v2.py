@@ -308,6 +308,10 @@ def catalog_connection() -> sqlite3.Connection:
                 message TEXT NOT NULL DEFAULT ''
             )
         """)
+        history_columns = {row[1] for row in connection.execute("PRAGMA table_info(import_history)")}
+        if "details" not in history_columns:
+            # Per-session breakdown (new files by type, bytes, USB copies) as JSON.
+            connection.execute("ALTER TABLE import_history ADD COLUMN details TEXT NOT NULL DEFAULT '{}'")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_root ON file_locations(root)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_relative ON file_locations(root, relative_path)")
         connection.commit()
@@ -332,7 +336,7 @@ IMPORT_HISTORY_MAX_ROWS = 500
 def record_import_run(*, kind: str, outcome: str, started_at: float, finished_at: float,
                       source: str = "", files: int = 0, copied: int = 0, skipped: int = 0,
                       failed: int = 0, bytes: int = 0, usb: bool = False,  # noqa: A002
-                      message: str = "") -> None:
+                      message: str = "", details: Optional[Dict[str, object]] = None) -> None:
     """Persist one finished run so the dashboard can show history across restarts.
 
     History is a convenience: any database problem is logged and swallowed so it
@@ -343,11 +347,11 @@ def record_import_run(*, kind: str, outcome: str, started_at: float, finished_at
             db.execute(
                 """INSERT INTO import_history
                    (started_at, finished_at, kind, source, outcome, files, copied, skipped,
-                    failed, bytes, usb, message)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    failed, bytes, usb, message, details)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (float(started_at), float(finished_at), kind, source, outcome, int(files),
                  int(copied), int(skipped), int(failed), int(bytes), int(bool(usb)),
-                 str(message)[:500]),
+                 str(message)[:500], json.dumps(details or {}, sort_keys=True)),
             )
             db.execute(
                 """DELETE FROM import_history WHERE id NOT IN
@@ -364,7 +368,7 @@ def list_import_history(limit: int = 20) -> List[Dict[str, object]]:
         with catalog_db() as db:
             rows = db.execute(
                 """SELECT id, started_at, finished_at, kind, source, outcome, files, copied,
-                          skipped, failed, bytes, usb, message
+                          skipped, failed, bytes, usb, message, details
                    FROM import_history ORDER BY id DESC LIMIT ?""",
                 (int(limit),),
             ).fetchall()
@@ -375,9 +379,17 @@ def list_import_history(limit: int = 20) -> List[Dict[str, object]]:
         {"id": r[0], "started_at": r[1], "finished_at": r[2],
          "duration_seconds": max(r[2] - r[1], 0.0), "kind": r[3], "source": r[4],
          "outcome": r[5], "files": r[6], "copied": r[7], "skipped": r[8], "failed": r[9],
-         "bytes": r[10], "usb": bool(r[11]), "message": r[12]}
+         "bytes": r[10], "usb": bool(r[11]), "message": r[12], "details": _parse_details(r[13])}
         for r in rows
     ]
+
+
+def _parse_details(text: object) -> Dict[str, object]:
+    try:
+        value = json.loads(str(text or "{}"))
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def clear_import_history() -> int:
@@ -410,7 +422,19 @@ def _finish_run_record(exit_code: int) -> None:
         files=int(_RUN.get("files", 0)), copied=int(_RUN.get("copied", 0)),
         skipped=int(_RUN.get("skipped", 0)), failed=int(_RUN.get("failed", 0)),
         bytes=int(_RUN.get("bytes", 0)), usb=bool(_RUN.get("usb", False)), message=message,
+        details=_run_details(),
     )
+
+
+def _run_details() -> Dict[str, object]:
+    """What this session itself did, for the dashboard's Recent activity."""
+    details: Dict[str, object] = {}
+    if _RUN.get("kind") == "import":
+        details["new"] = {k: v for k, v in dict(_PROGRESS.get("new_by_category") or {}).items() if v}
+        details["new_bytes"] = int(_PROGRESS.get("new_bytes", 0) or 0)
+    if "usb_copied" in _RUN:
+        details["usb_copied"] = int(_RUN["usb_copied"])  # type: ignore[call-overload]
+    return details
 
 
 def mark_google_photos_uploaded_many(paths: Sequence[Path], remote: str, album: str) -> int:
@@ -1594,6 +1618,20 @@ def progress_bar(total: int, label: str):
                      enrich_print=False, disable=not sys.stdout.isatty())
 
 
+def _count_session_file(category: str, source: Path, copied: bool) -> None:
+    """Session counters the dashboard shows while importing and keeps in history."""
+    _PROGRESS["files_done"] = int(_PROGRESS.get("files_done", 0) or 0) + 1
+    if copied:
+        _PROGRESS["new_files"] = int(_PROGRESS.get("new_files", 0) or 0) + 1
+        by_category = dict(_PROGRESS.get("new_by_category") or {})
+        by_category[category] = int(by_category.get(category, 0)) + 1
+        _PROGRESS["new_by_category"] = by_category
+        try:
+            _PROGRESS["new_bytes"] = int(_PROGRESS.get("new_bytes", 0) or 0) + source.stat().st_size
+        except OSError:
+            pass
+
+
 def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequence[Path],
                   label: str, stats: ImportStats) -> None:
     if not files:
@@ -1631,6 +1669,7 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
                     logger.exception(message)
             if len(results) != len(destinations):
                 logger.error("One or more destinations failed for %s", source)
+            _count_session_file(label, source, any(r.status == "copied" for r in results))
             update_status(state="scanning", phase="copy-decision",
                           decision_files_checked=file_index,
                           decision_files_total=len(files),
@@ -1675,7 +1714,7 @@ def update_file_catalog() -> Dict[str, int]:
     except sqlite3.Error as exc:
         logger.debug("Could not read previous catalog counts for ETA estimate: %s", exc)
     estimated_total = sum(previous_counts.get(str(root.resolve()), 0) for root in roots)
-    update_status(state="scanning", phase="catalog-update", catalog_stage="Preparing metadata",
+    update_status(state="scanning", phase="catalog-update", stage="catalog", catalog_stage="Preparing metadata",
                   catalog_scanned=0, catalog_total_scanned=0, catalog_estimated_total=estimated_total,
                   catalog_candidates=0, catalog_root="", catalog_root_index=0,
                   catalog_roots_total=len(roots),
@@ -1880,7 +1919,8 @@ def copy_local_archive_to_usb(expected_identity: Optional[VolumeIdentity] = None
     pending: List[Tuple[Path, Path, FileFingerprint]] = []
     replace_on_usb: Set[Path] = set()
 
-    update_status(state="scanning", phase="USB backup", source="; ".join(str(root) for root in source_roots),
+    update_status(state="scanning", phase="USB backup", stage="usb",
+                  source="; ".join(str(root) for root in source_roots),
                   message="Comparing local archives with USB backup", current_file="")
     for source, destination in files:
         try:
@@ -2131,8 +2171,9 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             card_volume = dcim_folder.parent.resolve()
             _RUN["source"] = card_volume.name
             logger.info("Source card volume: %s", card_volume)
-            update_status(source=str(card_volume), state="scanning", phase="card-to-ssd",
-                          message="Scanning camera card")
+            update_status(source=str(card_volume), state="scanning", phase="card-to-ssd", stage="scan",
+                          files_total=0, files_done=0, new_files=0, new_by_category={}, new_bytes=0,
+                          usb_planned=False, message="Scanning camera card")
             logger.info("Scanning: %s", dcim_folder)
             time.sleep(1)
             files = scan_with_retry(dcim_folder)
@@ -2182,7 +2223,8 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
 
             _PROGRESS_STARTED = time.monotonic()
             _PROGRESS.update({"bytes_total": source_bytes, "bytes_done": 0,
-                              "bytes_transferred": 0, "state": "copying",
+                              "bytes_transferred": 0, "state": "copying", "stage": "copy",
+                              "files_total": total_found, "files_done": 0, "usb_planned": bool(usb_expected),
                               "phase": "card-to-ssd", "message": "Copying camera card to Mac SSD"})
             update_status()
             for category in MEDIA_CATEGORIES:
@@ -2224,6 +2266,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
                 else:
                     try:
                         backup_stats = copy_local_archive_to_usb(usb_identity)
+                        _RUN["usb_copied"] = backup_stats.destination_copies
                     except Exception as exc:
                         backup_stats.failed += 1
                         backup_stats.errors.append((str(USB_DEST_VOLUME), str(exc)))

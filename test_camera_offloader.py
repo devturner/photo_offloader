@@ -1223,6 +1223,58 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertGreater(run["bytes"], 0)
         self.assertFalse(run["usb"])
 
+    @patch("camera_offloader_v2.launch_google_photos_sync")
+    @patch("camera_offloader_v2.notify")
+    def test_history_records_what_this_session_copied_by_type(self, notify, launch):
+        # User feedback 2026-11-04: Recent activity should say what this session
+        # backed up, not just how many files are on the card.
+        media = self.media()
+        with patch("camera_offloader_v2.time.sleep"):
+            app.main(["--source", str(self.card), "--no-usb", "--no-eject"])
+        media["JPG"].with_name("second.jpg").write_bytes(b"new jpg")
+        with patch("camera_offloader_v2.time.sleep"):
+            app.main(["--source", str(self.card), "--no-usb", "--no-eject"])
+        second, first = app.list_import_history()
+        self.assertEqual(first["details"]["new"], {"JPG": 1, "RAW": 1, "VIDEO": 1})
+        self.assertEqual(second["details"]["new"], {"JPG": 1})
+        self.assertEqual(second["details"]["new_bytes"], len(b"new jpg"))
+        self.assertEqual(second["files"], 4)
+
+    @patch("camera_offloader_v2.launch_google_photos_sync")
+    @patch("camera_offloader_v2.notify")
+    def test_status_reports_stage_and_session_counters(self, notify, launch):
+        self.media()
+        seen = []
+        real = app.update_status
+
+        def spy(**updates):
+            real(**updates)
+            seen.append(dict(app._PROGRESS))
+        with patch("camera_offloader_v2.time.sleep"), patch.object(app, "update_status", side_effect=spy):
+            app.main(["--source", str(self.card), "--no-usb", "--no-eject"])
+        stages = [s.get("stage") for s in seen]
+        self.assertLess(stages.index("scan"), stages.index("copy"))
+        last_copy = [s for s in seen if s.get("stage") == "copy"][-1]
+        self.assertEqual((last_copy["files_done"], last_copy["files_total"], last_copy["new_files"]), (3, 3, 3))
+        self.assertFalse(last_copy["usb_planned"])
+
+    def test_old_history_table_gains_the_details_column(self):
+        app.CATALOG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with app.sqlite3.connect(app.CATALOG_DB_PATH) as db:
+            db.execute("""CREATE TABLE import_history (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at REAL NOT NULL, finished_at REAL NOT NULL, kind TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL,
+                files INTEGER NOT NULL DEFAULT 0, copied INTEGER NOT NULL DEFAULT 0,
+                skipped INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
+                bytes INTEGER NOT NULL DEFAULT 0, usb INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '')""")
+            db.execute("INSERT INTO import_history (started_at, finished_at, kind, outcome) VALUES (1, 2, 'import', 'complete')")
+        app.record_import_run(kind="import", outcome="complete", started_at=3, finished_at=4,
+                              details={"new": {"RAW": 2}})
+        newer, older = app.list_import_history()
+        self.assertEqual(newer["details"], {"new": {"RAW": 2}})
+        self.assertEqual(older["details"], {})
+
     @patch("camera_offloader_v2.notify")
     def test_failed_import_is_recorded_with_its_reason(self, notify):
         self.media()
