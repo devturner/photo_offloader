@@ -22,6 +22,7 @@ All notable changes to Photo Offloader are documented here.
 - `photo_offloader_service.sh stop --keep-ui` stops only the trigger and leaves the menu bar and dashboards running.
 
 ### Changed
+- **USB backup compares the archive with the drive using one catalog read and one write** instead of three catalog round trips per file: 2,784 files in 0.08 s instead of about 5 s, and it no longer grows with the archive. A missing hash is computed only for the side that lacks one.
 - **The dashboard says what an import is actually doing and no longer jumps around.** The headline names the step (*Scanning card*, *Reading photo info*, *Checking for new files*, *Copying new files*, *Backing up to USB*, *Updating file index*) above a step strip. The progress panel has one fixed size; progress, speed, files (checked, total, new), elapsed and remaining time have fixed slots that show a dash when unknown; progress uses one overall measure; and the speed graph is a steady one-minute window. Previously every file flipped the status between checking and copying, so the title, bar, timers and graph flashed and the panel resized.
 - **Recent activity shows what each session backed up**: new files by type and size, then the card total, and USB copies.
 - **View logs** in the dashboard **⋯** menu (import, card detection, Google Photos) and **View Import Log** in the menu bar open the log in Console, which follows it live. Only those three logs can be opened.

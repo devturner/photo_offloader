@@ -935,6 +935,53 @@ class TestCameraOffloader(unittest.TestCase):
         self.assertEqual(stats.failed, 0)
         self.assertEqual((existing / "missing.jpg").read_bytes(), b"new content")
 
+    def archive_already_on_usb(self, count):
+        archive = config.LOCAL_DEST_ROOT / "2026-11" / "NIKON-Z-8" / "Photos"
+        backup = config.USB_DEST_ROOT / "2026-11" / "NIKON-Z-8" / "Photos"
+        archive.mkdir(parents=True, exist_ok=True)
+        backup.mkdir(parents=True, exist_ok=True)
+        for index in range(count):
+            (archive / f"p{index}.jpg").write_bytes(b"photo %d" % index)
+            (backup / f"p{index}.jpg").write_bytes(b"photo %d" % index)
+
+    def connections_during_usb_backup(self):
+        opened = []
+        real_connect = sqlite3.connect
+        catalog.catalog_connection().close()   # one-time schema setup is not the point here
+
+        def counting_connect(*args, **kwargs):
+            opened.append(args)
+            return real_connect(*args, **kwargs)
+        with patch.object(volumes, "usb_is_mounted", return_value=True), \
+                patch.object(catalog.sqlite3, "connect", counting_connect):
+            stats = transfer.copy_local_archive_to_usb()
+        self.assertEqual(stats.failed, 0, stats.errors)
+        return len(opened)
+
+    def test_usb_comparison_reads_the_catalog_in_bulk_not_per_file(self):
+        # Measured 2026-11-04: three catalog connections per archive file, ~5 s for
+        # 2,784 files and ~90 s at 50,000; one bulk read takes 0.06 s.
+        self.archive_already_on_usb(5)
+        with patch.object(volumes, "usb_is_mounted", return_value=True):
+            transfer.copy_local_archive_to_usb()   # first run hashes and records everything
+        small = self.connections_during_usb_backup()
+        self.archive_already_on_usb(60)
+        with patch.object(volumes, "usb_is_mounted", return_value=True):
+            transfer.copy_local_archive_to_usb()
+        large = self.connections_during_usb_backup()
+        self.assertEqual(small, large, "catalog connections must not grow with the archive")
+        self.assertLessEqual(large, 2)
+
+    def test_repeat_usb_backup_reuses_recorded_hashes(self):
+        self.archive_already_on_usb(4)
+        with patch.object(volumes, "usb_is_mounted", return_value=True):
+            first = transfer.copy_local_archive_to_usb()
+        self.assertEqual(first.destination_skips, 4)
+        with patch.object(volumes, "usb_is_mounted", return_value=True), \
+                patch.object(fileops, "sha256_file", side_effect=AssertionError("re-read a file")):
+            second = transfer.copy_local_archive_to_usb()
+        self.assertEqual((second.destination_skips, second.failed), (4, 0))
+
     def test_usb_backup_does_not_overwrite_different_existing_file(self):
         archive = self.local / "2026-10" / "Photos"
         archive.mkdir(parents=True)

@@ -234,17 +234,8 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
     card.save_card_manifest(dcim_folder, card_manifest)
 
 
-def copy_local_archive_to_usb(expected_identity: Optional[volumes.VolumeIdentity] = None) -> ImportStats:
-    """Copy only missing local archive files to USB; never overwrite mismatches."""
-    if not volumes.usb_is_mounted():
-        raise RuntimeError(f"USB backup volume is not mounted at {config.USB_DEST_VOLUME}")
-    if expected_identity is None:
-        expected_identity = volumes.get_volume_identity(config.USB_DEST_VOLUME)
-    if not volumes.usb_is_mounted() or not volumes.volume_identity_matches(
-        expected_identity, volumes.get_volume_identity(config.USB_DEST_VOLUME)
-    ):
-        raise RuntimeError("USB backup volume identity changed before backup started.")
-    source_roots = (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT)
+def _local_archive_files(source_roots: Sequence[Path]) -> List[Tuple[Path, Path]]:
+    """(local file, USB destination) for every visible file in the local archives."""
     files: List[Tuple[Path, Path]] = []
     for source_root in source_roots:
         if not source_root.is_dir():
@@ -260,45 +251,83 @@ def copy_local_archive_to_usb(expected_identity: Optional[volumes.VolumeIdentity
             except OSError as exc:
                 logger.warning("Could not inspect local archive file %s: %s", path, exc)
     files.sort(key=lambda item: str(item[0]).lower())
-    stats = ImportStats(found=len(files))
+    return files
+
+
+def _compare_with_usb(files: Sequence[Tuple[Path, Path]], source_roots: Sequence[Path], stats: ImportStats,
+                      ) -> Tuple[List[Tuple[Path, Path, fileops.FileFingerprint]], Set[Path]]:
+    """Decide what the USB backup must copy, reading and writing the catalog once each.
+
+    Files already on USB are compared by recorded SHA-256 when both recordings still
+    match the files; a missing hash is computed once and recorded for next time.
+    """
+    rows = catalog.catalog_rows_under([*source_roots, config.USB_DEST_ROOT])
+    updates: List[Tuple[Path, Dict[str, Optional[str]]]] = []
+
+    def known_hash(path: Path, fingerprint: fileops.FileFingerprint) -> Optional[str]:
+        row = rows.get(str(path.resolve()))
+        if catalog.row_matches(row, fingerprint):
+            return row[3]
+        updates.append((path, {}))   # new or changed: (re)index it
+        return None
+
     pending: List[Tuple[Path, Path, fileops.FileFingerprint]] = []
     replace_on_usb: Set[Path] = set()
-
-    progress.update_status(state="scanning", phase="USB backup", stage="usb",
-                  source="; ".join(str(root) for root in source_roots),
-                  message="Comparing local archives with USB backup", current_file="")
     for source, destination in files:
         try:
             fingerprint = fileops.file_fingerprint(source)
-            catalog.catalog_record(source)
-            if destination.exists():
-                cached_match = catalog.catalog_hash_matches(source, destination)
-                if cached_match is None:
-                    source_hash = fileops.sha256_file(source)
-                    destination_hash = fileops.sha256_file(destination) if destination.is_file() else ""
-                    catalog.catalog_record(source, sha256=source_hash)
-                    if destination.is_file():
-                        catalog.catalog_record(destination, sha256=destination_hash)
-                    cached_match = bool(destination_hash) and source_hash == destination_hash
-                if destination.is_file() and cached_match:
-                    stats.destination_skips += 1
-                    stats.verified_copies += 1
-                elif destination.is_file() and fileops.is_camera_index_file(destination):
-                    replace_on_usb.add(destination)
-                    pending.append((source, destination, fingerprint))
-                    stats.source_bytes += fingerprint.size
-                else:
-                    stats.failed += 1
-                    message = f"USB file differs from local archive; not overwriting: {destination}"
-                    stats.errors.append((str(source), message))
-                    logger.error(message)
+            source_hash = known_hash(source, fingerprint)
+            if not destination.exists():
+                pending.append((source, destination, fingerprint))
+                stats.source_bytes += fingerprint.size
                 continue
-            pending.append((source, destination, fingerprint))
-            stats.source_bytes += fingerprint.size
+            matches = False
+            if destination.is_file():
+                destination_hash = known_hash(destination, fileops.file_fingerprint(destination))
+                if source_hash is None:
+                    source_hash = fileops.sha256_file(source)
+                    updates.append((source, {"sha256": source_hash}))
+                if destination_hash is None:
+                    destination_hash = fileops.sha256_file(destination)
+                    updates.append((destination, {"sha256": destination_hash}))
+                matches = source_hash == destination_hash
+            if matches:
+                stats.destination_skips += 1
+                stats.verified_copies += 1
+            elif destination.is_file() and fileops.is_camera_index_file(destination):
+                replace_on_usb.add(destination)
+                pending.append((source, destination, fingerprint))
+                stats.source_bytes += fingerprint.size
+            else:
+                stats.failed += 1
+                message = f"USB file differs from local archive; not overwriting: {destination}"
+                stats.errors.append((str(source), message))
+                logger.error(message)
         except OSError as exc:
             stats.failed += 1
             stats.errors.append((str(source), str(exc)))
             logger.exception("Could not inspect backup candidate %s", source)
+    catalog.catalog_record_many(updates)
+    return pending, replace_on_usb
+
+
+def copy_local_archive_to_usb(expected_identity: Optional[volumes.VolumeIdentity] = None) -> ImportStats:
+    """Copy only missing local archive files to USB; never overwrite mismatches."""
+    if not volumes.usb_is_mounted():
+        raise RuntimeError(f"USB backup volume is not mounted at {config.USB_DEST_VOLUME}")
+    if expected_identity is None:
+        expected_identity = volumes.get_volume_identity(config.USB_DEST_VOLUME)
+    if not volumes.usb_is_mounted() or not volumes.volume_identity_matches(
+        expected_identity, volumes.get_volume_identity(config.USB_DEST_VOLUME)
+    ):
+        raise RuntimeError("USB backup volume identity changed before backup started.")
+    source_roots = (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT)
+    files = _local_archive_files(source_roots)
+    stats = ImportStats(found=len(files))
+    progress.update_status(state="scanning", phase="USB backup", stage="usb",
+                           source="; ".join(str(root) for root in source_roots),
+                           message="Comparing local archives with USB backup", current_file="")
+    pending, replace_on_usb = _compare_with_usb(files, source_roots, stats)
 
     if pending:
         volumes.validate_destinations([config.USB_DEST_ROOT], sum(item[2].size for item in pending))

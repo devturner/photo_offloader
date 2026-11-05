@@ -240,21 +240,44 @@ def google_photos_upload_record(path: Path) -> Optional[dict]:
     return None
 
 
+ROW_COLUMNS = "size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder"
+
+
+def row_matches(row: Optional[tuple], fingerprint: fileops.FileFingerprint) -> bool:
+    """Whether a catalog row (ROW_COLUMNS order) still describes the file on disk."""
+    return bool(row) and row[2] == fingerprint.inode and fileops.card_fingerprint_unchanged(
+        {"size": row[0], "mtime_ns": row[1]}, fingerprint)
+
+
 def catalog_row(path: Path, fingerprint: Optional[fileops.FileFingerprint] = None) -> Optional[tuple]:
     """Return cached catalog metadata only when the filesystem fingerprint still matches."""
     try:
         fingerprint = fingerprint or fileops.file_fingerprint(path)
         with catalog_db() as db:
-            row = db.execute(
-                "SELECT size, mtime_ns, inode, sha256, capture_month, camera_model, media_folder "
-                "FROM file_locations WHERE path = ?", (str(path.resolve()),)
-            ).fetchone()
-        if (row and row[2] == fingerprint.inode
-                and fileops.card_fingerprint_unchanged({"size": row[0], "mtime_ns": row[1]}, fingerprint)):
+            row = db.execute(f"SELECT {ROW_COLUMNS} FROM file_locations WHERE path = ?",
+                             (str(path.resolve()),)).fetchone()
+        if row_matches(row, fingerprint):
             return row
     except (OSError, sqlite3.Error) as exc:
         logger.debug("Catalog lookup failed for %s: %s", path, exc)
     return None
+
+
+def catalog_rows_under(roots: Sequence[Path]) -> Dict[str, tuple]:
+    """Every catalogued file under these archive roots, keyed by resolved path, in one query.
+
+    Rows are returned as stored; check them against the file with row_matches().
+    """
+    resolved = [str(root.resolve()) for root in roots]
+    try:
+        with catalog_db() as db:
+            rows = db.execute(
+                f"SELECT path, {ROW_COLUMNS} FROM file_locations WHERE root IN ({','.join('?' * len(resolved))})",
+                resolved).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        logger.debug("Bulk catalog lookup failed: %s", exc)
+        return {}
+    return {row[0]: tuple(row[1:]) for row in rows}
 
 
 def _catalog_upsert(db: sqlite3.Connection, path: Path, sha256: Optional[str] = None,
