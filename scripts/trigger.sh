@@ -42,6 +42,7 @@ IMPORT_WORKER_LABEL="com.user.photooffloader.import"
 EJECT_STATE_FILE="${PHOTO_OFFLOADER_EJECT_STATE:-$INSTALL_DIR/.last_camera_eject_attempt}"
 IMPORT_STATUS_FILE="${PHOTO_OFFLOADER_IMPORT_STATUS:-$INSTALL_DIR/.last_camera_import_status}"
 AUTO_EJECT_FILE="${PHOTO_OFFLOADER_AUTO_EJECT_FILE:-$INSTALL_DIR/.auto-eject-enabled}"
+BROKEN_INSTALL_MARK="$INSTALL_DIR/.broken-install-warned"
 # launchd does not load interactive shell startup files. Keep common Homebrew
 # paths available to ExifTool, ffmpeg, and other optional media helpers.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
@@ -163,10 +164,21 @@ start_background_import() {
     fi
 }
 
+# The menu bar and dashboard need this Python too, so a notification is the only way to say
+# that cards have stopped importing. Once is enough: this runs every 30 seconds.
+warn_install_is_broken() {
+    [[ -d "$INSTALL_DIR" && ! -f "$BROKEN_INSTALL_MARK" ]] || return 0
+    "$OSASCRIPT" -e 'display notification "Camera cards will not import. Run install.sh from the project folder again." with title "Photo Offloader needs reinstalling"' \
+        >/dev/null 2>&1 </dev/null || log "Could not show the broken-install notification."
+    : > "$BROKEN_INSTALL_MARK"
+}
+
 if [[ ! -x "$PYTHON" || ! -f "$IMPORTER" ]]; then
     log "Importer installation not found."
+    warn_install_is_broken
     exit 0
 fi
+rm -f "$BROKEN_INSTALL_MARK"
 
 mkdir -p "$(dirname "$STATE_FILE")"
 

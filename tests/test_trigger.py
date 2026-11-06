@@ -597,6 +597,33 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertRegex(seen.read_text(), r"^\d+$")
         self.assertFalse(self.lock.exists())
 
+    # ---- a broken install must say so
+    def test_a_missing_python_warns_once_instead_of_only_logging(self):
+        # A Homebrew cleanup can remove the Python the install was built from. The menu bar uses
+        # the same Python, so nothing else can tell anyone that cards have stopped importing.
+        missing = str(self.root / "gone" / "python3")
+        self.assertEqual(self.run_trigger(PHOTO_OFFLOADER_PYTHON=missing).returncode, 0)
+        self.assertIn("install.sh", self.command_capture.read_text())
+        self.command_capture.unlink()
+        self.run_trigger(PHOTO_OFFLOADER_PYTHON=missing)
+        self.assertFalse(self.command_capture.exists())
+
+    def test_a_repaired_install_warns_again_if_it_breaks_again(self):
+        missing = str(self.root / "gone" / "python3")
+        self.run_trigger(PHOTO_OFFLOADER_PYTHON=missing)
+        self.command_capture.unlink()
+        self.background_mode()
+        self.run_trigger()
+        self.wait_for_workers()
+        self.run_trigger(PHOTO_OFFLOADER_PYTHON=missing)
+        self.assertTrue(self.command_capture.exists())
+
+    def test_a_working_install_does_not_warn(self):
+        self.background_mode()
+        self.run_trigger()
+        self.wait_for_workers()
+        self.assertFalse(self.command_capture.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
