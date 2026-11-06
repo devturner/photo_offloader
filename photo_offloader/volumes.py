@@ -13,6 +13,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from photo_offloader import config
 from photo_offloader.logs import logger
 
+DISKUTIL_INFO_TIMEOUT_SECONDS = 30  # a failing card can leave diskutil waiting
+
 
 @dataclass(frozen=True)
 class VolumeIdentity:
@@ -37,7 +39,10 @@ def get_volume_identity(volume_path: Path) -> Optional[VolumeIdentity]:
         return None
     try:
         result = subprocess.run(
-            ["diskutil", "info", "-plist", str(volume_path)], check=False, capture_output=True
+            ["diskutil", "info", "-plist", str(volume_path)],
+            check=False,
+            capture_output=True,
+            timeout=DISKUTIL_INFO_TIMEOUT_SECONDS,
         )
         if result.returncode != 0:
             return None
@@ -45,7 +50,7 @@ def get_volume_identity(volume_path: Path) -> Optional[VolumeIdentity]:
         return VolumeIdentity(
             volume_path.resolve(), info.get("DeviceIdentifier"), info.get("VolumeUUID")
         )
-    except (OSError, plistlib.InvalidFileException, ValueError):
+    except (OSError, subprocess.TimeoutExpired, plistlib.InvalidFileException, ValueError):
         return None
 
 

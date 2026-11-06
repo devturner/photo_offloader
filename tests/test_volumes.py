@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import plistlib
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -91,6 +93,16 @@ class TestVolumes(support.CardFixtureTestCase):
         self.assertTrue(
             volumes.volume_identity_matches(expected, VolumeIdentity(self.usb_volume, None, None))
         )
+
+
+class TestVolumeIdentityTimeout(unittest.TestCase):
+    def test_a_stuck_diskutil_means_no_identity_instead_of_a_hung_import(self):
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            patch("subprocess.run", side_effect=subprocess.TimeoutExpired("diskutil", 1)) as run,
+        ):
+            self.assertIsNone(volumes.get_volume_identity(Path(folder)))
+        self.assertGreater(run.call_args.kwargs["timeout"], 0)
 
 
 if __name__ == "__main__":
