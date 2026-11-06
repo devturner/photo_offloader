@@ -14,7 +14,6 @@ open in your browser. Every API request therefore needs:
 from __future__ import annotations
 
 import hmac
-import http.client
 import json
 import os
 import secrets
@@ -27,8 +26,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from photo_offloader.dashboard.core import DashboardCore
+from photo_offloader.presence import TOKEN_HEADER, find_running_instance  # noqa: F401
 
-TOKEN_HEADER = "X-Photo-Offloader-Token"
 MAX_BODY_BYTES = 8192
 STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8")}
 CONTENT_SECURITY_POLICY = (
@@ -116,28 +115,6 @@ def write_instance_file(path: Path, server: DashboardServer, mode: str = "browse
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         json.dump(payload, handle)
     os.replace(temporary, path)
-
-
-def find_running_instance(path: Path, timeout: float = 1.0) -> Optional[Dict[str, Any]]:
-    """Return the instance record if a dashboard server answers with its own token."""
-    try:
-        info = json.loads(path.read_text(encoding="utf-8"))
-        port, token = int(info["port"]), str(info["token"])
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-    try:
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
-        connection.request(
-            "GET", "/api/ping", headers={TOKEN_HEADER: token, "Host": f"127.0.0.1:{port}"}
-        )
-        response = connection.getresponse()
-        body = response.read()
-        ok = response.status == 200
-        connection.close()
-        info["idle_seconds"] = float(json.loads(body).get("idle_seconds", 1e9)) if ok else None
-    except (OSError, ValueError, http.client.HTTPException):
-        return None
-    return info if ok else None
 
 
 class _DashboardHandler(BaseHTTPRequestHandler):
