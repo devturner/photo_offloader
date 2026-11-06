@@ -35,6 +35,7 @@ from photo_offloader import (
     logs,
     media_info,
     progress,
+    run_report,
     transfer,
     volumes,
 )
@@ -42,6 +43,8 @@ from photo_offloader.logs import logger
 
 # What the current run has learned so far; turned into a history row by main().
 _RUN: Dict[str, object] = {}
+# This run's own log lines, which go in its report.
+_RUN_LOG = run_report.LogCapture()
 
 
 @contextlib.contextmanager
@@ -64,6 +67,9 @@ def _finish_run_record(exit_code: int) -> None:
     message = str(progress._PROGRESS.get("message", "") or "")
     if exit_code == 2 and not message:
         message = "Copies completed, but the card could not be ejected."
+    details = _run_details()
+    if kind == "import":
+        details.update(_save_run_report(outcome, message))
     catalog.record_import_run(
         kind=str(kind),
         outcome=outcome,
@@ -77,8 +83,54 @@ def _finish_run_record(exit_code: int) -> None:
         bytes=int(_RUN.get("bytes", 0)),
         usb=bool(_RUN.get("usb", False)),
         message=message,
-        details=_run_details(),
+        details=details,
     )
+
+
+def _files_not_reached(
+    files: Dict[str, List[Path]], outcomes: Sequence[run_report.FileOutcome]
+) -> List[Tuple[str, Path]]:
+    done = {item.source for item in outcomes}
+    return [
+        (category, path) for category, paths in files.items() for path in paths if path not in done
+    ]
+
+
+def _save_run_report(outcome: str, message: str) -> Dict[str, object]:
+    """Save what this run did with each file. Whatever goes wrong here, the import's result stands."""
+    try:
+        dcim = _RUN.get("dcim")
+        if not isinstance(dcim, Path):
+            return {}
+        stats = _RUN.get("stats")
+        outcomes = stats.outcomes if isinstance(stats, transfer.ImportStats) else []
+        build = load_build_info()
+        problems = outcome == "failed"
+        folder, summary = run_report.save_report(
+            run_report.RunFacts(
+                source=str(_RUN["source"]),
+                started_at=float(_RUN.get("started_at", time.time())),  # type: ignore[arg-type]
+                outcome=outcome,
+                message=message,
+                dcim=dcim,
+                problems=problems,
+                outcomes=outcomes,
+                unreadable=list(_RUN.get("unreadable", [])),  # type: ignore[call-overload]
+                files_not_reached=_files_not_reached(
+                    _RUN.get("scan_files", {}),  # type: ignore[arg-type]
+                    outcomes,
+                ),
+                sizes=_RUN.get("sizes", {}),  # type: ignore[arg-type]
+                usb_errors=list(_RUN.get("usb_errors", [])),  # type: ignore[call-overload]
+                log_lines=list(_RUN_LOG.lines),
+                app_version=f"{build.get('version', 'unknown')} ({build.get('git_commit', '')[:7]})",
+                volume_info=run_report.volume_info(dcim.parent) if problems else "",
+            )
+        )
+    except Exception as exc:
+        logger.exception("Could not save this run's report: %s", exc)
+        return {}
+    return {"report": folder, **({"problems": summary} if summary else {})}
 
 
 def _run_details() -> Dict[str, object]:
@@ -188,6 +240,8 @@ def configure_logging(verbose: bool = False) -> None:
     ch.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     logger.addHandler(fh)
     logger.addHandler(ch)
+    _RUN_LOG.setFormatter(formatter)
+    logger.addHandler(_RUN_LOG)
     if not progress.HAS_ALIVE_PROGRESS:
         logger.warning("alive-progress is not installed; progress output is disabled.")
 
@@ -296,6 +350,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except ValueError:  # not the main thread (e.g. called from a test harness)
         pass
     _RUN.clear()
+    _RUN_LOG.clear()
     try:
         exit_code = _main(argv)
     finally:
@@ -366,12 +421,6 @@ def _run_usb_backup() -> int:
     return 0
 
 
-def _unreadable_message(count: int) -> str:
-    """The instruction comes first, and it's short: a narrow dashboard cuts off a long line."""
-    places = "1 location" if count == 1 else f"{count} locations"
-    return f"Don't format this card: {places} couldn't be read."
-
-
 def _scan_card(
     args: argparse.Namespace,
 ) -> Tuple[Path, Path, Dict[str, List[Path]], List[Path]]:
@@ -385,7 +434,7 @@ def _scan_card(
     else:
         dcim_folder = card.find_card_dcim()
     card_volume = dcim_folder.parent.resolve()
-    _RUN["source"] = card_volume.name
+    _RUN.update(source=card_volume.name, dcim=dcim_folder)
     logger.info("Source card volume: %s", card_volume)
     progress.update_status(
         source=str(card_volume),
@@ -407,13 +456,23 @@ def _scan_card(
     time.sleep(1)
     unreadable: List[Path] = []
     files = card.scan_with_retry(dcim_folder, unreadable)
+    _RUN.update(unreadable=unreadable, scan_files=files)
     if not any(files.values()):
         if unreadable:
-            raise RuntimeError(_unreadable_message(len(unreadable)))
+            raise RuntimeError(
+                run_report.dont_format_message(
+                    run_report.summarize([], unreadable, {}, dcim_folder)
+                )
+            )
         raise RuntimeError(f"No supported media files found under {dcim_folder}")
 
     total_found = sum(len(items) for items in files.values())
-    _RUN.update(files=total_found, bytes=volumes.required_source_bytes(files))
+    _RUN.update(
+        files=total_found,
+        bytes=volumes.required_source_bytes(files),
+        # Now, while the card still answers: the sizes of any files it later fails to give up.
+        sizes={str(path): path.stat().st_size for paths in files.values() for path in paths},
+    )
     logger.info(
         "Scan complete: %d files (%d JPG, %d RAW, %d VIDEO, %d other)",
         total_found,
@@ -541,15 +600,18 @@ def _report_local_failure(
     local_stats: transfer.ImportStats,
 ) -> None:
     print_summary(dcim_folder, destinations, local_stats, False, False)
-    unreadable_message = (
-        _unreadable_message(local_stats.unreadable_on_card)
-        if local_stats.unreadable_on_card
-        else ""
+    message = run_report.dont_format_message(
+        run_report.summarize(
+            local_stats.outcomes,
+            _RUN.get("unreadable", []),  # type: ignore[arg-type]
+            {},
+            dcim_folder,
+        )
     )
     progress.update_status(
         state="failed",
         phase="card-to-ssd",
-        message=unreadable_message or f"Local SSD import failed: {local_stats.failed} failure(s)",
+        message=message,
         current_file="",
         current_path="",
     )
@@ -557,11 +619,7 @@ def _report_local_failure(
         dcim_folder, files, "incomplete", local_stats.verified_copies, local_stats.failed
     )
     logger.error("Local SSD import failed; card was not ejected and USB backup was not started.")
-    logs.notify(
-        "Photo Import Incomplete",
-        unreadable_message
-        or "Local SSD copy failed. Card remains mounted; USB backup was not started.",
-    )
+    logs.notify("Photo Import Incomplete", message)
 
 
 def _report_outcome(
@@ -614,6 +672,7 @@ def _import_card(args: argparse.Namespace) -> int:
     dcim_folder, card_volume, files, unreadable = _scan_card(args)
     local_stats = transfer.ImportStats(found=int(_RUN["files"]), source_bytes=int(_RUN["bytes"]))
     local_stats.add_unreadable(unreadable)
+    _RUN["stats"] = local_stats
 
     usb_expected = not args.no_usb and volumes.usb_is_mounted()
     usb_identity = volumes.get_volume_identity(config.USB_DEST_VOLUME) if usb_expected else None
@@ -641,6 +700,7 @@ def _import_card(args: argparse.Namespace) -> int:
     if usb_expected:
         with _timed("usb_seconds"):
             backup_stats = _backup_after_import(usb_identity)
+        _RUN["usb_errors"] = backup_stats.errors
     else:
         backup_stats = transfer.ImportStats()
         progress.update_status(

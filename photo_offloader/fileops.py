@@ -9,6 +9,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 from photo_offloader import config, logs, progress
 from photo_offloader.logs import logger
@@ -203,6 +204,17 @@ def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
 
 
 @logs.timed("copying")
+def _read_source(input_file: BinaryIO, source: Path) -> bytes:
+    """Read a chunk. A read error names the file, which ``open`` does but ``read`` doesn't.
+
+    That's how a report tells a failing card from a failing destination.
+    """
+    try:
+        return input_file.read(COPY_CHUNK_BYTES)
+    except OSError as exc:
+        raise OSError(exc.errno, exc.strerror, str(source)) from exc
+
+
 def copy_file_with_progress(source: Path, destination: Path) -> str:
     """Copy in chunks so progress and ETA update even for large video files.
 
@@ -212,7 +224,7 @@ def copy_file_with_progress(source: Path, destination: Path) -> str:
     digest = hashlib.sha256()
     with source.open("rb") as input_file, destination.open("wb") as output_file:
         _skip_page_cache(output_file.fileno(), destination)
-        while chunk := input_file.read(COPY_CHUNK_BYTES):
+        while chunk := _read_source(input_file, source):
             digest.update(chunk)
             output_file.write(chunk)
             progress.add_progress_bytes(len(chunk), transferred=True)

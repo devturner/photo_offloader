@@ -11,7 +11,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-from photo_offloader import card, catalog, config, fileops, logs, media_info, progress, volumes
+from photo_offloader import (
+    card,
+    catalog,
+    config,
+    fileops,
+    logs,
+    media_info,
+    progress,
+    run_report,
+    volumes,
+)
 from photo_offloader.logs import logger
 
 
@@ -24,11 +34,10 @@ class ImportStats:
     verified_copies: int = 0
     failed: int = 0
     errors: List[Tuple[str, str]] = field(default_factory=list)
-    unreadable_on_card: int = 0
+    outcomes: List[run_report.FileOutcome] = field(default_factory=list)  # card imports only
 
     def add_unreadable(self, paths: Sequence[Path]) -> None:
         """Count what the card scan couldn't read: its files were never even considered."""
-        self.unreadable_on_card += len(paths)
         self.failed += len(paths)
         self.errors.extend((str(path), "could not be read") for path in paths)
 
@@ -55,6 +64,7 @@ class DestinationResult:
     status: str  # copied, skipped, failed
     path: Optional[Path] = None
     message: str = ""
+    sha256: str = ""
 
 
 def hash_for_copy_decision(
@@ -154,6 +164,7 @@ def _skip_if_already_copied(
                 "skipped",
                 final_path,
                 "already exists and matches cached/verified hash",
+                source_hash,
             )
     except OSError as exc:
         logger.warning("Could not verify existing file %s: %s", final_path, exc)
@@ -220,7 +231,9 @@ def _copy_and_verify(
         catalog.catalog_record(final_path, sha256=source_hash)
         card.update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
         progress.update_status(state="copying", phase="copy", message="Copy verified")
-        return DestinationResult(destination_base, "copied", final_path, "copied and verified")
+        return DestinationResult(
+            destination_base, "copied", final_path, "copied and verified", source_hash
+        )
     finally:
         if temp_path is not None:
             try:
@@ -296,6 +309,28 @@ def _count_session_file(category: str, source: Path, copied: bool) -> None:
             pass  # only a display counter: the copy itself has already been verified
 
 
+def _count_result(result: DestinationResult, source: Path, label: str, stats: ImportStats) -> None:
+    if result.status == "copied":
+        stats.destination_copies += 1
+        stats.verified_copies += 1
+    elif result.status == "skipped":
+        stats.destination_skips += 1
+        stats.verified_copies += 1
+    else:
+        stats.failed += 1
+        stats.errors.append((str(source), result.message or "copy failed"))
+    stats.outcomes.append(
+        run_report.FileOutcome(
+            label,
+            source,
+            result.status,
+            str(result.path or ""),
+            result.sha256,
+            result.message if result.status == run_report.FAILED else "",
+        )
+    )
+
+
 def copy_category(
     files: Sequence[Path],
     dcim_folder: Path,
@@ -338,19 +373,19 @@ def copy_category(
                         source, dcim_folder, destination, card_manifest, trust_manifest
                     )
                     results.append(result)
-                    if result.status == "copied":
-                        stats.destination_copies += 1
-                        stats.verified_copies += 1
-                    elif result.status == "skipped":
-                        stats.destination_skips += 1
-                        stats.verified_copies += 1
-                    else:
-                        stats.failed += 1
-                        stats.errors.append((str(source), result.message or "copy failed"))
+                    _count_result(result, source, label, stats)
                 except Exception as exc:
                     stats.failed += 1
                     message = f"{source} -> {destination}: {exc}"
                     stats.errors.append((str(source), message))
+                    stats.outcomes.append(
+                        run_report.FileOutcome(
+                            label,
+                            source,
+                            run_report.FAILED,
+                            reason=run_report.failure_reason(exc, source),
+                        )
+                    )
                     logger.exception(message)
             if len(results) != len(destinations):
                 logger.error("One or more destinations failed for %s", source)

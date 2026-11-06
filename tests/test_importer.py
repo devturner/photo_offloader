@@ -509,7 +509,7 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         self.assertEqual(result, 1)
         status = json.loads(config.STATUS_FILE_PATH.read_text())
         self.assertEqual(status["state"], "failed")
-        self.assertEqual(status["message"], "Don't format this card: 1 location couldn't be read.")
+        self.assertEqual(status["message"], "Don't format this card: 1 folder couldn't be read.")
         self.assertIn("Don't format", notify.call_args.args[1])
         eject.assert_not_called()
         launch.assert_not_called()
@@ -537,7 +537,7 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
             result = app.main(["--source", str(self.card), "--no-usb"])
         self.assertEqual(result, 1)
         status = json.loads(config.STATUS_FILE_PATH.read_text())
-        self.assertIn("1 location couldn't be read", status["message"])
+        self.assertIn("1 folder couldn't be read", status["message"])
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
@@ -669,7 +669,7 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         (run,) = catalog.list_import_history()
         self.assertEqual(run["outcome"], "failed")
         self.assertEqual(run["failed"], 3)
-        self.assertIn("failure", run["message"].lower())
+        self.assertIn("3 files couldn't be copied", run["message"])
 
     @patch("photo_offloader.logs.notify")
     def test_canceled_import_is_recorded(self, notify):

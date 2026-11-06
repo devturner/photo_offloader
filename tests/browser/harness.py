@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from unittest.mock import patch
 
-from photo_offloader import catalog, config, importer
+from photo_offloader import catalog, config
 from photo_offloader.dashboard import core
 from photo_offloader.dashboard.server import DashboardServer
 from tests import support
@@ -407,7 +407,9 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "finished_advanced": _finished_advanced,
     "failed": _failed,
     "failed_on_usb": lambda s: _failed(s, "USB backup failed: the drive was removed"),
-    "failed_unreadable_card": lambda s: _failed(s, importer._unreadable_message(2)),
+    "failed_unreadable_card": lambda s: _failed(
+        s, "Don't format this card: 2 folders couldn't be read."
+    ),
     "stopped": lambda s: setattr(s, "service_up", False),
     "paused": lambda s: s.paths.pause_file.touch(),
 }
