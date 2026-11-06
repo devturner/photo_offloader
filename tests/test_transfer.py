@@ -135,6 +135,35 @@ class TestTransfer(support.CardFixtureTestCase):
             with self.assertRaisesRegex(IOError, "Source changed"):
                 transfer.copy_one_to_destination(source, self.dcim, self.local)
 
+    def test_a_corrupt_temporary_copy_is_never_installed(self):
+        source = self.media()["RAW"]
+        destination = media_info.build_destination_path(source, self.dcim, self.local)
+        good_hash = fileops.sha256_file(source)
+
+        def corrupt_copy(_src, dst):
+            Path(dst).write_bytes(b"corrupted on the way to the disk")
+            return good_hash
+
+        with patch("photo_offloader.fileops.copy_file_with_progress", side_effect=corrupt_copy):
+            with self.assertRaisesRegex(IOError, "Verification failed for temporary copy"):
+                transfer.copy_one_to_destination(source, self.dcim, self.local)
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(destination.parent.iterdir()), [])  # temporary file cleaned up
+
+    def test_a_corrupt_final_copy_is_removed_and_reported(self):
+        # A fallback install (exFAT has no hard links) is a fresh write that needs its own check.
+        source = self.media()["RAW"]
+        destination = media_info.build_destination_path(source, self.dcim, self.local)
+
+        def corrupt_install(_temp, final, replace=False):
+            Path(final).write_bytes(b"corrupted on the way to the disk")
+            return True
+
+        with patch("photo_offloader.fileops.install_file", side_effect=corrupt_install):
+            with self.assertRaisesRegex(IOError, "Final verification failed"):
+                transfer.copy_one_to_destination(source, self.dcim, self.local)
+        self.assertFalse(destination.exists())
+
     def test_second_import_skips(self):
         self.media()
         files = card.find_media_files(self.dcim)

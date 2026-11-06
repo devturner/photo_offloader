@@ -170,6 +170,23 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
+    def test_a_usb_failure_is_reported_without_starting_the_upload(self, notify, launch):
+        result = app._report_outcome(ImportStats(found=3), ImportStats(failed=2), True, False, False)
+        self.assertEqual(result, 1)
+        launch.assert_not_called()
+        self.assertEqual(notify.call_args[0][0], "USB Backup Incomplete")
+        self.assertIn("copied to the Mac", notify.call_args[0][1])
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    def test_a_finished_import_starts_the_upload(self, notify, launch):
+        result = app._report_outcome(ImportStats(found=3), ImportStats(), False, False, False)
+        self.assertEqual(result, 0)
+        launch.assert_called_once_with()
+        self.assertEqual(notify.call_args[0][0], "Photo Import Complete")
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
     @patch("photo_offloader.volumes.eject_volume")
     def test_full_import_copies_private_video_and_unrecognized_files(self, eject, notify, launch):
         self.media()
