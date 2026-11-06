@@ -4,17 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A macOS tool that imports camera cards to the Mac (SHA-256 verified), mirrors them to a USB
 drive and uploads JPG/video to Google Photos via rclone. A local web dashboard and a menu-bar
-app sit on top. Open work and its reasons are in `scratch/todo.md` (gitignored); read it
-first when asked to "continue".
+app sit on top. Open work and its reasons are in `scratch/ai_tasks.md` (gitignored); read it
+first when asked to "continue". What only the user can do is in `scratch/human_todo.md`.
 
 ## Commands
-- Tests: `.venv/bin/python -m unittest discover` (about 375 tests, about 80 s). Use the
+- Tests: `.venv/bin/python -m unittest discover` (about 390 tests, about 90 s). Use the
   project `.venv`, not the system `python3`, which has no Pillow.
 - One module or test: `.venv/bin/python -m unittest tests.test_usb_backup`, or add
   `.TestBackupLauncher.test_request_runs_importer_when_lock_is_free`. Filter by name with `-k`.
 - Browser tests: `.venv/bin/python -m unittest tests.browser.test_dashboard_page` (about 20 s). They
   are part of `discover` and skip without Playwright's Chromium (`.venv/bin/python -m playwright
   install chromium`). See "How the user likes to work" for screenshots.
+- Coverage: `.venv/bin/python -m coverage run -m unittest discover`, then `coverage combine` and
+  `coverage report`. CI fails below `fail_under` in `.coveragerc`; raise it when tests are added.
+  Shell scripts and `web/index.html` aren't measured.
 - Format: `.venv/bin/python -m ruff format .` (CI runs it with `--check`).
 - Lint: `.venv/bin/python -m ruff check .`. ruff enforces max complexity 15 (C901), so
   split functions instead of raising the limit.
