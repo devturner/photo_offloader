@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import fcntl
-import json
 import os
 import re
 import shutil
@@ -14,9 +13,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, NamedTuple, Optional, Sequence, Tuple
 
-from photo_offloader import catalog, config, logs
+from photo_offloader import catalog, config, jsonfile, logs
 
-REMOTE_NAME = os.environ.get("PHOTO_OFFLOADER_GPHOTOS_REMOTE", "gphotos").rstrip(":")
+
+def remote_name() -> str:
+    """The rclone remote to use, read when called so a long-running caller sees the environment."""
+    return os.environ.get("PHOTO_OFFLOADER_GPHOTOS_REMOTE", "gphotos").rstrip(":")
+
+
+REMOTE_NAME = remote_name()
 ALBUM_NAME = os.environ.get("PHOTO_OFFLOADER_GPHOTOS_ALBUM", "Photo Offloader")
 SYNC_LOG_MAX_BYTES = 5 * 1024 * 1024
 SYNC_LOG_BACKUPS = 2
@@ -169,12 +174,7 @@ def parse_rclone_stats_line(line: str) -> Optional[dict[str, object]]:
 
 
 def publish_status(state: str, message: str, new_run: bool = False) -> None:
-    config.INSTALL_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        previous = json.loads(config.GOOGLE_STATUS_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        previous = {}
-
+    previous = jsonfile.read_object(config.GOOGLE_STATUS_PATH)
     payload = {
         "state": state,
         "message": message,
@@ -189,28 +189,18 @@ def publish_status(state: str, message: str, new_run: bool = False) -> None:
         continuing = previous.get("state") == "running" and not new_run
         payload["started_at"] = (previous.get("started_at") if continuing else None) or payload["updated_at"]
 
-    temporary = config.GOOGLE_STATUS_PATH.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, config.GOOGLE_STATUS_PATH)
+    jsonfile.write_json(config.GOOGLE_STATUS_PATH, payload, indent=2)
 
 
 def remember_google_photos_connection(remote_name: str) -> None:
     """Persist non-secret connection metadata outside the replaceable install directory."""
-    config.PREFERENCES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        preferences = json.loads(config.PREFERENCES_PATH.read_text(encoding="utf-8"))
-        if not isinstance(preferences, dict):
-            preferences = {}
-    except (OSError, ValueError):
-        preferences = {}
+    preferences = jsonfile.read_object(config.PREFERENCES_PATH)
     preferences["google_photos"] = {
         "configured": True,
         "remote": f"{remote_name}:",
         "last_connection_check": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
-    temporary = config.PREFERENCES_PATH.with_suffix(".tmp")
-    temporary.write_text(json.dumps(preferences, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, config.PREFERENCES_PATH)
+    jsonfile.write_json(config.PREFERENCES_PATH, preferences, indent=2)
 
 
 def log_sync_event(message: str) -> None:
@@ -236,10 +226,7 @@ def find_rclone() -> Optional[str]:
 
 
 def current_status_state() -> str:
-    try:
-        return str(json.loads(config.GOOGLE_STATUS_PATH.read_text(encoding="utf-8")).get("state", ""))
-    except (OSError, ValueError):
-        return ""
+    return str(jsonfile.read_object(config.GOOGLE_STATUS_PATH).get("state", ""))
 
 
 def run_sync(argv: Optional[Sequence[str]] = None) -> int:

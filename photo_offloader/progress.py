@@ -1,14 +1,12 @@
 """Publish import progress for the dashboard (status.json) and the terminal bar."""
 from __future__ import annotations
 
-import json
-import os
 import sys
 import time
 from datetime import datetime
 from typing import Optional
 
-from photo_offloader import config
+from photo_offloader import config, jsonfile
 from photo_offloader.logs import logger
 
 try:
@@ -54,10 +52,7 @@ def update_status(**updates: object) -> None:
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     })
     try:
-        config.STATUS_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temp = config.STATUS_FILE_PATH.with_suffix(".tmp")
-        temp.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
-        os.replace(temp, config.STATUS_FILE_PATH)
+        jsonfile.write_json(config.STATUS_FILE_PATH, status, ensure_ascii=False)
         _LAST_STATUS_WRITE = time.monotonic()
     except OSError as exc:
         logger.debug("Could not publish dashboard status: %s", exc)

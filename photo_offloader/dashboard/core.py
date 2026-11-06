@@ -9,7 +9,6 @@ dashboard can do (pause, back up, sync, stop, ...). Everything that touches the 
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import re
 import sqlite3
@@ -22,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 
-from photo_offloader import catalog, config, google_photos, logs
+from photo_offloader import catalog, config, google_photos, jsonfile, logs
 from photo_offloader.google_photos import parse_rclone_stats_line
 
 SERVICE_LABEL = "com.user.photooffloader"
@@ -63,11 +62,6 @@ FINISHING_GRACE_SECONDS = 30              # status says "complete", history row 
 EVENTS_LOG_MAX_BYTES = 512 * 1024
 THEMES = ("system", "light", "dark")
 SPEED_WINDOW_SAMPLES = 10
-def google_remote_name() -> str:
-    """Same rule as REMOTE_NAME in photo_offloader.google_photos."""
-    return os.environ.get("PHOTO_OFFLOADER_GPHOTOS_REMOTE", "gphotos").rstrip(":")
-
-
 def activity_stage(status: Dict[str, Any]) -> str:
     """Which step the importer is on; older importers only report phase/state."""
     stage = str(status.get("stage", "") or "")
@@ -124,14 +118,6 @@ def stages_after_import(row: Dict[str, Any], upload_state: str) -> List[Dict[str
 
 def plural(count: int, noun: str) -> str:
     return f"{count:,} {noun}{'' if count == 1 else 's'}"
-
-
-def read_json(path: Path) -> Dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
-    except (OSError, ValueError):
-        return {}
 
 
 # --------------------------------------------------------------------------------- paths
@@ -285,25 +271,19 @@ class DashboardCore:
             return result.returncode == 0
         return self._cached("service", 3.0, probe)
 
+    def _script_running(self, script: Path) -> bool:
+        try:
+            result = self._run([self.paths.pgrep, "-f", str(script)],
+                               capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return bool(result.stdout.strip())
+
     def importer_running(self) -> bool:
-        def probe() -> bool:
-            try:
-                result = self._run([self.paths.pgrep, "-f", str(self.paths.importer_script)],
-                                   capture_output=True, text=True, timeout=5)
-            except (OSError, subprocess.TimeoutExpired):
-                return False
-            return bool(result.stdout.strip())
-        return self._cached("importer", 2.0, probe)
+        return self._cached("importer", 2.0, lambda: self._script_running(self.paths.importer_script))
 
     def google_running(self) -> bool:
-        def probe() -> bool:
-            try:
-                result = self._run([self.paths.pgrep, "-f", str(self.paths.google_script)],
-                                   capture_output=True, text=True, timeout=5)
-            except (OSError, subprocess.TimeoutExpired):
-                return False
-            return bool(result.stdout.strip())
-        return self._cached("google", 2.0, probe)
+        return self._cached("google", 2.0, lambda: self._script_running(self.paths.google_script))
 
     def mounted_card(self) -> Optional[Path]:
         def probe() -> Optional[Path]:
@@ -331,23 +311,19 @@ class DashboardCore:
 
     # ---- persisted dismissals ("clear" for the last-transfer card) -----------------
     def _dashboard_state(self) -> Dict[str, Any]:
-        return read_json(self.paths.dashboard_state_file)
+        return jsonfile.read_object(self.paths.dashboard_state_file)
 
     def _save_dashboard_state(self, **updates: Any) -> None:
         current = self._dashboard_state()
         current.update(updates)
-        target = self.paths.dashboard_state_file
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            temporary = target.with_suffix(".json.tmp")
-            temporary.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            temporary.replace(target)
+            jsonfile.write_json(self.paths.dashboard_state_file, current, indent=2, sort_keys=True)
         except OSError:
             pass
 
     # ---- importer status ----------------------------------------------------------------
     def read_status(self) -> Dict[str, Any]:
-        return read_json(self.paths.status_file)
+        return jsonfile.read_object(self.paths.status_file)
 
     @staticmethod
     def _status_stamp(status: Dict[str, Any]) -> str:
@@ -487,8 +463,8 @@ class DashboardCore:
 
     # ---- Google Photos ----------------------------------------------------------------------
     def _google(self, now: float) -> Dict[str, Any]:
-        status = read_json(self.paths.google_status_file)
-        preferences = read_json(self.paths.preferences_file).get("google_photos", {})
+        status = jsonfile.read_object(self.paths.google_status_file)
+        preferences = jsonfile.read_object(self.paths.preferences_file).get("google_photos", {})
         # rclone's own config is the source of truth: our status file is replaced on every
         # install and the preference is only written after a sync that uploaded something.
         configured = (bool(preferences.get("configured")) or self.rclone_remote_configured()
@@ -522,7 +498,7 @@ class DashboardCore:
         if config is None:
             return False
 
-        remote = google_remote_name()
+        remote = google_photos.remote_name()
 
         def probe() -> bool:
             try:
@@ -535,7 +511,7 @@ class DashboardCore:
     def _google_setup_step(self) -> str:
         """The first thing missing, from local checks only: the page polls, so no network here."""
         installed = self._cached("rclone_installed", 30.0, lambda: bool(google_photos.find_rclone()))
-        return f"Add an rclone remote named {google_remote_name()}" if installed else "Install rclone to set this up"
+        return f"Add an rclone remote named {google_photos.remote_name()}" if installed else "Install rclone to set this up"
 
     def _upload_state_after(self, row: Dict[str, Any], google: Dict[str, Any], now: float) -> str:
         """Where the Google Photos step stands for the import in ``row``."""
@@ -713,7 +689,7 @@ class DashboardCore:
         headline = self._headline(running, paused, card, activity, interrupted, last, status, google, handled)
         payload = {
             "generated_at": now,
-            "version": read_json(self.paths.install_dir / "build_info.json").get("version", ""),
+            "version": jsonfile.read_object(self.paths.install_dir / "build_info.json").get("version", ""),
             "service": {"running": running, "paused": paused},
             "card": {"mounted": card is not None, "name": card.name if card else None},
             "headline": headline,
