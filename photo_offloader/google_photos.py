@@ -268,8 +268,9 @@ def list_upload_candidates() -> List[str]:
             info = path.stat()
             if uploaded.get(str(path.resolve())) != (info.st_size, info.st_mtime_ns, info.st_ino):
                 pending.append(name)
-        except OSError:
-            continue
+        except OSError as exc:
+            # Not marked as uploaded, so the next sync tries it again.
+            log_sync_event(f"Skipping a file that can't be read: {path}: {exc}")
     return pending
 
 
@@ -373,8 +374,8 @@ def _sync() -> int:
     finally:
         try:
             os.unlink(list_name)
-        except OSError:
-            pass
+        except OSError as exc:
+            log_sync_event(f"Could not remove the upload list {list_name}: {exc}")
 
     if result.returncode == 0:
         try:

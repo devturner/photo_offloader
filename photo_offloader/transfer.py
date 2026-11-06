@@ -188,7 +188,7 @@ def _count_session_file(category: str, source: Path, copied: bool) -> None:
         try:
             progress._PROGRESS["new_bytes"] = int(progress._PROGRESS.get("new_bytes", 0) or 0) + source.stat().st_size
         except OSError:
-            pass
+            pass   # only a display counter: the copy itself has already been verified
 
 
 def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequence[Path],

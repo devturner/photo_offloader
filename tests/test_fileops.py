@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import errno
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +11,18 @@ from tests import support
 
 
 class TestFileops(support.CardFixtureTestCase):
+    def test_a_partial_copy_that_cannot_be_removed_is_logged_and_the_error_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path, final_path = Path(tmp) / "temp", Path(tmp) / "final"
+            temp_path.write_bytes(b"photo")
+            with patch("photo_offloader.fileops.os.link", side_effect=OSError(errno.EXDEV, "cross-device")), \
+                    patch("photo_offloader.fileops.shutil.copyfileobj", side_effect=OSError("disk full")), \
+                    patch.object(Path, "unlink", side_effect=OSError("still busy")), \
+                    self.assertLogs("camera_offloader", level="WARNING") as captured, \
+                    self.assertRaisesRegex(OSError, "disk full"):
+                fileops.install_without_overwrite(temp_path, final_path)
+        self.assertIn("still busy", captured.output[0])
+
     def test_files_match_requires_sha_for_existing_duplicate(self):
         a, b = self.root / "a", self.root / "b"
         a.write_bytes(b"abc")

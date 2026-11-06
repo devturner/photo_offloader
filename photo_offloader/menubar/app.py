@@ -14,6 +14,7 @@ except ImportError as exc:  # pragma: no cover - dependency is installed by inst
     raise SystemExit("Photo Offloader menu-bar UI requires rumps. Re-run ./install.sh.") from exc
 
 from photo_offloader import config
+from photo_offloader.logs import logger
 from photo_offloader.menubar.model import Snapshot, menu_entries, menu_title, parse_status
 
 INSTALL_DIR = config.INSTALL_DIR
@@ -108,8 +109,9 @@ class PhotoOffloaderMenuBar(rumps.App):
             # Evaluate the current mount state immediately instead of waiting for another event.
             try:
                 (INSTALL_DIR / ".last_camera_source").unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning("Could not reset the last-card record; a mounted card "
+                               "may not import until it is re-inserted: %s", exc)
             subprocess.Popen(["/bin/bash", str(TRIGGER_SCRIPT)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.refresh()
@@ -198,7 +200,7 @@ class PhotoOffloaderMenuBar(rumps.App):
             rumps.notification("Photo Offloader", "Could not disable menu-bar auto-restart", str(exc))
             return
 
-        # The dashboard is a separate Tk process. Close dashboard instances started
+        # The dashboard is a separate process. Close dashboard instances started
         # from this installation, but deliberately leave any active importer/backup
         # running so quitting the UI cannot interrupt a photo transfer or catalog write.
         try:
@@ -212,9 +214,9 @@ class PhotoOffloaderMenuBar(rumps.App):
                     if pid != os.getpid() and pid != os.getppid():
                         os.kill(pid, signal.SIGTERM)
                 except (ValueError, ProcessLookupError, PermissionError):
-                    continue
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+                    continue   # already gone, or not ours to stop
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("Could not look for the dashboard to close it: %s", exc)
         rumps.quit_application()
 
 

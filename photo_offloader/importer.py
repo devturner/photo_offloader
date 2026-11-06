@@ -81,7 +81,7 @@ def load_build_info() -> Dict[str, str]:
         if isinstance(loaded, dict):
             info.update({str(key): str(value) for key, value in loaded.items()})
     except (OSError, ValueError):
-        pass
+        pass   # a source checkout has no build file: the version and git lookups below fill in
 
     if not info.get("version"):
         try:
@@ -173,8 +173,8 @@ def import_session_lock() -> Iterator[None]:
             handle.close()
             try:
                 config.SESSION_LOCK_PATH.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as exc:  # harmless: the flock is already released
+                logger.debug("Could not remove the session lock file: %s", exc)
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:

@@ -292,7 +292,7 @@ class DashboardCore:
                     if not volume.is_symlink() and (volume / "DCIM").is_dir():
                         return volume
             except OSError:
-                pass
+                pass   # /Volumes can't be listed: show the same as having no card
             return None
         return self._cached("card", 3.0, probe)
 
@@ -318,8 +318,9 @@ class DashboardCore:
         current.update(updates)
         try:
             jsonfile.write_json(self.paths.dashboard_state_file, current, indent=2, sort_keys=True)
-        except OSError:
-            pass
+        except OSError as exc:
+            logs.logger.warning("Could not save dashboard settings to %s: %s",
+                                self.paths.dashboard_state_file, exc)
 
     # ---- importer status ----------------------------------------------------------------
     def read_status(self) -> Dict[str, Any]:

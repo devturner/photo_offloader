@@ -4,6 +4,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -163,6 +164,29 @@ class TestGooglePhotosSync(unittest.TestCase):
                                                stdout="", stderr="")
 
         return run, commands
+
+    def test_a_file_that_cannot_be_read_is_logged_when_listing_uploads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            photos = self.sync_environment(root)
+            (photos / "good.jpg").write_bytes(b"good")
+            bad = photos / "bad.jpg"
+            bad.write_bytes(b"bad")
+            real_stat = Path.stat
+
+            def stat(path, *args, **kwargs):
+                # is_file() swallows errors, so fail only the sync's own later stat of this file.
+                if path == bad and sys._getframe(1).f_code.co_name == "list_upload_candidates":
+                    raise OSError("I/O error")
+                return real_stat(path, *args, **kwargs)
+
+            with patch.object(Path, "stat", stat):
+                pending = sync.list_upload_candidates()
+
+            self.assertEqual(pending, ["good.jpg"])
+            log = (root / "google_photos_sync.log").read_text(encoding="utf-8")
+            self.assertIn("bad.jpg", log)
+            self.assertIn("I/O error", log)
 
     # --------------------------------------- stale lock (review finding 3)
     def test_stale_lock_file_from_a_dead_process_does_not_block_sync(self):

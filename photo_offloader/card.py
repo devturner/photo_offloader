@@ -79,7 +79,7 @@ def load_card_manifest_payload(dcim_folder: Path) -> Dict[str, object]:
         if isinstance(payload, dict) and payload.get("schema") == 1 and isinstance(payload.get("files"), dict):
             return payload
     except (OSError, ValueError, AttributeError):
-        pass
+        pass   # the card may be read-only or never imported: start with an empty manifest
     return {"schema": 1, "files": {}, "history": {}}
 
 
@@ -114,8 +114,8 @@ def save_card_manifest(
         if temp_path is not None:
             try:
                 temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as cleanup_exc:
+                logger.debug("Could not remove %s: %s", temp_path, cleanup_exc)
         return False
 
 
@@ -136,7 +136,8 @@ def reconcile_card_manifest(
             try:
                 relative = card_relative_key(source, dcim_folder)
                 fingerprint = fileops.file_fingerprint(source)
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
+                logger.debug("Leaving %s out of the card manifest check: %s", source, exc)
                 continue
             current_paths.add(relative)
             previous = manifest.get(relative)
@@ -202,7 +203,7 @@ def card_manifest_entry(
         if fileops.card_fingerprint_unchanged(entry, fingerprint) and isinstance(entry.get("sha256"), str):
             return entry["sha256"]
     except (OSError, ValueError):
-        pass
+        pass   # a cache miss: the caller hashes the file instead
     return None
 
 
@@ -219,7 +220,7 @@ def update_card_manifest_entry(
             "sha256": digest,
         }
     except (OSError, ValueError):
-        pass
+        pass   # only a cache: without this entry the file is hashed next time
 
 
 def find_card_dcim() -> Path:

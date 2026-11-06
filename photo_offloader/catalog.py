@@ -29,12 +29,12 @@ def catalog_connection() -> sqlite3.Connection:
     connection = sqlite3.connect(config.CATALOG_DB_PATH, timeout=10)
     catalog_path = str(config.CATALOG_DB_PATH.resolve())
     try:
-        # Readers (the dashboard) no longer block behind the importer's writes.
         connection.execute("PRAGMA synchronous=NORMAL")
-    except sqlite3.Error:
-        pass
+    except sqlite3.Error as exc:  # only a speed setting: the default is safe, just slower
+        logger.debug("Could not set catalog synchronous mode: %s", exc)
     if _CATALOG_INITIALIZED_PATH != catalog_path:
         try:
+            # Readers (the dashboard) no longer block behind the importer's writes.
             connection.execute("PRAGMA journal_mode=WAL")  # persistent per database file
         except sqlite3.Error as exc:  # e.g. a filesystem without shared-memory support
             logger.debug("Could not enable WAL for the catalog: %s", exc)

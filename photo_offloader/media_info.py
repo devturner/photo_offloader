@@ -34,11 +34,11 @@ def _parse_exif_datetime_value(value: str) -> Optional[datetime]:
             try:
                 return datetime.strptime(candidate, fmt)
             except ValueError:
-                pass
+                pass   # not this format: try the next
         try:
             return datetime.fromisoformat(candidate)
         except ValueError:
-            pass
+            pass   # the caller handles a date that can't be read
     return None
 
 
@@ -306,7 +306,8 @@ def prefetch_card_metadata(files: Dict[str, List[Path]]) -> int:
             continue
         try:
             month, model = month_and_model(path, record)
-        except OSError:
+        except OSError as exc:
+            logger.debug("Could not read metadata for %s: %s", path, exc)
             continue
         entries.append((path, {"capture_month": month, "camera_model": model}))
     return catalog.catalog_record_many(entries)

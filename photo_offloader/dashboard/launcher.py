@@ -45,7 +45,7 @@ def _activate_pid(pid: int) -> bool:
             NSApplicationActivateIgnoringOtherApps,
             NSRunningApplication,
         )
-    except Exception:
+    except Exception:  # not installed, or its Cocoa bindings are unusable: the caller opens a browser
         return False
     app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
     return bool(app and app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps))
@@ -112,7 +112,7 @@ def main(
             if record.is_file() and int(json.loads(record.read_text())["pid"]) == os.getpid():
                 record.unlink()
         except (OSError, ValueError, KeyError):
-            pass
+            pass   # a leftover record is harmless: find_running_instance checks the server answers
         server.stop()
     return 0
 

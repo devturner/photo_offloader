@@ -570,6 +570,13 @@ class TestTheme(Fixture):
         restarted = core.DashboardCore(self.paths)
         self.assertEqual(restarted.state()["settings"]["theme"], "dark")
 
+    def test_a_preference_that_cannot_be_saved_is_logged(self):
+        with patch("os.replace", side_effect=OSError("disk full")), \
+                self.assertLogs("camera_offloader", level="WARNING") as captured:
+            self.core._save_dashboard_state(theme="dark")
+        self.assertIn("disk full", captured.output[0])
+        self.assertIn("dashboard_state.json", captured.output[0])
+
     def test_unknown_theme_is_refused(self):
         self.assertFalse(self.core.act("set_theme", {"theme": "neon"})["ok"])
         self.assertEqual(self.core.state()["settings"]["theme"], "system")

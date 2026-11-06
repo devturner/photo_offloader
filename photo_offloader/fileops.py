@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from photo_offloader import config, progress
+from photo_offloader.logs import logger
 
 COPY_CHUNK_BYTES = 4 * 1024 * 1024
 
@@ -50,8 +51,9 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024, nocache: bool = False
         if nocache and hasattr(fcntl, "F_NOCACHE"):
             try:
                 fcntl.fcntl(handle.fileno(), fcntl.F_NOCACHE, 1)
-            except OSError:
-                pass
+            except OSError as exc:
+                # The hash is still checked, but it may read from RAM rather than the disk.
+                logger.debug("Could not bypass the disk cache for %s: %s", path, exc)
         while chunk := handle.read(chunk_size):
             digest.update(chunk)
     return digest.hexdigest()
@@ -121,8 +123,8 @@ def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
     except Exception:
         try:
             final_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as cleanup_exc:
+            logger.warning("Could not remove the partial copy %s: %s", final_path, cleanup_exc)
         raise
     return True
 
