@@ -63,6 +63,11 @@ class Paths:
         return self.install_dir / ".last_camera_source"
 
     @property
+    def parked_cards_file(self) -> Path:
+        """Handled cards still mounted while the trigger deals with another one."""
+        return self.install_dir / ".last_camera_source.parked"
+
+    @property
     def google_status_file(self) -> Path:
         return self.install_dir / "google_photos_status.json"
 

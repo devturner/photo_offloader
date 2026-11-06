@@ -203,8 +203,9 @@ def record_upload_on_import(
 ) -> None:
     """Keep an upload with the import it followed, since the sync's status file is overwritten.
 
-    The newest import counts if it finished successfully no more than ``within_seconds`` before
-    the upload began, and has no finished upload already. It may finish after the upload began:
+    The newest import counts if its photos were verified on the Mac (a USB failure doesn't stop
+    the upload) no more than ``within_seconds`` before the upload began, and it has no finished
+    upload already. It may finish after the upload began:
     the importer starts the sync, then writes its history row. Like all history, a database
     problem is logged and swallowed.
     """
@@ -212,7 +213,9 @@ def record_upload_on_import(
         with catalog_db() as db:
             row = db.execute(
                 """SELECT id, finished_at, details FROM import_history
-                   WHERE kind = 'import' AND outcome = 'complete' ORDER BY id DESC LIMIT 1"""
+                   WHERE kind = 'import'
+                     AND (outcome = 'complete' OR details LIKE '%"local_verified": true%')
+                   ORDER BY id DESC LIMIT 1"""
             ).fetchone()
             if row is None or started_at - float(row[1]) > within_seconds:
                 return

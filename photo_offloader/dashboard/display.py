@@ -91,6 +91,11 @@ def parse_timestamp(value: object) -> Optional[float]:
         return None
 
 
+def saved_on_mac(row: Dict[str, Any]) -> bool:
+    """Whether an import's photos were verified on the Mac, so its upload was started."""
+    return row["outcome"] == "complete" or bool(_details(row).get("local_verified"))
+
+
 def stages_after_import(row: Dict[str, Any], upload_state: str) -> List[Dict[str, str]]:
     """Import steps for a finished (history) run, with the Google Photos step as given."""
     outcome, usb, message = row["outcome"], bool(row["usb"]), str(row.get("message") or "")
@@ -105,7 +110,7 @@ def stages_after_import(row: Dict[str, Any], upload_state: str) -> List[Dict[str
         "metadata": "done",
         "copy": copy_state,
         "usb": "error" if usb_failed else ("done" if usb and outcome == "complete" else "skipped"),
-        "upload": upload_state if outcome == "complete" else "skipped",
+        "upload": upload_state if saved_on_mac(row) else "skipped",
     }
     return [
         {"id": step_id, "label": label, "state": states[step_id]}

@@ -94,6 +94,9 @@ def _run_details() -> Dict[str, object]:
                 details[name] = round(float(_RUN[name]), 1)  # type: ignore[arg-type]
         if "usb_bytes" in _RUN:
             details["usb_bytes"] = _RUN["usb_bytes"]
+        if _RUN.get("local_verified"):
+            # A run that failed later, on USB, still has its photos safe on the Mac.
+            details["local_verified"] = True
     if "usb_copied" in _RUN:
         details["usb_copied"] = int(_RUN["usb_copied"])  # type: ignore[call-overload]
     return details
@@ -562,7 +565,12 @@ def _report_outcome(
     eject_attempted: bool,
     eject_success: bool,
 ) -> int:
-    """Say how a verified local import ended and start the upload. Returns the exit code."""
+    """Say how a verified local import ended and start the upload. Returns the exit code.
+
+    The upload starts whatever happened to USB or the eject: each stage stands alone, and the
+    photos are verified on the Mac, so those problems must not also keep them from Google Photos.
+    """
+    launch_google_photos_sync()
     if backup_stats.failed:
         progress.update_status(
             state="failed",
@@ -588,7 +596,6 @@ def _report_outcome(
         backup_stats.destination_copies,
         backup_stats.destination_skips,
     )
-    launch_google_photos_sync()
     logs.notify(
         "Photo Import Complete",
         f"{local_stats.found} media files copied to the Mac; USB backup "
@@ -617,6 +624,7 @@ def _import_card(args: argparse.Namespace) -> int:
         _report_local_failure(dcim_folder, files, local_destinations, local_stats)
         return 1
 
+    _RUN["local_verified"] = True
     card.update_card_scan_history(dcim_folder, files, "complete", local_stats.verified_copies, 0)
     # The card is safe to release as soon as the complete local archive is verified.
     eject_attempted = bool(config.EJECT_CARD_AFTER_SUCCESS and not args.no_eject)

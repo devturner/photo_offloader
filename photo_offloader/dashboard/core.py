@@ -123,10 +123,22 @@ class DashboardCore:
         """True when the trigger has already dealt with this mounted card and will not start again."""
         if card is None:
             return False
+        dcim = str(card / "DCIM")
+        return dcim in self._read_lines(self.paths.handled_state_file) or any(
+            line.split("\t")[0] == dcim for line in self._read_lines(self.paths.parked_cards_file)
+        )
+
+    @staticmethod
+    def _read_lines(path: Path) -> List[str]:
         try:
-            return self.paths.handled_state_file.read_text().strip() == str(card / "DCIM")
+            return path.read_text().splitlines()
         except OSError:
-            return False
+            return []  # nothing recorded
+
+    def _forget_handled_cards(self) -> None:
+        """Let the trigger look at mounted cards afresh; already-saved files are skipped."""
+        self.paths.handled_state_file.unlink(missing_ok=True)
+        self.paths.parked_cards_file.unlink(missing_ok=True)
 
     def usb_mounted(self) -> bool:
         return self._cached(
@@ -410,7 +422,7 @@ class DashboardCore:
 
     def _upload_state_after(self, row: Dict[str, Any], google: Dict[str, Any], now: float) -> str:
         """Where the Google Photos step stands for the import in ``row``."""
-        if not google["configured"] or row["outcome"] != "complete":
+        if not google["configured"] or not display.saved_on_mac(row):
             return "skipped"
         if google["state"] == "running":
             return "active"
@@ -426,7 +438,7 @@ class DashboardCore:
         follows_import = (
             row is not None
             and row["kind"] == "import"
-            and row["outcome"] == "complete"
+            and display.saved_on_mac(row)
             and now - float(row["finished_at"]) < UPLOAD_FOLLOWS_IMPORT_SECONDS
         )
         upload_state = self._upload_state_after(row, google, now) if follows_import else ""
@@ -765,7 +777,7 @@ class DashboardCore:
     def _resume(self) -> Dict[str, Any]:
         self.paths.pause_file.unlink(missing_ok=True)
         # A card may have been inserted while paused: forget the handled-state and re-check now.
-        self.paths.handled_state_file.unlink(missing_ok=True)
+        self._forget_handled_cards()
         if self.paths.trigger_script.is_file():
             self._spawn(["/bin/bash", str(self.paths.trigger_script)])
         return {"ok": True, "message": "Automatic imports resumed. Checking for a card now."}
@@ -845,7 +857,7 @@ class DashboardCore:
             return {"ok": False, "message": "No camera card is mounted."}
         # Forget that this card was handled and let the trigger start a normal import;
         # only files that are new or changed since the last run are copied.
-        self.paths.handled_state_file.unlink(missing_ok=True)
+        self._forget_handled_cards()
         if self.paths.trigger_script.is_file():
             self._spawn(["/bin/bash", str(self.paths.trigger_script)])
         return {"ok": True, "message": "Checking the card for new photos."}

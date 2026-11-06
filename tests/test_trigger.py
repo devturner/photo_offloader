@@ -526,6 +526,221 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertFalse(self.state.exists())
         self.assertIn("Importer already running", self.log.read_text())
 
+    # ---- a lock left behind must not stop imports for good
+    def background_mode(self):
+        (self.install / ".terminal-output-enabled").unlink(missing_ok=True)
+
+    def leave_lock(self, pid=None, age_seconds=0):
+        self.lock.mkdir()
+        if pid is not None:
+            (self.lock / "pid").write_text(f"{pid}\n")
+        stamp = time.time() - age_seconds
+        os.utime(self.lock, (stamp, stamp))
+
+    def dead_pid(self):
+        process = subprocess.Popen(["/usr/bin/true"])
+        process.wait()
+        return process.pid
+
+    def live_pid(self):
+        process = subprocess.Popen(["/bin/sleep", "60"])
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        return process.pid
+
+    def test_a_lock_left_by_a_trigger_that_died_is_replaced(self):
+        # A power cut or SIGKILL during a run left the lock, and every later run gave up.
+        self.background_mode()
+        self.leave_lock(pid=self.dead_pid())
+        self.assertEqual(self.run_trigger().returncode, 0)
+        self.wait_for_workers()
+        self.assertTrue(self.background_args.exists())
+        self.assertIn("stale trigger lock", self.log.read_text())
+        self.assertFalse(self.lock.exists())
+
+    def test_a_lock_held_by_a_running_trigger_is_respected(self):
+        self.background_mode()
+        pid = self.live_pid()
+        self.leave_lock(pid=pid)
+        self.assertEqual(self.run_trigger().returncode, 0)
+        self.assertFalse(self.background_args.exists())
+        self.assertEqual((self.lock / "pid").read_text().strip(), str(pid))
+
+    def test_a_lock_far_too_old_to_be_real_is_replaced_even_if_its_pid_is_alive(self):
+        # After a restart, the recorded number can belong to an unrelated process.
+        self.background_mode()
+        self.leave_lock(pid=self.live_pid(), age_seconds=3600)
+        self.run_trigger()
+        self.wait_for_workers()
+        self.assertTrue(self.background_args.exists())
+
+    def test_an_old_lock_from_before_it_recorded_a_pid_is_replaced(self):
+        self.background_mode()
+        self.leave_lock(age_seconds=3600)
+        self.run_trigger()
+        self.wait_for_workers()
+        self.assertTrue(self.background_args.exists())
+
+    def test_a_new_lock_without_a_pid_yet_is_respected(self):
+        self.background_mode()
+        self.leave_lock()
+        self.run_trigger()
+        self.assertFalse(self.background_args.exists())
+        self.assertTrue(self.lock.is_dir())
+
+    def test_a_running_trigger_records_its_pid_and_removes_the_lock_at_the_end(self):
+        self.background_mode()
+        seen = self.root / "pid-while-running"
+        self.pgrep.write_text(f'#!/bin/bash\ncat "{self.lock}/pid" > "{seen}"\nexit 1\n')
+        self.run_trigger()
+        self.wait_for_workers()
+        self.assertRegex(seen.read_text(), r"^\d+$")
+        self.assertFalse(self.lock.exists())
+
+    # ---- a broken install must say so
+    def test_a_missing_python_warns_once_instead_of_only_logging(self):
+        # A Homebrew cleanup can remove the Python the install was built from. The menu bar uses
+        # the same Python, so nothing else can tell anyone that cards have stopped importing.
+        missing = str(self.root / "gone" / "python3")
+        self.assertEqual(self.run_trigger(PHOTO_OFFLOADER_PYTHON=missing).returncode, 0)
+        self.assertIn("install.sh", self.command_capture.read_text())
+        self.command_capture.unlink()
+        self.run_trigger(PHOTO_OFFLOADER_PYTHON=missing)
+        self.assertFalse(self.command_capture.exists())
+
+    def test_a_repaired_install_warns_again_if_it_breaks_again(self):
+        missing = str(self.root / "gone" / "python3")
+        self.run_trigger(PHOTO_OFFLOADER_PYTHON=missing)
+        self.command_capture.unlink()
+        self.background_mode()
+        self.run_trigger()
+        self.wait_for_workers()
+        self.run_trigger(PHOTO_OFFLOADER_PYTHON=missing)
+        self.assertTrue(self.command_capture.exists())
+
+    def test_a_working_install_does_not_warn(self):
+        self.background_mode()
+        self.run_trigger()
+        self.wait_for_workers()
+        self.assertFalse(self.command_capture.exists())
+
+    # ---- two cards mounted together
+    def imported_card(self):
+        """The card the last run started importing, or None. Clears the record for the next run."""
+        self.wait_for_workers()
+        if not self.background_args.exists():
+            return None
+        lines = self.background_args.read_text().splitlines()
+        self.background_args.unlink()
+        return next(line for line in lines if line.endswith("/DCIM"))
+
+    def second_card(self, name="NIKON Z 8 1"):
+        dcim = self.volumes / name / "DCIM"
+        dcim.mkdir(parents=True)
+        return dcim
+
+    def test_a_second_card_is_imported_while_the_first_stays_mounted(self):
+        # Auto-eject is off by default, so the first card stays. The trigger only ever looked at
+        # the first DCIM it found, so the second was never imported.
+        self.background_mode()
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(self.dcim))
+        second = self.second_card()
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(second))
+
+    def test_two_cards_are_each_imported_once_without_taking_turns_for_ever(self):
+        self.background_mode()
+        second = self.second_card()
+        seen = []
+        for _ in range(5):
+            self.run_trigger()
+            seen.append(self.imported_card())
+        self.assertEqual(seen, [str(self.dcim), str(second), None, None, None])
+
+    def test_a_second_card_waits_while_the_first_is_importing(self):
+        self.background_mode()
+        self.run_trigger()
+        self.imported_card()
+        self.second_card()
+        self.pgrep.write_text("#!/bin/bash\nexit 0\n")
+        self.run_trigger()
+        self.assertIsNone(self.imported_card())
+        self.assertEqual(self.state.read_text().strip(), str(self.dcim))
+
+    def test_a_second_card_waits_while_the_import_worker_is_registered(self):
+        self.background_mode()
+        self.run_trigger()
+        self.imported_card()
+        self.second_card()
+        self.run_trigger(PHOTO_OFFLOADER_TEST_WORKER_REGISTERED="1")
+        self.assertIsNone(self.imported_card())
+        self.assertEqual(self.state.read_text().strip(), str(self.dcim))
+
+    def test_a_card_removed_and_brought_back_is_imported_again(self):
+        self.background_mode()
+        second = self.second_card()
+        self.run_trigger()
+        self.imported_card()
+        self.run_trigger()
+        self.imported_card()
+        away = self.root / "first-card-away"
+        self.card.rename(away)
+        self.run_trigger()
+        self.assertIsNone(self.imported_card())
+        away.rename(self.card)
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(self.dcim))
+        self.run_trigger()
+        self.assertIsNone(self.imported_card())
+        self.assertTrue(second.is_dir())
+
+    def test_a_different_card_at_a_set_aside_cards_path_is_a_new_card(self):
+        self.background_mode()
+        (self.card / ".test-volume-uuid").write_text("CARD-A")
+        self.second_card()
+        self.run_trigger()
+        self.imported_card()
+        self.run_trigger()
+        self.imported_card()
+        (self.card / ".test-volume-uuid").write_text("CARD-B")
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(self.dcim))
+
+    def test_a_card_back_after_a_real_removal_is_imported_even_with_a_second_card_mounted(self):
+        self.background_mode()
+        self.run_trigger()
+        self.imported_card()
+        (self.state.parent / "state.absent").write_text(str(int(time.time()) - 3600))
+        second = self.second_card()
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(self.dcim))
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(second))
+
+    def test_a_different_card_at_the_handled_path_is_imported_before_a_second_card(self):
+        self.background_mode()
+        (self.card / ".test-volume-uuid").write_text("CARD-A")
+        self.run_trigger()
+        self.imported_card()
+        (self.card / ".test-volume-uuid").write_text("CARD-B")
+        second = self.second_card()
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(self.dcim))
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(second))
+
+    def test_a_card_that_failed_is_not_retried_when_a_second_card_arrives(self):
+        self.background_mode()
+        self.run_trigger()
+        self.imported_card()
+        (self.install / ".import-status").write_text(f"failed|{self.dcim}|1\n")
+        second = self.second_card()
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(second))
+        self.run_trigger()
+        self.assertIsNone(self.imported_card())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -115,6 +115,10 @@ class TestCatalog(support.CardFixtureTestCase):
         self.imported(outcome="failed")
         self.assertNotIn("upload", self.saved_upload())
 
+    def test_an_import_verified_on_the_mac_keeps_its_upload_if_usb_failed(self):
+        self.imported(outcome="failed", details={"local_verified": True})
+        self.assertIn("upload", self.saved_upload())
+
     def test_a_usb_backup_since_the_import_does_not_take_its_upload(self):
         self.imported()
         self.imported(kind="usb_backup")

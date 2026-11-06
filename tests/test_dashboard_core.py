@@ -150,6 +150,40 @@ class TestHeadline(Fixture):
         head = self.core.state()["headline"]
         self.assertEqual(head["title"], "NIKON Z 8 is mounted")
 
+    def usb_failed_run(self, **details):
+        return {
+            "kind": "import",
+            "outcome": "failed",
+            "usb": True,
+            "message": "Local import succeeded; USB backup has 1 failure(s)",
+            "finished_at": 1000.0,
+            "details": details,
+        }
+
+    def test_an_upload_after_a_usb_failure_shows_on_the_import_it_followed(self):
+        google = {"configured": True, "state": "running", "updated_at": 1001.0}
+        run = self.usb_failed_run(local_verified=True)
+        self.assertEqual(self.core._upload_state_after(run, google, 1002.0), "active")
+        stages = {
+            stage["id"]: stage["state"] for stage in display.stages_after_import(run, "active")
+        }
+        self.assertEqual(stages["upload"], "active")
+
+    def test_the_panel_shows_an_upload_starting_after_a_usb_failure(self):
+        google = {"configured": True, "state": "idle", "updated_at": None, "progress": None}
+        run = self.usb_failed_run(local_verified=True)
+        run["source"] = "NIKON Z 8"
+        self.assertIsNotNone(self.core._upload_activity(google, run, 1002.0))
+
+    def test_an_import_not_verified_on_the_mac_shows_no_upload(self):
+        google = {"configured": True, "state": "running", "updated_at": 1001.0}
+        run = self.usb_failed_run()
+        self.assertEqual(self.core._upload_state_after(run, google, 1002.0), "skipped")
+        stages = {
+            stage["id"]: stage["state"] for stage in display.stages_after_import(run, "active")
+        }
+        self.assertEqual(stages["upload"], "skipped")
+
     def mark_card_handled(self, name="NIKON Z 8"):
         (self.install / ".last_camera_source").write_text(str(self.volumes / name / "DCIM") + "\n")
 
@@ -176,6 +210,33 @@ class TestHeadline(Fixture):
             files_total=10,
         )
         self.assertEqual(self.pipeline("card")["actions"], [])
+
+    def set_card_aside(self, name="NIKON Z 8"):
+        (self.install / ".last_camera_source.parked").write_text(
+            f"{self.volumes / name / 'DCIM'}\t\n"
+        )
+
+    def test_a_card_set_aside_for_a_second_card_counts_as_handled(self):
+        self.add_card()
+        self.set_card_aside()
+        self.assertTrue(self.core.card_handled(self.volumes / "NIKON Z 8"))
+
+    def test_a_mounted_card_nobody_has_handled_is_not_handled(self):
+        self.add_card()
+        self.set_card_aside("ANOTHER CARD")
+        self.assertFalse(self.core.card_handled(self.volumes / "NIKON Z 8"))
+
+    def test_import_now_also_forgets_a_card_set_aside(self):
+        self.add_card()
+        self.set_card_aside()
+        self.core.act("import_card")
+        self.assertFalse((self.install / ".last_camera_source.parked").exists())
+
+    def test_resume_also_forgets_a_card_set_aside(self):
+        self.add_card()
+        self.set_card_aside()
+        self.core.act("resume")
+        self.assertFalse((self.install / ".last_camera_source.parked").exists())
 
     def test_import_now_forgets_the_handled_card_and_rechecks(self):
         self.add_card("NIKON Z 8")

@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$HOME/Library/Application Support/PhotoOffloader"
 VENV_DIR="$INSTALL_DIR/venv"
-# The installed app mirrors the repository layout (see photo_offloader/layout.py).
+# The installed app mirrors the repository layout.
 APP_DIRS=(bin scripts photo_offloader)
 APP_FILES=(VERSION requirements.txt requirements-ui.txt)
 SCRIPT_PATH="$INSTALL_DIR/bin/photo-offloader-import"
@@ -138,7 +138,14 @@ target.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
 print("Build provenance: " + " ".join(f"{key}={value}" for key, value in info.items()))
 PYBUILD
 
-python3 -m venv "$VENV_DIR"
+# Build from a path that survives Homebrew upgrades. Running venv over an existing one keeps its
+# old link, so a venv tied to another Python has to be rebuilt.
+STABLE_PYTHON="$(python3 "$SCRIPT_DIR/scripts/stable_python.py")"
+VENV_ARGS=()
+if [[ -d "$VENV_DIR" && "$(readlink "$VENV_DIR/bin/$(basename "$STABLE_PYTHON")" || true)" != "$STABLE_PYTHON" ]]; then
+  VENV_ARGS+=(--clear)
+fi
+"$STABLE_PYTHON" -m venv ${VENV_ARGS[@]+"${VENV_ARGS[@]}"} "$VENV_DIR"
 "$VENV_DIR/bin/python3" -m pip install --quiet --upgrade pip
 "$VENV_DIR/bin/python3" -m pip install --quiet -r "$INSTALL_DIR/requirements.txt"
 "$VENV_DIR/bin/python3" -m pip install --quiet -r "$INSTALL_DIR/requirements-ui.txt"
