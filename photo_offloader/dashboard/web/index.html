@@ -161,7 +161,7 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .progress { margin-top: 14px; flex: none; }
 .bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
 .bar > div { height: 100%; border-radius: inherit; background: var(--accent); transition: width .6s ease; }
-.bar.indeterminate > div { width: 35% !important; animation: slide 1.3s ease-in-out infinite; }
+.bar.waiting > div { opacity: 0; transition: none; animation: glow ease-in-out infinite; }
 .meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; color: var(--text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
 .meta b { color: var(--text); font-weight: 600; }
 .spark { margin-top: 12px; height: 44px; width: 100%; display: block; flex: none; }
@@ -226,7 +226,7 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
 .lost { background: var(--err-soft); color: var(--err); }
 
 @keyframes pulse { 50% { opacity: .35; } }
-@keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+@keyframes glow { 0%, 100% { opacity: .08; } 50% { opacity: .55; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 @media (max-width: 560px) {
   :root { --hero-h: 316px; }
@@ -561,6 +561,11 @@ function reportBasic(r) {
 }
 const reportBody = (r) => reportStyle === "advanced" ? reportAdvanced(r) : reportBasic(r);
 
+// The panel is rebuilt every second as Elapsed changes. Starting each new bar part-way through keeps
+// the glow in step, as if one bar had been glowing since the page opened.
+const GLOW_MS = 2400;
+const glowStyle = () => `width:100%;animation-duration:${GLOW_MS}ms;animation-delay:-${(performance.now() % GLOW_MS).toFixed(0)}ms`;
+
 function renderHero(s) {
   const head = s.headline, a = s.activity, f = !a && s.finished, now = s.generated_at;
   if (!reportPending) reportStyle = s.settings.report_style || "basic";
@@ -589,8 +594,8 @@ function renderHero(s) {
       : (v.files_total ? fmtCount(v.files_done) + " of " + fmtCount(v.files_total) + (v.new_files ? " · " + fmtCount(v.new_files) + " new" : "") : null);
     const progress = p == null ? null : Math.round(p) + "%" + (v.bytes_total ? " · " + fmtRange(v.bytes_done, v.bytes_total) : "");
     kids.push(h("div", { class: "progress" },
-      h("div", { class: "bar" + (v.indeterminate ? " indeterminate" : ""), role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": p == null ? null : Math.round(p) },
-        h("div", { style: `width:${v.indeterminate ? 35 : Math.max(2, p || 0)}%` })),
+      h("div", { class: "bar" + (v.indeterminate ? " waiting" : ""), role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": p == null ? null : Math.round(p) },
+        h("div", { style: v.indeterminate ? glowStyle() : `width:${Math.max(2, p || 0)}%` })),
       h("div", { class: "slots" },
         slot("Progress", progress),
         slot("Speed", v.speed_bps > 0 ? fmtBytes(v.speed_bps) + "/s" : null),

@@ -196,6 +196,61 @@ class TestSlots(PageTestCase):
                 self.assertEqual(self.steps(), [])
 
 
+class TestProgressBar(PageTestCase):
+    """With nothing to measure yet, the bar glows so the app doesn't look stalled."""
+
+    WAITING_STATES = ("scan", "read_photo_info", "starting_upload")
+
+    def glow(self):
+        """The fill's width as a share of the track, its animation, and how far that animation is
+        from where it would be if it had run since the page opened (0 is in step)."""
+        return self.page.evaluate(
+            """() => { const fill = document.querySelector('#hero .bar > div');
+                const share = fill.getBoundingClientRect().width / fill.parentElement.getBoundingClientRect().width;
+                const a = fill.getAnimations()[0];
+                if (!a) return [share, null, null];
+                const at = a.effect.getComputedTiming().progress * GLOW_MS;
+                const off = Math.abs(at - performance.now() % GLOW_MS);
+                return [share, a.animationName, Math.min(off, GLOW_MS - off)]; }"""
+        )
+
+    def test_the_whole_bar_glows_while_there_is_nothing_to_measure(self):
+        for state in self.WAITING_STATES:
+            with self.subTest(state=state):
+                self.show(state, reduced_motion="no-preference")
+                share, animation, _ = self.glow()
+                self.assertEqual((share, animation), (1, "glow"))
+
+    def test_a_refresh_does_not_restart_the_glow(self):
+        # The panel is rebuilt each second as Elapsed changes, which is what made the old slider flash.
+        sandbox = self.load("starting_upload")
+        sandbox.google_up = True
+        sandbox.google_status(
+            "running", ago=5
+        )  # Preparing upload: Elapsed counts, nothing to measure
+        self.open_page(reduced_motion="no-preference")
+        for _ in range(3):
+            self.page.evaluate("document.querySelector('#hero .bar > div').dataset.old = '1'")
+            self.page.wait_for_timeout(350)
+            sandbox.advance(1)
+            self.refresh()
+            self.page.wait_for_function("!document.querySelector('#hero .bar > div').dataset.old")
+            self.assertLess(self.glow()[2], 100)
+
+    def test_with_reduce_motion_it_is_a_still_empty_track(self):
+        self.show("starting_upload")  # the harness asks for reduced motion by default
+        opacity = self.page.evaluate(
+            "getComputedStyle(document.querySelector('#hero .bar > div')).opacity"
+        )
+        self.assertEqual((self.glow()[1], opacity), (None, "0"))
+
+    def test_the_bar_fills_and_stops_glowing_once_there_is_something_to_measure(self):
+        self.show("copying", reduced_motion="no-preference")
+        share, animation, _ = self.glow()
+        self.assertLess(share, 1)
+        self.assertIsNone(animation)
+
+
 class TestStepStrip(PageTestCase):
     EXPECTED = {
         "scan": ["active", "pending", "pending", "pending", "pending"],

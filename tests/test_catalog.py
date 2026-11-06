@@ -131,6 +131,28 @@ class TestCatalog(support.CardFixtureTestCase):
             catalog.list_import_history()[0]["details"]["upload"]["outcome"], "complete"
         )
 
+    def uploaded_to(self, remote, album):
+        with catalog.catalog_db() as db:
+            db.execute(
+                "INSERT INTO google_photos_uploads (path, size, mtime_ns, inode, uploaded_at,"
+                " remote, album) VALUES ('/a.jpg', 1, 1, 1, 1, ?, ?)",
+                (remote, album),
+            )
+
+    def test_an_album_is_known_once_a_file_has_been_uploaded_to_it(self):
+        self.assertFalse(catalog.google_photos_album_used("gphotos", "Trip"))
+        self.uploaded_to("gphotos", "Trip")
+        self.assertTrue(catalog.google_photos_album_used("gphotos", "Trip"))
+
+    def test_another_album_or_account_does_not_count(self):
+        self.uploaded_to("gphotos", "Trip")
+        self.assertFalse(catalog.google_photos_album_used("gphotos", "Other"))
+        self.assertFalse(catalog.google_photos_album_used("work", "Trip"))
+
+    def test_an_unreadable_catalog_just_means_asking_google(self):
+        with patch.object(catalog, "catalog_db", side_effect=sqlite3.OperationalError("locked")):
+            self.assertFalse(catalog.google_photos_album_used("gphotos", "Trip"))
+
     def test_import_history_records_and_lists_newest_first(self):
         catalog.record_import_run(
             kind="import",

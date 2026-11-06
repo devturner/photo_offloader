@@ -181,6 +181,23 @@ def record_import_run(
         logger.warning("Could not record import history: %s", exc)
 
 
+def google_photos_album_used(remote: str, album: str) -> bool:
+    """Whether a file has been uploaded to this album, so it's known to exist.
+
+    A missing or unreadable answer only means asking Google Photos, as for a new album.
+    """
+    try:
+        with catalog_db() as db:
+            row = db.execute(
+                "SELECT 1 FROM google_photos_uploads WHERE remote = ? AND album = ? LIMIT 1",
+                (remote, album),
+            ).fetchone()
+    except (OSError, sqlite3.Error) as exc:
+        logger.debug("Could not read uploaded albums: %s", exc)
+        return False
+    return row is not None
+
+
 def record_upload_on_import(
     upload: Dict[str, object], *, started_at: float, within_seconds: float
 ) -> None:
