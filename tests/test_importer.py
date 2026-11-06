@@ -4,6 +4,7 @@ import logging
 import logging.handlers
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from photo_offloader import card, catalog, config, fileops, logs, progress
@@ -374,6 +375,13 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
 
         self.media()
         status_path = self.root / "term-status.json"
+        # This process is already isolated, so its own values are safe. Taking all of them means a
+        # new config path can't reach the real install from here.
+        isolated = {
+            name: str(value)
+            for name, value in vars(config).items()
+            if name.isupper() and isinstance(value, Path) and name not in support.CODE_PATHS
+        }
         script = textwrap.dedent(f"""
             import os, signal, sys
             from pathlib import Path
@@ -381,13 +389,9 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
             sys.path.insert(0, {str(support.REPO_ROOT)!r})
             from photo_offloader import card, config, logs
             from photo_offloader import importer as app
+            for name, value in {isolated!r}.items():
+                setattr(config, name, Path(value))
             config.STATUS_FILE_PATH = Path({str(status_path)!r})
-            config.LOG_FILE_PATH = Path({str(self.log)!r})
-            config.SESSION_LOCK_PATH = Path({str(self.lock)!r})
-            config.CATALOG_DB_PATH = Path({str(self.root / "term-db" / "c.sqlite3")!r})
-            config.LEGACY_CATALOG_DB_PATH = Path({str(self.root / "term-legacy.sqlite3")!r})
-            config.LOCAL_DEST_ROOT = Path({str(self.local)!r})
-            config.LOCAL_RAW_DEST_ROOT = Path({str(self.root / "local-raw")!r})
             def interrupted_scan(*_args, **_kwargs):
                 os.kill(os.getpid(), signal.SIGTERM)   # what `stop --force` does
                 raise AssertionError("SIGTERM was not turned into a clean cancel")
@@ -400,6 +404,7 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         )
         self.assertEqual(result.returncode, 130, result.stdout + result.stderr)
         self.assertEqual(json.loads(status_path.read_text())["state"], "canceled")
+        self.assertEqual(len(list(config.RUN_REPORTS_DIR.iterdir())), 1)  # here, not the real one
 
     def card_with_sizes(self, jpg=600, raw=600):
         folder = self.dcim / "100NIKON"
@@ -509,7 +514,7 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         self.assertEqual(result, 1)
         status = json.loads(config.STATUS_FILE_PATH.read_text())
         self.assertEqual(status["state"], "failed")
-        self.assertEqual(status["message"], "Don't format this card: 1 location couldn't be read.")
+        self.assertEqual(status["message"], "Don't format this card: 1 folder couldn't be read.")
         self.assertIn("Don't format", notify.call_args.args[1])
         eject.assert_not_called()
         launch.assert_not_called()
@@ -537,7 +542,7 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
             result = app.main(["--source", str(self.card), "--no-usb"])
         self.assertEqual(result, 1)
         status = json.loads(config.STATUS_FILE_PATH.read_text())
-        self.assertIn("1 location couldn't be read", status["message"])
+        self.assertIn("1 folder couldn't be read", status["message"])
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
@@ -669,7 +674,7 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         (run,) = catalog.list_import_history()
         self.assertEqual(run["outcome"], "failed")
         self.assertEqual(run["failed"], 3)
-        self.assertIn("failure", run["message"].lower())
+        self.assertIn("3 files couldn't be copied", run["message"])
 
     @patch("photo_offloader.logs.notify")
     def test_canceled_import_is_recorded(self, notify):

@@ -23,6 +23,7 @@ class Paths:
     launchctl: str = "/bin/launchctl"
     pgrep: str = "/usr/bin/pgrep"
     rclone_config: Optional[Path] = None  # where rclone keeps its remotes (not ours to change)
+    downloads: Optional[Path] = None  # where a debug package is saved
 
     @classmethod
     def default(cls) -> "Paths":
@@ -37,6 +38,7 @@ class Paths:
             usb_archives=(config.USB_DEST_ROOT,),
             python=venv_python if venv_python.exists() else Path(sys.executable),
             rclone_config=Path(os.environ.get("RCLONE_CONFIG", str(config.RCLONE_CONFIG_PATH))),
+            downloads=config.HOME / "Downloads",
         )
 
     # files the importer / trigger / service maintain
@@ -95,6 +97,10 @@ class Paths:
     @property
     def catalog_db(self) -> Path:
         return self.data_dir / "catalog.sqlite3"
+
+    @property
+    def run_reports_dir(self) -> Path:
+        return self.data_dir / config.RUN_REPORTS_DIR.name
 
     @property
     def dashboard_state_file(self) -> Path:

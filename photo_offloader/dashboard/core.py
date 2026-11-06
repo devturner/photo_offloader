@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import plistlib
 import re
 import sqlite3
 import subprocess
@@ -19,19 +20,24 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from xml.parsers.expat import ExpatError
 
-from photo_offloader import catalog, google_photos, jsonfile, logs
+from photo_offloader import catalog, google_photos, jsonfile, logs, run_report
 from photo_offloader.dashboard import display
 from photo_offloader.dashboard.paths import Paths
 from photo_offloader.google_photos import parse_rclone_stats_line
+from photo_offloader.presence import SERVICE_LABEL
 
-SERVICE_LABEL = "com.user.photooffloader"
 LAST_TRANSFER_TTL_SECONDS = 10 * 60  # completed/canceled results fade after this
 STALE_STATUS_SECONDS = 20  # an "active" status this old, with no importer, is stale
 # The graph shows 90 of these (SPARK_MAX_POINTS in web/index.html); the rest settle its smoothing.
 SPEED_SAMPLES = 130
 UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60  # an upload this soon after an import continues its steps
 UPLOAD_START_GRACE_SECONDS = 30  # importer done, sync process still starting
+CARD_HISTORY_ROWS = 20  # enough to get past any backups since a card's last import
+CARD_ID_SECONDS = 30.0  # how long a mounted card's ID is trusted before asking again
+DISKUTIL_SECONDS = 5  # a failing card can leave diskutil waiting, and a poll waits for this
+PREVIEW_LINES = 40  # of a report's file list, in the debug package's save sheet
 UPLOAD_SILENT_SECONDS = 10  # no report from rclone for this long counts as a stall
 FINISHING_GRACE_SECONDS = 30  # status says "complete", history row not written yet
 EVENTS_LOG_MAX_BYTES = 512 * 1024
@@ -54,6 +60,7 @@ class DashboardCore:
         self._run = run
         self._popen = popen
         self._cache: Dict[str, Tuple[float, Any]] = {}
+        self._saved_package: Optional[Path] = None
         self._samples: Deque[float] = deque(maxlen=SPEED_SAMPLES)
         self._last_sample: Optional[Tuple[float, int, str]] = None
         self._upload_files: Optional[Tuple[int, int]] = None
@@ -139,6 +146,51 @@ class DashboardCore:
         """Let the trigger look at mounted cards afresh; already-saved files are skipped."""
         self.paths.handled_state_file.unlink(missing_ok=True)
         self.paths.parked_cards_file.unlink(missing_ok=True)
+
+    def card_has_unsaved_files(self, card: Optional[Path]) -> bool:
+        """True when the last import of this card left files behind, so it mustn't be formatted.
+
+        It lasts until a retry succeeds: if the card comes back and isn't imported, because imports
+        are paused, its files are still not saved. An empty card has nothing to lose, and a run that
+        got as far as USB already has its photos verified on the Mac.
+        """
+        if card is None:
+            return False
+        rows = catalog.list_import_history(limit=CARD_HISTORY_ROWS)
+        imports = [r for r in rows if r["kind"] == "import"]
+        if not any(self._left_files_behind(row) for row in imports):
+            return False  # the usual case, and it saves asking diskutil on every poll
+        card_id = self._cached(f"card-id:{card}", CARD_ID_SECONDS, lambda: self._volume_id(card))
+        last = next((row for row in imports if self._is_this_card(row, card, card_id)), None)
+        return last is not None and self._left_files_behind(last)
+
+    @staticmethod
+    def _left_files_behind(row: Dict[str, Any]) -> bool:
+        return (
+            row["outcome"] == "failed"
+            and bool(row["files"] or row["details"].get("problems"))
+            and not row["details"].get("local_verified")
+        )
+
+    @staticmethod
+    def _is_this_card(row: Dict[str, Any], card: Path, card_id: Optional[str]) -> bool:
+        """Cameras give every card the same name, so only use it when there's no ID to compare."""
+        saved_id = row["details"].get("card_id")
+        return saved_id == card_id if saved_id and card_id else row["source"] == card.name
+
+    def _volume_id(self, volume: Path) -> Optional[str]:
+        try:
+            result = self._run(
+                ["/usr/sbin/diskutil", "info", "-plist", str(volume)],
+                capture_output=True,
+                timeout=DISKUTIL_SECONDS,
+            )
+            return plistlib.loads(result.stdout).get("VolumeUUID")
+        except (OSError, subprocess.SubprocessError) as exc:
+            logs.logger.debug("Could not ask diskutil about %s: %s", volume, exc)
+        except (ValueError, TypeError, AttributeError, ExpatError) as exc:
+            logs.logger.debug("Unreadable details for %s: %s", volume, exc)
+        return None  # the caller compares names instead
 
     def usb_mounted(self) -> bool:
         return self._cached(
@@ -490,8 +542,12 @@ class DashboardCore:
     def _finished(
         self, last: Optional[Dict[str, Any]], google: Dict[str, Any], now: float
     ) -> Optional[Dict[str, Any]]:
-        """The end of an import, shown in the transfer panel until it fades or is dismissed."""
-        if last is None or last["kind"] != "import":
+        """The end of an import or failed backup, in the panel until it fades or is dismissed."""
+        if last is None:
+            return None
+        if last["kind"] == "usb_backup" and last["details"].get("problems"):
+            return display.run_report(last)
+        if last["kind"] != "import":
             return None
         return display.run_report(last, self._upload_state_after(last, google, now))
 
@@ -561,6 +617,7 @@ class DashboardCore:
         return [
             {
                 **display.describe_run(row),
+                "report_saved": self._saved_report(row) is not None,
                 "report": display.run_report(
                     row,
                     self._upload_state_after(row, self._google(now), now)
@@ -570,6 +627,17 @@ class DashboardCore:
             }
             for row in rows
         ]
+
+    def _saved_report(self, row: Dict[str, Any]) -> Optional[Path]:
+        """The run's report folder, if it hasn't been pruned. Only ever one directly in the folder."""
+        name = str(row["details"].get("report") or "")
+        folder = self.paths.run_reports_dir / name
+        return folder if name and Path(name).name == name and folder.is_dir() else None
+
+    def _report_of_run(self, run_id: Any) -> Optional[Path]:
+        rows = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
+        row = next((r for r in rows if r["id"] == run_id), None)
+        return self._saved_report(row) if row else None
 
     def _last_transfer(self, now: float, row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if row is None:
@@ -630,6 +698,7 @@ class DashboardCore:
                 busy,
                 handled and running and not paused,
                 "" if google["configured"] else self._google_setup_step(),
+                self.card_has_unsaved_files(card),
             ),
             "upload": google["progress"],
             "settings": {
@@ -755,6 +824,10 @@ class DashboardCore:
             "set_theme": lambda: self._set_theme(str(params.get("theme", ""))),
             "set_report_style": lambda: self._set_report_style(str(params.get("report_style", ""))),
             "open_log": lambda: self._open_log(str(params.get("log", ""))),
+            "open_file_list": lambda: self._open_file_list(params),
+            "report_preview": lambda: self._report_preview(params),
+            "save_debug_package": lambda: self._save_debug_package(params),
+            "reveal_debug_package": self._reveal_debug_package,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -819,11 +892,69 @@ class DashboardCore:
         self._save_dashboard_state(report_style=style)
         return {"ok": True, "report_style": style}
 
+    # ---- a run's saved report. The page sends a run's id, never a path.
+    NO_REPORT = {"ok": False, "message": "This run's report is no longer saved."}
+
+    def _open_file_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        folder = self._report_of_run(params.get("run_id"))
+        if folder is None:
+            return self.NO_REPORT
+        type_label = params.get("type")
+        if type_label is None:
+            path = folder / run_report.FILES_FILE
+        else:
+            try:
+                path = run_report.write_type_list(folder, str(type_label))
+            except ValueError:
+                return {"ok": False, "message": "Unknown file type."}
+        self._spawn(["/usr/bin/open", str(path)])
+        return {"ok": True, "message": "Opening the list in your spreadsheet app."}
+
+    def _report_preview(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        folder = self._report_of_run(params.get("run_id"))
+        if folder is None:
+            return self.NO_REPORT
+        files = (folder / run_report.FILES_FILE).read_text(encoding="utf-8-sig")
+        return {
+            "ok": True,
+            "summary": (folder / run_report.SUMMARY_FILE).read_text(encoding="utf-8"),
+            "files": "\n".join(files.splitlines()[:PREVIEW_LINES]),
+        }
+
+    def _save_debug_package(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        folder = self._report_of_run(params.get("run_id"))
+        if folder is None:
+            return self.NO_REPORT
+        if self.paths.downloads is None:
+            return {"ok": False, "message": "There's no Downloads folder to save to."}
+        # Named one by one: rclone's config and the dashboard's token must never be swept in.
+        package = run_report.build_package(
+            folder,
+            self.paths.downloads,
+            extras={
+                "status.json": self.paths.status_file,
+                "google_photos_status.json": self.paths.google_status_file,
+                "build_info.json": self.paths.install_dir / "build_info.json",
+            },
+            log_excerpts={
+                "trigger.log": self.paths.trigger_log_file,
+                "google_photos_sync.log": self.paths.google_log_file,
+            },
+        )
+        self._saved_package = package
+        return {"ok": True, "name": package.name, "bytes": package.stat().st_size}
+
+    def _reveal_debug_package(self) -> Dict[str, Any]:
+        if self._saved_package is None or not self._saved_package.is_file():
+            return {"ok": False, "message": "There's no saved package to show."}
+        self._spawn(["/usr/bin/open", "-R", str(self._saved_package)])
+        return {"ok": True}
+
     def _eject(self, volume: Path, what: str) -> Dict[str, Any]:
         result = self._run(
             ["/usr/sbin/diskutil", "eject", str(volume)], capture_output=True, text=True, timeout=60
         )
-        self._invalidate("card", "usb")
+        self._invalidate("card", "usb", f"card-id:{volume}")
         if result.returncode != 0:
             reason = (result.stderr or result.stdout or "").strip() or "it may be in use"
             return {"ok": False, "message": f"Could not eject the {what}: {reason}"}

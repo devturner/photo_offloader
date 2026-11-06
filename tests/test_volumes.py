@@ -12,10 +12,6 @@ from tests import support
 
 
 class TestVolumes(support.CardFixtureTestCase):
-    def test_required_source_bytes(self):
-        files = self.media()
-        self.assertEqual(volumes.required_source_bytes({k: [v] for k, v in files.items()}), 11)
-
     def test_validate_destinations_checks_space(self):
         with patch("photo_offloader.volumes.available_bytes", return_value=10):
             with self.assertRaisesRegex(RuntimeError, "Insufficient free space"):

@@ -171,8 +171,9 @@ def _step(
     }
 
 
-def _action(action_id: str, label: str) -> Dict[str, str]:
-    return {"id": action_id, "label": label}
+def _action(action_id: str, label: str, confirm: str = "") -> Dict[str, str]:
+    """A button. ``confirm`` is what the page asks first, in place, before doing it."""
+    return {"id": action_id, "label": label, **({"confirm": confirm} if confirm else {})}
 
 
 def card_contents(files_total: int, expected_new: Optional[int]) -> str:
@@ -184,8 +185,15 @@ def card_contents(files_total: int, expected_new: Optional[int]) -> str:
     return f"{plural(expected_new, 'new file')} of {files_total:,}"
 
 
+UNSAVED_CARD_EJECT_QUESTION = "This card has files that weren't copied. Eject it anyway?"
+
+
 def _card_step(
-    card: Optional[Path], activity: Optional[Dict[str, Any]], busy: bool, can_reimport: bool
+    card: Optional[Path],
+    activity: Optional[Dict[str, Any]],
+    busy: bool,
+    can_reimport: bool,
+    unsaved: bool = False,
 ) -> Dict[str, Any]:
     if activity and activity["kind"] == "import" and activity.get("stage") in ("scan", "metadata"):
         return _step(
@@ -194,6 +202,18 @@ def _card_step(
     if activity and activity["kind"] == "import" and activity.get("stage") == "copy":
         contents = card_contents(activity["files_total"], activity["new_files_expected"])
         return _step("card", "Camera card", "ok", card.name if card else "Card", contents)
+    if card and unsaved:
+        actions = (
+            []
+            if busy
+            else [
+                _action("import_card", "Try again"),
+                _action("eject_card", "Eject", UNSAVED_CARD_EJECT_QUESTION),
+            ]
+        )
+        return _step(
+            "card", "Camera card", "error", card.name, "Don't format: files not saved", actions
+        )
     if card:
         actions = (
             []
@@ -301,10 +321,11 @@ def pipeline(
     busy: bool,
     can_reimport: bool,
     setup_step: str,
+    card_unsaved: bool = False,
 ) -> List[Dict[str, Any]]:
     """The four steps a photo moves through (card, Mac, USB, Google) and what each can do now."""
     return [
-        _card_step(card, activity, busy, can_reimport),
+        _card_step(card, activity, busy, can_reimport, card_unsaved),
         _archive_step(activity, counts["local"] if counts else None),
         _usb_step(activity, usb_mounted, counts["usb"] if counts else None, busy),
         _cloud_step(
@@ -443,9 +464,13 @@ def _import_steps(
     files_copied = _new_files_count(row, details)
     only_checked = not files_copied and states["copy"] == "done"
     copied = _new_files_text(row, details)
-    if row["failed"]:
+    problems = details.get("problems")
+    on_card = problems and not problems.get("usb")
+    if on_card:
+        copied = _safe_and_problems(problems)
+    elif row["failed"]:
         copied += f" · {int(row['failed'])} failed"
-    return [
+    steps = [
         _report_step(
             "scan",
             "Scan and read photo info",
@@ -467,6 +492,37 @@ def _import_steps(
         ),
         _usb_report_step(details, states["usb"]),
         _upload_report_step(details, states["upload"]),
+    ]
+    for step in steps:
+        if on_card and step["state"] == "skipped":
+            step["result"] = "Not started"
+        if problems and not on_card and step["id"] == "usb":
+            step["result"] = _safe_and_problems(problems)
+    return steps
+
+
+def _safe_and_problems(problems: Dict[str, Any]) -> str:
+    return f"{int(problems['safe']):,} safe · {plural(int(problems['problems']), 'problem')}"
+
+
+def _usb_problem_steps(row: Dict[str, Any], problems: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """A backup that failed: where each of the three places stands."""
+    files = int(row["files"])
+    return [
+        _report_step(
+            "mac", "Mac archive", "Mac archive", "done", plural(files, "file"), files=files
+        ),
+        _report_step(
+            "usb",
+            "Back up to USB",
+            "USB backup",
+            "error",
+            _safe_and_problems(problems),
+            seconds=float(row["duration_seconds"]),
+        ),
+        _report_step(
+            "upload", "Upload to Google Photos", "Google Photos", "skipped", "Not part of this"
+        ),
     ]
 
 
@@ -519,6 +575,8 @@ def run_report(row: Dict[str, Any], upload_state: Optional[str] = None) -> Dict[
             "Skipped",
             "Nothing to send",
         )
+    elif kind == "usb_backup" and details.get("problems"):
+        steps, whole_run = _usb_problem_steps(row, details["problems"]), True
     else:
         steps, whole_run = [_single_step(row, kind)], True
     upload_seconds = steps[-1]["seconds"] if kind == "import" else None
@@ -554,6 +612,12 @@ def describe_run(row: Dict[str, Any]) -> Dict[str, Any]:
         title, tone = done, "success"
     parts: List[str] = []
     details = _details(row)
+    problems = details.get("problems")
+    if problems and (kind == "usb_backup" or (kind == "import" and not problems.get("usb"))):
+        label = problems.get("safe_label", "safe on the Mac")
+        count = plural(int(problems["problems"]), "problem")
+        summary = f"{int(problems['safe']):,} {label} · {count}"
+        return {**row, "title": title, "tone": tone, "summary": summary}
     if kind == "import":
         parts.append(_new_files_text(row, details))
         if _new_files_count(row, details) and details.get("new_bytes"):

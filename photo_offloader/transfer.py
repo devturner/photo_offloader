@@ -11,8 +11,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-from photo_offloader import card, catalog, config, fileops, logs, media_info, progress, volumes
+from photo_offloader import (
+    card,
+    catalog,
+    config,
+    fileops,
+    logs,
+    media_info,
+    progress,
+    run_report,
+    volumes,
+)
 from photo_offloader.logs import logger
+
+READ_RETRY_GIVE_UP_AFTER = 10  # failures in a row on the second try: the card has stopped answering
 
 
 @dataclass
@@ -24,11 +36,11 @@ class ImportStats:
     verified_copies: int = 0
     failed: int = 0
     errors: List[Tuple[str, str]] = field(default_factory=list)
-    unreadable_on_card: int = 0
+    outcomes: List[run_report.FileOutcome] = field(default_factory=list)
+    sizes: Dict[str, int] = field(default_factory=dict)  # USB backups; a card's come from its scan
 
     def add_unreadable(self, paths: Sequence[Path]) -> None:
         """Count what the card scan couldn't read: its files were never even considered."""
-        self.unreadable_on_card += len(paths)
         self.failed += len(paths)
         self.errors.extend((str(path), "could not be read") for path in paths)
 
@@ -55,6 +67,7 @@ class DestinationResult:
     status: str  # copied, skipped, failed
     path: Optional[Path] = None
     message: str = ""
+    sha256: str = ""
 
 
 def hash_for_copy_decision(
@@ -154,6 +167,7 @@ def _skip_if_already_copied(
                 "skipped",
                 final_path,
                 "already exists and matches cached/verified hash",
+                source_hash,
             )
     except OSError as exc:
         logger.warning("Could not verify existing file %s: %s", final_path, exc)
@@ -220,7 +234,9 @@ def _copy_and_verify(
         catalog.catalog_record(final_path, sha256=source_hash)
         card.update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
         progress.update_status(state="copying", phase="copy", message="Copy verified")
-        return DestinationResult(destination_base, "copied", final_path, "copied and verified")
+        return DestinationResult(
+            destination_base, "copied", final_path, "copied and verified", source_hash
+        )
     finally:
         if temp_path is not None:
             try:
@@ -277,23 +293,49 @@ def copy_one_to_destination(
     return _copy_and_verify(source, dcim_folder, destination_base, final_path, manifest, before)
 
 
+def _count_new_file(category: str, source: Path) -> None:
+    progress._PROGRESS["new_files"] = int(progress._PROGRESS.get("new_files", 0) or 0) + 1
+    progress._PROGRESS["new_media_files"] = (
+        int(progress._PROGRESS.get("new_media_files", 0) or 0) + 1
+    )
+    by_category = dict(progress._PROGRESS.get("new_by_category") or {})
+    by_category[category] = int(by_category.get(category, 0)) + 1
+    progress._PROGRESS["new_by_category"] = by_category
+    try:
+        progress._PROGRESS["new_bytes"] = (
+            int(progress._PROGRESS.get("new_bytes", 0) or 0) + source.stat().st_size
+        )
+    except OSError:
+        pass  # only a display counter: the copy itself has already been verified
+
+
 def _count_session_file(category: str, source: Path, copied: bool) -> None:
     """Session counters the dashboard shows while importing and keeps in history."""
     progress._PROGRESS["files_done"] = int(progress._PROGRESS.get("files_done", 0) or 0) + 1
     if copied:
-        progress._PROGRESS["new_files"] = int(progress._PROGRESS.get("new_files", 0) or 0) + 1
-        progress._PROGRESS["new_media_files"] = (
-            int(progress._PROGRESS.get("new_media_files", 0) or 0) + 1
+        _count_new_file(category, source)
+
+
+def _count_result(result: DestinationResult, source: Path, label: str, stats: ImportStats) -> None:
+    if result.status == "copied":
+        stats.destination_copies += 1
+        stats.verified_copies += 1
+    elif result.status == "skipped":
+        stats.destination_skips += 1
+        stats.verified_copies += 1
+    else:
+        stats.failed += 1
+        stats.errors.append((str(source), result.message or "copy failed"))
+    stats.outcomes.append(
+        run_report.FileOutcome(
+            label,
+            source,
+            result.status,
+            str(result.path or ""),
+            result.sha256,
+            result.message if result.status == run_report.FAILED else "",
         )
-        by_category = dict(progress._PROGRESS.get("new_by_category") or {})
-        by_category[category] = int(by_category.get(category, 0)) + 1
-        progress._PROGRESS["new_by_category"] = by_category
-        try:
-            progress._PROGRESS["new_bytes"] = (
-                int(progress._PROGRESS.get("new_bytes", 0) or 0) + source.stat().st_size
-            )
-        except OSError:
-            pass  # only a display counter: the copy itself has already been verified
+    )
 
 
 def copy_category(
@@ -338,19 +380,19 @@ def copy_category(
                         source, dcim_folder, destination, card_manifest, trust_manifest
                     )
                     results.append(result)
-                    if result.status == "copied":
-                        stats.destination_copies += 1
-                        stats.verified_copies += 1
-                    elif result.status == "skipped":
-                        stats.destination_skips += 1
-                        stats.verified_copies += 1
-                    else:
-                        stats.failed += 1
-                        stats.errors.append((str(source), result.message or "copy failed"))
+                    _count_result(result, source, label, stats)
                 except Exception as exc:
                     stats.failed += 1
                     message = f"{source} -> {destination}: {exc}"
                     stats.errors.append((str(source), message))
+                    stats.outcomes.append(
+                        run_report.FileOutcome(
+                            label,
+                            source,
+                            run_report.FAILED,
+                            reason=run_report.failure_reason(exc, source),
+                        )
+                    )
                     logger.exception(message)
             if len(results) != len(destinations):
                 logger.error("One or more destinations failed for %s", source)
@@ -371,6 +413,72 @@ def copy_category(
         logs.timing_summary(time.perf_counter() - started),
     )
     card.save_card_manifest(dcim_folder, card_manifest)
+
+
+def _mark_recovered(index: int, result: DestinationResult, stats: ImportStats) -> None:
+    """A file saved on its second try now counts like any other saved file."""
+    item = stats.outcomes[index]
+    stats.failed -= 1
+    stats.errors = [error for error in stats.errors if error[0] != str(item.source)]
+    stats.verified_copies += 1
+    if result.status == "copied":
+        stats.destination_copies += 1
+        _count_new_file(item.category, item.source)
+    else:
+        stats.destination_skips += 1
+    stats.outcomes[index] = run_report.FileOutcome(
+        item.category,
+        item.source,
+        result.status,
+        str(result.path or ""),
+        result.sha256,
+        retried=True,
+    )
+    logger.warning("%s needed a second try; now saved and verified", item.source)
+
+
+def retry_read_errors(dcim_folder: Path, stats: ImportStats) -> int:
+    """Try once more the files the card failed to give up. Returns how many were then saved.
+
+    Readers and cards can fail for a moment. Only read errors are tried: a full disk won't clear up.
+    A file goes through the same verified copy, so nothing can be overwritten. With no timeout on a
+    read yet (R11) a dying card can take a long time per file, hence giving up on a run of failures.
+    """
+    to_try = [
+        index
+        for index, item in enumerate(stats.outcomes)
+        if item.result == run_report.FAILED and item.reason == run_report.READ_ERROR
+    ]
+    if not to_try:
+        return 0
+    logger.info("Trying %d file(s) again after read errors.", len(to_try))
+    progress.update_status(
+        state="copying", phase="copy", message=f"Trying {len(to_try)} file(s) again"
+    )
+    time.sleep(config.READ_RETRY_PAUSE_SECONDS)
+    if not dcim_folder.is_dir():
+        logger.error("The card has gone, so its failed files can't be tried again.")
+        return 0
+    manifest = card.load_card_manifest(dcim_folder)
+    recovered = failures_in_a_row = 0
+    for index in to_try:
+        item = stats.outcomes[index]
+        root = media_info.local_root_for_category(item.category)
+        try:
+            result = copy_one_to_destination(item.source, dcim_folder, root, manifest)
+        except Exception as exc:
+            item.reason = run_report.failure_reason(exc, item.source)
+            logger.error("%s failed again: %s", item.source, exc)
+            failures_in_a_row += 1
+            if failures_in_a_row >= READ_RETRY_GIVE_UP_AFTER:
+                logger.error("%d failures in a row; not trying any more.", failures_in_a_row)
+                break
+            continue
+        failures_in_a_row = 0
+        recovered += 1
+        _mark_recovered(index, result, stats)
+    card.save_card_manifest(dcim_folder, manifest)
+    return recovered
 
 
 def _local_archive_files(source_roots: Sequence[Path]) -> List[Tuple[Path, Path]]:
@@ -400,6 +508,20 @@ def _local_archive_files(source_roots: Sequence[Path]) -> List[Tuple[Path, Path]
     return files
 
 
+def _note_usb_file(
+    stats: ImportStats, source: Path, destination: Path, result: str, reason: str = ""
+) -> None:
+    stats.outcomes.append(
+        run_report.FileOutcome(
+            card.MEDIA_EXTENSIONS.get(source.suffix.lower(), "OTHER"),
+            source,
+            result,
+            str(destination),
+            reason=reason,
+        )
+    )
+
+
 def _compare_with_usb(
     files: Sequence[Tuple[Path, Path]],
     source_roots: Sequence[Path],
@@ -425,6 +547,7 @@ def _compare_with_usb(
     for source, destination in files:
         try:
             fingerprint = fileops.file_fingerprint(source)
+            stats.sizes[str(source)] = fingerprint.size
             source_hash = known_hash(source, fingerprint)
             if not destination.exists():
                 pending.append((source, destination, fingerprint))
@@ -443,6 +566,7 @@ def _compare_with_usb(
             if matches:
                 stats.destination_skips += 1
                 stats.verified_copies += 1
+                _note_usb_file(stats, source, destination, "skipped")
             elif destination.is_file() and fileops.is_camera_index_file(destination):
                 replace_on_usb.add(destination)
                 pending.append((source, destination, fingerprint))
@@ -451,10 +575,15 @@ def _compare_with_usb(
                 stats.failed += 1
                 message = f"USB file differs from local archive; not overwriting: {destination}"
                 stats.errors.append((str(source), message))
+                _note_usb_file(
+                    stats, source, destination, run_report.FAILED, run_report.NOT_OVERWRITTEN
+                )
                 logger.error(message)
         except OSError as exc:
             stats.failed += 1
             stats.errors.append((str(source), str(exc)))
+            reason = run_report.usb_failure_reason(exc, source)
+            _note_usb_file(stats, source, destination, run_report.FAILED, reason)
             logger.exception("Could not inspect backup candidate %s", source)
     catalog.catalog_record_many(updates)
     return pending, replace_on_usb
@@ -547,12 +676,16 @@ def copy_local_archive_to_usb(
         }
     )
     progress.update_status()
-    for source, destination, before in pending:
+    for index, (source, destination, before) in enumerate(pending):
         if not volumes.usb_is_mounted():
             stats.failed += 1
             message = "USB backup volume was disconnected during the backup."
             stats.errors.append((str(config.USB_DEST_VOLUME), message))
             logger.error(message)
+            for left_source, left_destination, _ in pending[index:]:
+                _note_usb_file(
+                    stats, left_source, left_destination, run_report.FAILED, run_report.DRIVE_GONE
+                )
             break
         progress.update_status(
             current_file=source.name, current_path=str(source), message=f"USB backup: {source.name}"
@@ -564,9 +697,12 @@ def copy_local_archive_to_usb(
             stats.destination_copies += int(copied)
             stats.destination_skips += int(not copied)
             stats.verified_copies += 1
+            _note_usb_file(stats, source, destination, "copied" if copied else "skipped")
         except Exception as exc:
             stats.failed += 1
             stats.errors.append((str(source), f"{destination}: {exc}"))
+            reason = run_report.usb_failure_reason(exc, source)
+            _note_usb_file(stats, source, destination, run_report.FAILED, reason)
             logger.exception("USB backup failed for %s", source)
 
     if not volumes.usb_is_mounted() or not volumes.volume_identity_matches(

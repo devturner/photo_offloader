@@ -68,6 +68,53 @@ Google Photos card names the first missing step: see the [setup guide](google-ph
 A finished import's result fades after 10 minutes. A failed one stays until you dismiss it with
 **×**.
 
+### When an import fails
+
+The panel says what to do, usually `Don't format this card`, and the run opens by itself in Recent
+activity. It shows how many files are safe on the Mac, then a line saying whether any photo lost both its
+RAW and its JPG, matched by name. A RAW or JPG shot alone counts like a movie: the line says it wasn't backed up.
+
+Below that is one row per file type, with what wasn't saved, what's safe and what's on the card. Click a
+row to see its files, and why they failed. A row with more than 30 files names the first 20 and offers
+**Open these in a list**. If a folder couldn't be read, its contents are unknown, so nothing is counted
+for it. If at least the last 20 files all failed to read, the report says so first, because that looks like
+the card or the reader, not the photos.
+
+Before any of this, a file that failed to read gets a second try: one pass at the end of the copy, after 5
+seconds, which stops after 10 failures in a row. A file saved this way goes through the same verified copy, and
+the full list marks it.
+
+Until a retry succeeds, the Camera card box says `Don't format: files not saved`, even if you dismiss the
+panel, and **Eject** asks first. The warning follows the card by its volume ID, because cameras give every card
+the same name: it returns if that card comes back and isn't imported again, such as while imports are paused,
+and another card with the same name doesn't get it. A card with no ID is matched by name.
+
+- **Try again** imports the card again. Files already saved are skipped.
+- **Open full list** opens every file on the card in your spreadsheet app, with its result and hash.
+- **Save debug package…** saves a zip to Downloads, for checking a run yourself or sending to someone
+  who can help. It holds a summary, every card file's result, the run's log, the card's `diskutil info`
+  and the end of the card detection and upload logs. It never holds photos, your Google sign-in or the
+  dashboard's access token. File names and paths are included and show your Mac username, so look
+  through it before you share it.
+
+A USB backup that fails gets the same report, whether it ran after an import or on its own, with what's on the
+drive and what isn't. Its files are still on the Mac, so the card gets no warning, and **Back up again** replaces
+**Try again**. It says so if the Mac's own copy couldn't be read, because then that copy isn't safe either.
+
+Runs that finish cleanly offer the package too. An import where some files needed a second try says so when you
+open it, because that can be an early sign of a failing card or reader. The files behind these reports are in `run-reports`, in the
+data folder: the latest 20 runs with problems and the latest 20 without, so clean runs can't push out a
+failure's report. Saving one never changes an import's result.
+
+### Notifications
+
+macOS notifications go out only when nothing else would tell you: while the service is running and no dashboard
+is showing. A minimized window doesn't count as showing, but one behind other windows may. Whatever isn't sent is
+still in Recent activity and the import log. The menu bar still confirms what you choose from it.
+
+When you install, macOS itself shows *App Background Activity: "trigger.sh" can run in the background*. That's the
+system, and Photo Offloader can't turn it off.
+
 ### Recent activity
 
 This lists past imports, USB backups and catalog updates, with what each one copied. The history

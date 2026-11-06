@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterator
 
+from photo_offloader import presence
+
 LOG_MAX_BYTES = 5 * 1024 * 1024
 
 
@@ -74,7 +76,24 @@ def rotate_log_file(
     return True
 
 
+def _notification_needed(title: str) -> bool:
+    """Only when nothing else would say so: the panel says it if a dashboard is showing, and a stopped
+    service means someone started this by hand. If in doubt, notify: this can be a failure."""
+    try:
+        if not presence.service_running():
+            logger.info("Not notifying, as the service is stopped: %s", title)
+            return False
+        if presence.dashboard_showing():
+            logger.info("Not notifying, as the dashboard is showing: %s", title)
+            return False
+    except Exception as exc:
+        logger.warning("Could not check whether to notify: %s", exc)
+    return True
+
+
 def notify(title: str, text: str) -> None:
+    if not _notification_needed(title):
+        return
     script = """
     on run argv
         display notification (item 2 of argv) with title (item 1 of argv)

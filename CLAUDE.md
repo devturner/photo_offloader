@@ -67,7 +67,7 @@ Two consequences:
 ## Layout
 - `photo_offloader/config.py`: every path and setting. Code reads `config.NAME` at call
   time, never `from config import NAME`.
-- The importer is split into `card`, `media_info`, `transfer`, `catalog`, `fileops`,
+- The importer is split into `card`, `media_info`, `transfer`, `run_report`, `catalog`, `fileops`,
   `volumes`, `progress`, `logs` and `catalog_refresh`; `importer` is only the command line.
   Imports only point downward.
 - Modules call each other qualified (`catalog.catalog_row(...)`). Tests patch a name in
