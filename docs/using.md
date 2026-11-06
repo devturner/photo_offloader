@@ -12,12 +12,23 @@ or in a browser tab if the native window isn't available.
 ### Import steps
 
 While an import runs, the top panel shows these steps with progress, speed, file count, elapsed
-and remaining time. A value not known yet shows a dash. The graph shows the copy speed over the run,
-up to the latest three minutes.
+and remaining time. A value not known yet shows a dash. The graph shows the speed over the run, up to the
+latest 90 seconds. It starts when data first moves, and a stall shows as a dip to zero.
+While there's nothing to measure yet, such as during a scan or while the upload gets ready, the progress bar
+glows slowly.
 
-During an import, **Files** reads like `1,214 of 2,478 checked · 737 new`: 1,214 of the card's files have
-been checked so far, and 737 of those weren't in the archive, so they were copied. The rest were already
-saved. Progress counts them all, so it moves quickly past files you already have.
+When a run ends, the panel shows its report: what each step did and how long it took. Choose how it looks
+under **Import report** in the ⋯ menu. **Basic**, the default, shows where the time went and what reached
+the Mac, USB drive and Google Photos. **Advanced** is a table with a row for each step. Speeds cover that step
+alone, and Upload time includes the time rclone spends getting ready.
+
+During an import, **Files** reads like `737 of 1,278 new`: 737 of the card's 1,278 new files have been
+copied. Progress and Remaining measure those new files too, and the Camera card box shows the card as a
+whole, such as `1,278 new files of 2,478`. Files already saved are checked but take no copying time.
+
+The number of new files is an estimate from the card's own record, and each file is still checked when it's
+reached, so the total can change slightly. On a card's first import, or a read-only card, there's nothing to
+estimate from: **Files** just counts up (`737 new`), and Progress measures the whole card.
 
 | Step | What is happening |
 | --- | --- |
@@ -63,6 +74,9 @@ This lists past imports, USB backups and catalog updates, with what each one cop
 survives restarts and reinstalls, and the latest 500 runs are kept. **Clear** removes it, after
 you click a second time to confirm. It only deletes the history, not your files.
 
+Click a run to unfold its report under it, pushing the runs below down and dimming the others. Click it again
+to fold it away. Runs from before this version show a dash for anything that wasn't saved then.
+
 ### The ⋯ menu
 
 - **Pause / Resume automatic imports:** see [below](#pause-stop-and-start).
@@ -71,6 +85,7 @@ you click a second time to confirm. It only deletes the history, not your files.
 - **Eject card after import:** off by default, so a card stays mounted for Finder.
 - **Show Terminal during imports:** off by default. When on, the import runs in a terminal window.
 - **Appearance:** Auto, Light or Dark.
+- **Import report:** Basic or Advanced, for how a finished run's report looks.
 - **View logs:** opens a log in Console, where it updates live. **Import** is what each import
   did, **Cards** is card detection, **Google** is uploads, and **Dashboard** is what the dashboard
   showed and why.
