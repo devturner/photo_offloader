@@ -168,6 +168,12 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         backup.assert_called_once_with()
         notify.assert_called_once()
 
+    @patch("photo_offloader.logs.notify")
+    @patch("photo_offloader.transfer.copy_local_archive_to_usb", return_value=ImportStats(failed=2))
+    def test_a_standalone_usb_backup_reports_its_failures(self, _backup, notify):
+        self.assertEqual(app._run_usb_backup(), 1)
+        self.assertEqual(notify.call_args[0][0], "USB Backup Incomplete")
+
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
     def test_a_usb_failure_is_reported_without_starting_the_upload(self, notify, launch):
