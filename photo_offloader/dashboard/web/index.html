@@ -116,7 +116,7 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .hero.finished[data-tone="error"] .bar > div, .hero.finished[data-tone="warning"] .bar > div { background: var(--warn); }
 .step .actions { margin-top: auto; padding-top: 8px; display: flex; gap: 14px; }
 .step .actions .action { margin-top: 0; padding-top: 0; }
-.slots { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, .9fr) minmax(0, 1.5fr) minmax(0, .8fr) minmax(0, .8fr); gap: 4px 14px; margin-top: 12px; font-variant-numeric: tabular-nums; flex: none; }
+.slots { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, .8fr) minmax(0, 1.9fr) minmax(0, .7fr) minmax(0, .8fr); gap: 4px 14px; margin-top: 12px; font-variant-numeric: tabular-nums; flex: none; }
 .slot { min-width: 0; }
 .slot .k { display: block; color: var(--text-3); font-size: 11.5px; font-weight: 550; text-transform: uppercase; letter-spacing: .04em; }
 .slot .v { display: block; color: var(--text); font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -201,9 +201,11 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
   .stages { height: 40px; }
   .stages span { white-space: normal; align-items: flex-start; line-height: 1.25; }
   /* The two long values share the first row; the three short ones share the second. */
-  .slots { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-  .slot { grid-column: span 2; }
-  .slot:nth-child(1), .slot:nth-child(3) { grid-column: span 3; order: -1; }
+  .slots { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+  .slot { grid-column: span 4; }
+  .slot:nth-child(1), .slot:nth-child(3) { order: -1; }
+  .slot:nth-child(1) { grid-column: span 5; }
+  .slot:nth-child(3) { grid-column: span 7; }
 }
 </style>
 </head>
@@ -417,7 +419,7 @@ function renderHero(s) {
     kids.push(h("div", { class: "stages", "aria-label": "Steps" },
       (v.stages || []).map(st => h("span", { "data-state": st.state, text: st.label, title: st.label + " (" + st.state + ")" }))));
     const files = f ? (v.files_total ? fmtCount(v.files_done) + " new · " + fmtCount(v.files_total) + " on card" : null)
-      : (v.files_total ? fmtCount(v.files_done) + " of " + fmtCount(v.files_total) + (v.new_files ? " · " + fmtCount(v.new_files) + " new" : "") : null);
+      : (v.files_total ? fmtCount(v.files_done) + " of " + fmtCount(v.files_total) + (v.stage === "copy" ? " checked" : "") + (v.new_files ? " · " + fmtCount(v.new_files) + " new" : "") : null);
     const progress = p == null ? null : Math.round(p) + "%" + (v.bytes_total ? " · " + (f ? fmtBytes(v.bytes_total) : fmtRange(v.bytes_done, v.bytes_total)) : "");
     kids.push(h("div", { class: "progress" },
       h("div", { class: "bar" + (v.indeterminate ? " indeterminate" : ""), role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": p == null ? null : Math.round(p) },

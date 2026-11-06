@@ -132,6 +132,14 @@ class TestFixedPanel(PageTestCase):
 
 
 class TestSlots(PageTestCase):
+    def test_only_the_import_counts_files_as_checked(self):
+        self.show("checking")
+        self.assertEqual(self.slots()["Files"], "1,214 of 2,378 checked")
+        self.show("usb_backup")
+        self.assertEqual(self.slots()["Files"], "1,214 of 2,378")
+        self.show("uploading")
+        self.assertNotIn("checked", self.slots()["Files"])
+
     def test_all_five_slots_are_there_while_anything_runs(self):
         for state in TRANSFER_STATES:
             with self.subTest(state=state):
@@ -159,7 +167,7 @@ class TestSlots(PageTestCase):
             {
                 "Progress": "43% · 34.0 of 80.0 GB",
                 "Speed": "153.1 MB/s",
-                "Files": "1,214 of 2,378 · 47 new",
+                "Files": "1,214 of 2,378 checked · 47 new",
                 "Elapsed": "1m 59s",
                 "Remaining": "4m 00s",
             },

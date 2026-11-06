@@ -15,6 +15,10 @@ While an import runs, the top panel shows these steps with progress, speed, file
 and remaining time. A value not known yet shows a dash. The graph shows the copy speed over the run,
 up to the latest three minutes.
 
+During an import, **Files** reads like `1,214 of 2,478 checked · 737 new`: 1,214 of the card's files have
+been checked so far, and 737 of those weren't in the archive, so they were copied. The rest were already
+saved. Progress counts them all, so it moves quickly past files you already have.
+
 | Step | What is happening |
 | --- | --- |
 | **Scan card** | Listing the files on the card |
