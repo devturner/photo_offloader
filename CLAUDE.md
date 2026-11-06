@@ -97,6 +97,7 @@ Two consequences:
 - Commits in reviewable units: the message explains why, and behavior changes stay
   separate from moves and renames.
 - Work on a branch from `main` and open a PR; merge with a merge commit (not squash).
+- Follow `CODE_QUALITY.md` for clean code, reuse, errors, logging and ease of use.
 - UI preferences: a modern look, controls hidden until needed, one fixed-size transfer
   panel for the whole run, nothing that flashes in or out. Check page changes with the
   browser tests, and look at the result: set `PHOTO_OFFLOADER_TEST_SCREENSHOTS=<folder>` and run
