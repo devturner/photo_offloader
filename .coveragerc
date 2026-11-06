@@ -12,7 +12,6 @@ omit = photo_offloader/menubar/app.py
 # About 2 points under the measured baseline: runs differ by about 0.1 points,
 # and CI may differ from a local run. Raise it as tests are added.
 fail_under = 85
-show_missing = True
 skip_empty = True
 exclude_also =
     if __name__ == .__main__.:

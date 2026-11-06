@@ -50,7 +50,8 @@ macOS ships bash 3.2, so write `${arr[@]+"${arr[@]}"}` for an array that may be 
 ```bash
 .venv/bin/python -m coverage run -m unittest discover
 .venv/bin/python -m coverage combine                  # merges the data from test subprocesses
-.venv/bin/python -m coverage report                   # add `html` for a browsable report in htmlcov/
+.venv/bin/python -m coverage report                   # add -m to list the missed lines
+.venv/bin/python -m coverage html                     # browsable report in htmlcov/
 ```
 
 The Coverage workflow runs the same steps, shows the table in the run's summary, keeps the HTML
