@@ -1,0 +1,125 @@
+# Using Photo Offloader
+
+Insert a card. Within about 30 seconds the dashboard opens and the import starts. Any volume
+with a top-level `DCIM` folder counts as a camera card, whatever its name or make.
+
+## The dashboard
+
+Open it from the 📷 menu bar item with **Open Dashboard**. It follows macOS light or dark mode
+unless you choose otherwise under **⋯ › Appearance**. It runs only on your Mac, in its own window
+or in a browser tab if the native window isn't available.
+
+### Import steps
+
+While an import runs, the top panel shows these steps with progress, speed, file count, elapsed
+and remaining time. A value not known yet shows a dash.
+
+| Step | What is happening |
+| --- | --- |
+| **Scan card** | Listing the files on the card |
+| **Read photo info** | Reading capture dates and camera models, to choose archive folders |
+| **Copy new files** | Copying files not yet in the archive, and verifying each copy |
+| **Back up to USB** | Copying missing files from the Mac to the USB drive |
+| **Upload to Google Photos** | Sending new JPGs and video, in the background |
+
+When the panel says *Finishing import*, the copies are done and the app is recording the result.
+The USB and Google steps are skipped if the drive isn't connected or Google Photos isn't set up.
+
+### The four cards
+
+| Card | Shows | Buttons, when they apply |
+| --- | --- | --- |
+| **Camera card** | The mounted card, or *No card* | **Import now**, **Eject** |
+| **Mac archive** | How many files are indexed | None |
+| **USB backup** | Whether the drive is connected, and files backed up | **Back up now**, **Eject** |
+| **Google Photos** | Setup and upload state | **Sync now**, **Retry**, **Resume** |
+
+Buttons that use a card or drive are hidden while a transfer is running. *Not set up* on the
+Google Photos card names the first missing step: see the [setup guide](google-photos.md).
+
+### Messages you may see
+
+| Message | Meaning |
+| --- | --- |
+| *Ready* | Nothing is happening. Insert a card |
+| *NIKON Z 8 is mounted* | A card was found, and the import will start in a moment |
+| *NIKON Z 8 was already imported* | This card was imported since it was inserted. See [Re-inserting a card](#re-inserting-a-card) |
+| *Automatic imports are paused* | Cards won't import until you resume |
+| *Photo Offloader is stopped* | The service is off. Press **Start** |
+| *The last transfer was interrupted* | The process died mid-way. Insert the card again; finished files aren't copied twice |
+| *Google Photos upload needs attention* | The upload failed. The detail line says why: see [troubleshooting](google-photos.md#troubleshooting) |
+
+A finished import's result fades after 10 minutes. A failed one stays until you dismiss it with
+**×**.
+
+### Recent activity
+
+This lists past imports, USB backups and catalog updates, with what each one copied. The history
+survives restarts and reinstalls, and the latest 500 runs are kept. **Clear** removes it, after
+you click a second time to confirm. It only deletes the history, not your files.
+
+### The ⋯ menu
+
+- **Pause / Resume automatic imports:** see [below](#pause-stop-and-start).
+- **Update file catalog:** rescans the archives. It normally updates itself, so you rarely need this.
+- **Back up to USB now**, **Sync Google Photos now:** run those steps without a card.
+- **Eject card after import:** off by default, so a card stays mounted for Finder.
+- **Show Terminal during imports:** off by default. When on, the import runs in a terminal window.
+- **Appearance:** Auto, Light or Dark.
+- **View logs:** opens a log in Console, where it updates live. **Import** is what each import
+  did, **Cards** is card detection, **Google** is uploads, and **Dashboard** is what the dashboard
+  showed and why.
+- **Stop / Start Photo Offloader**.
+
+## The menu bar
+
+The 📷 changes to show the state: `↻` during a transfer, `⏸` when paused, `Off` when stopped. Its
+menu has **Open Dashboard**, **Copy to USB Drive** (when a drive is connected), **Pause / Resume
+Automatic Imports**, **View Import Log**, **Stop Photo Offloader…** and **Quit Menu Bar**. Quitting
+the menu bar leaves the service running.
+
+## Pause, stop and start
+
+**Pause** before inserting a card you don't want imported. It doesn't interrupt a copy already
+running. **Resume** re-checks any card that is mounted.
+
+**Stop** turns off card detection. It refuses to stop during a transfer unless you choose to.
+Stopped, the service comes back at your next login. From a terminal:
+
+```bash
+SERVICE=~/Library/Application\ Support/PhotoOffloader/scripts/service.sh
+
+"$SERVICE" status
+"$SERVICE" stop             # refuses while a transfer is running
+"$SERVICE" stop --wait      # finish the current transfer, then stop
+"$SERVICE" stop --force     # cancel the transfer and stop now
+"$SERVICE" stop --disable   # also stay off at next login
+"$SERVICE" start
+```
+
+## Ejecting
+
+Press **Eject** on the Camera card or USB backup card. Once the copy to the Mac is verified, it is
+safe to remove the card, even if the USB backup is still running. A failed USB backup doesn't
+affect the import: reconnect the drive and press **Back up now**.
+
+## Re-inserting a card
+
+Cards are recognised by their volume ID, so a second card from the same camera counts as a new
+card even though it has the same name.
+
+If you take a card out, shoot more, and put it back after more than 20 seconds, a new import
+copies only the new files. Shorter gaps are treated as the card briefly disconnecting. If a card
+stayed mounted and you want to import it again, press **Import now**.
+
+## Running an import by hand
+
+```bash
+IMPORT=~/Library/Application\ Support/PhotoOffloader/bin/photo-offloader-import
+
+"$IMPORT" --source "/Volumes/NIKON Z 8"             # import a card
+"$IMPORT" --source "/Volumes/NIKON Z 8" --no-usb    # skip the USB backup
+"$IMPORT" --source "/Volumes/NIKON Z 8" --no-eject  # leave the card mounted
+"$IMPORT" --backup-usb                              # back up to USB, no card needed
+"$IMPORT" --update-catalog                          # rescan the archives
+```

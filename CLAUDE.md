@@ -8,7 +8,7 @@ app sit on top. Open work and its reasons are in `scratch/todo.md` (gitignored);
 first when asked to "continue".
 
 ## Commands
-- Tests: `.venv/bin/python -m unittest discover` (about 360 tests, about 80 s). Use the
+- Tests: `.venv/bin/python -m unittest discover` (about 375 tests, about 80 s). Use the
   project `.venv`, not the system `python3`, which has no Pillow.
 - One module or test: `.venv/bin/python -m unittest tests.test_usb_backup`, or add
   `.TestBackupLauncher.test_request_runs_importer_when_lock_is_free`. Filter by name with `-k`.
@@ -66,7 +66,9 @@ Two consequences:
   never puts card-derived text in `innerHTML`. `menubar/`: pure `model.py` plus a
   `rumps` app.
 - `bin/` launchers, `scripts/` (trigger, import_supervisor, service), `tools/`, `tests/`.
-- The root `index.html` is the GitHub Pages documentation, not the dashboard page.
+- `docs/` holds the user documentation, one topic per page, linked from a short `README.md`.
+- The root `index.html` is the GitHub Pages landing page, not the dashboard page. It links to
+  `docs/` and doesn't repeat it.
 - The installed app (`~/Library/Application Support/PhotoOffloader`) mirrors this layout.
   `install.sh` copies `bin/`, `scripts/` and `photo_offloader/`; new top-level files must
   be added there.
@@ -91,7 +93,7 @@ Two consequences:
 - Write the failing test first, confirm it fails for the right reason, then fix. Mutation-check
   important fixes (break the code, make sure the test goes red).
 - Base claims on measurements (logs, timings on real data), not guesses.
-- Update `CHANGELOG.md` (`[Unreleased]`) and `README.md` with behavior changes.
+- Update `CHANGELOG.md` (`[Unreleased]`) and `docs/` (or `README.md`) with behavior changes.
 - Commits in reviewable units: the message explains why, and behavior changes stay
   separate from moves and renames.
 - Work on a branch from `main` and open a PR; merge with a merge commit (not squash).
