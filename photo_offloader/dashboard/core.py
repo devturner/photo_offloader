@@ -116,6 +116,104 @@ def stages_after_import(row: Dict[str, Any], upload_state: str) -> List[Dict[str
     return [{"id": step_id, "label": label, "state": states[step_id]} for step_id, label in IMPORT_STAGES]
 
 
+def activity_text(status: Dict[str, Any], stage: str) -> Tuple[str, str]:
+    """The panel's title and detail line for the importer's current step."""
+    state = str(status.get("state", "idle"))
+    done = int(status.get("bytes_done", 0) or 0)
+    total = int(status.get("bytes_total", 0) or 0)
+    current_file = str(status.get("current_file", "") or "")
+    detail = str(status.get("message", "") or "")
+    if stage == "catalog":
+        scanned = int(status.get("catalog_scanned", 0) or 0)
+        step = str(status.get("catalog_stage", "") or "")
+        return "Updating file index", " · ".join(part for part in (step, f"{scanned:,} files scanned") if part)
+    if stage == "usb":
+        title = "Backing up to USB" if state == "copying" else "Comparing with USB backup"
+        return title, current_file or (f"{format_bytes(done)} of {format_bytes(total)}" if total else detail)
+    if stage == "copy":
+        # Every file is first checked, then copied if new: the status flips between the
+        # two per file. Name the step by what the session is doing overall so it holds still.
+        new_files = int(status.get("new_files", 0) or 0)
+        category = CATEGORY_LABELS.get(str(status.get("category", "") or ""), "")
+        title = "Copying new files" if state == "copying" or new_files else "Checking for new files"
+        return title, " · ".join(part for part in (category, current_file) if part) or detail
+    if stage == "metadata":
+        return "Reading photo info", detail
+    return "Scanning card", detail or "Looking for photos and video"
+
+
+def _step(step_id: str, label: str, state: str, headline: str, detail: str,
+          actions: Sequence[Dict[str, str]] = (), percent: Optional[float] = None) -> Dict[str, Any]:
+    return {"id": step_id, "label": label, "state": state, "headline": headline,
+            "detail": detail, "actions": list(actions), "percent": percent}
+
+
+def _action(action_id: str, label: str) -> Dict[str, str]:
+    return {"id": action_id, "label": label}
+
+
+def _card_step(card: Optional[Path], activity: Optional[Dict[str, Any]], busy: bool,
+               can_reimport: bool) -> Dict[str, Any]:
+    if activity and activity["kind"] == "import" and activity.get("stage") in ("scan", "metadata"):
+        return _step("card", "Camera card", "active", card.name if card else "Card", activity["title"])
+    if card:
+        actions = [] if busy else (
+            [_action("import_card", "Import now")] if can_reimport else []) + [_action("eject_card", "Eject")]
+        return _step("card", "Camera card", "ok", card.name, "Already imported" if can_reimport else "Mounted", actions)
+    return _step("card", "Camera card", "off", "No card", "Insert a card to begin")
+
+
+def _archive_step(activity: Optional[Dict[str, Any]], local: Optional[int]) -> Dict[str, Any]:
+    detail = (f"{local:,} files indexed" if local else "Nothing indexed yet") if local is not None \
+        else "Catalog unavailable"
+    if activity and activity["kind"] == "import" and activity.get("stage") == "copy":
+        return _step("archive", "Mac archive", "active", "Copying", activity["detail"] or detail,
+                     (), activity["percent"])
+    return _step("archive", "Mac archive", "ok", "Up to date" if local else "Empty", detail)
+
+
+def _usb_step(activity: Optional[Dict[str, Any]], usb_mounted: bool, usb: Optional[int],
+              busy: bool) -> Dict[str, Any]:
+    if activity and activity["kind"] == "usb_backup":
+        return _step("usb", "USB backup", "active", "Backing up", activity["detail"], (), activity["percent"])
+    if usb_mounted:
+        return _step("usb", "USB backup", "ok", "Connected",
+                     f"{usb:,} files backed up" if usb else "Ready to back up",
+                     [] if busy else [_action("usb_backup", "Back up now"), _action("eject_usb", "Eject")])
+    return _step("usb", "USB backup", "off", "Not connected", "Plug in the backup drive")
+
+
+def _cloud_step(google: Dict[str, Any], uploaded: int, busy: bool, setup_step: str) -> Dict[str, Any]:
+    state = google["state"]
+    if not google["configured"]:
+        return _step("cloud", "Google Photos", "off", "Not set up", setup_step)
+    if state == "running":
+        upload = google["progress"]
+        return _step("cloud", "Google Photos", "active",
+                     "Finishing upload" if upload and upload["finalizing"] else "Uploading",
+                     f"{upload['transferred']} of {upload['total']}" if upload else "Preparing",
+                     (), upload["percent"] if upload else None)
+    if state == "interrupted":
+        return _step("cloud", "Google Photos", "error", "Upload interrupted",
+                     "It stopped before finishing", [_action("google_sync", "Resume")])
+    if state in ("failed", "error"):
+        return _step("cloud", "Google Photos", "error", "Upload failed", google["message"] or "See the log",
+                     [_action("google_sync", "Retry")])
+    return _step("cloud", "Google Photos", "ok", "Up to date",
+                 f"{uploaded:,} files uploaded" if uploaded else "Nothing uploaded yet",
+                 [] if busy else [_action("google_sync", "Sync now")])
+
+
+def pipeline(card: Optional[Path], activity: Optional[Dict[str, Any]], counts: Optional[Dict[str, Any]],
+             usb_mounted: bool, google: Dict[str, Any], busy: bool, can_reimport: bool,
+             setup_step: str) -> List[Dict[str, Any]]:
+    """The four steps a photo moves through (card, Mac, USB, Google) and what each can do now."""
+    return [_card_step(card, activity, busy, can_reimport),
+            _archive_step(activity, counts["local"] if counts else None),
+            _usb_step(activity, usb_mounted, counts["usb"] if counts else None, busy),
+            _cloud_step(google, counts["uploaded"] if counts else 0, busy, setup_step)]
+
+
 def plural(count: int, noun: str) -> str:
     return f"{count:,} {noun}{'' if count == 1 else 's'}"
 
@@ -364,6 +462,18 @@ class DashboardCore:
             self._samples.clear()
             self._last_sample = None
 
+    def _transfer_speed(self, status: Dict[str, Any], kind: str, stage: str, now: float) -> float:
+        """Record this poll on the speed graph and return the speed to show."""
+        if stage in ("copy", "usb"):
+            transferred = int(status.get("bytes_transferred", 0) or 0)
+            self._sample_speed(f"{kind}|{status.get('source', '')}", transferred, now)
+        else:
+            self._end_graph()
+        # Average over ~10 s of polls: between copies (checking unchanged files) no bytes
+        # move, and a shorter window would make the speed blink to nothing and back.
+        recent = list(self._samples)[-SPEED_WINDOW_SAMPLES:]
+        return sum(recent) / len(recent) if recent else float(status.get("transfer_speed_bps", 0) or 0)
+
     def _activity(self, status: Dict[str, Any], now: float,
                   upload_planned: bool = False) -> Optional[Dict[str, Any]]:
         state = str(status.get("state", "idle"))
@@ -374,45 +484,11 @@ class DashboardCore:
         stage = activity_stage(status)
         done = int(status.get("bytes_done", 0) or 0)
         total = int(status.get("bytes_total", 0) or 0)
-        current_file = str(status.get("current_file", "") or "")
-        category = CATEGORY_LABELS.get(str(status.get("category", "") or ""), "")
-        new_files = int(status.get("new_files", 0) or 0)
-        detail = str(status.get("message", "") or "")
         kind = {"catalog": "catalog", "usb": "usb_backup"}.get(stage, "import")
-        percent: Optional[float] = None
-
-        if stage == "catalog":
-            title = "Updating file index"
-            scanned = int(status.get("catalog_scanned", 0) or 0)
-            step = str(status.get("catalog_stage", "") or "")
-            detail = " · ".join(part for part in (step, f"{scanned:,} files scanned") if part)
-        elif stage == "usb":
-            title = "Backing up to USB" if state == "copying" else "Comparing with USB backup"
-            detail = current_file or (f"{format_bytes(done)} of {format_bytes(total)}" if total else detail)
-        elif stage == "copy":
-            # Every file is first checked, then copied if new: the status flips between the
-            # two per file. Name the step by what the session is doing overall so it holds still.
-            title = "Copying new files" if state == "copying" or new_files else "Checking for new files"
-            detail = " · ".join(part for part in (category, current_file) if part) or detail
-        elif stage == "metadata":
-            title = "Reading photo info"
-        else:
-            title, detail = "Scanning card", detail or "Looking for photos and video"
-        if stage in ("copy", "usb") and total:
-            # One overall measure for checks and copies alike (skipped files count as done).
-            percent = min(100.0, done / total * 100.0)
-
-        run_key = f"{kind}|{status.get('source', '')}"
-        transferred = int(status.get("bytes_transferred", 0) or 0)
-        if stage in ("copy", "usb"):
-            self._sample_speed(run_key, transferred, now)
-        else:
-            self._end_graph()
-
-        # Average over ~10 s of polls: between copies (checking unchanged files) no bytes
-        # move, and a shorter window would make the speed blink to nothing and back.
-        recent = list(self._samples)[-SPEED_WINDOW_SAMPLES:]
-        speed = sum(recent) / len(recent) if recent else float(status.get("transfer_speed_bps", 0) or 0)
+        title, detail = activity_text(status, stage)
+        # One overall measure for checks and copies alike (skipped files count as done).
+        percent = min(100.0, done / total * 100.0) if stage in ("copy", "usb") and total else None
+        speed = self._transfer_speed(status, kind, stage, now)
         eta = float(status.get("eta_seconds", 0) or 0)
         if eta <= 0 and speed > 0 and total > done:
             eta = (total - done) / speed
@@ -421,7 +497,8 @@ class DashboardCore:
             "kind": kind, "stage": stage, "title": title, "detail": detail, "percent": percent,
             "indeterminate": percent is None, "bytes_done": done, "bytes_total": total,
             "files_done": int(status.get("files_done", 0) or 0),
-            "files_total": int(status.get("files_total", 0) or 0), "new_files": new_files,
+            "files_total": int(status.get("files_total", 0) or 0),
+            "new_files": int(status.get("new_files", 0) or 0),
             "speed_bps": speed if moving else 0.0,
             "eta_seconds": eta if moving and total > done and eta > 0 else None,
             "elapsed_seconds": float(status.get("elapsed_seconds", 0) or 0),
@@ -699,8 +776,9 @@ class DashboardCore:
             "interrupted": interrupted,
             "last_transfer": last,
             "finished": None if activity else self._finished(last, google, now),
-            "pipeline": self._pipeline(card, import_activity, counts, usb_mounted, google, busy, now,
-                                       handled and running and not paused),
+            "pipeline": pipeline(card, import_activity, counts, usb_mounted, google, busy,
+                                 handled and running and not paused,
+                                 "" if google["configured"] else self._google_setup_step()),
             "upload": google["progress"],
             "settings": {
                 "auto_eject": self.paths.auto_eject_file.exists(),
@@ -794,75 +872,6 @@ class DashboardCore:
             return {"tone": "idle", "title": f"{card.name} is mounted",
                     "detail": "The import will start in a moment."}
         return {"tone": "idle", "title": "Ready", "detail": "Insert a camera card to begin."}
-
-    def _pipeline(self, card: Optional[Path], activity: Optional[Dict[str, Any]],
-                  counts: Optional[Dict[str, Any]], usb_mounted: bool, google: Dict[str, Any],
-                  busy: bool, now: float, can_reimport: bool = False) -> List[Dict[str, Any]]:
-        kind = activity["kind"] if activity else None
-        local = counts["local"] if counts else None
-        usb = counts["usb"] if counts else None
-
-        def step(step_id: str, label: str, state: str, headline: str, detail: str,
-                 actions: Sequence[Dict[str, str]] = (), percent: Optional[float] = None) -> Dict[str, Any]:
-            return {"id": step_id, "label": label, "state": state, "headline": headline,
-                    "detail": detail, "actions": list(actions), "percent": percent}
-
-        def action(action_id: str, label: str) -> Dict[str, str]:
-            return {"id": action_id, "label": label}
-
-        stage = activity.get("stage") if activity else None
-        if kind == "import" and stage in ("scan", "metadata"):
-            card_step = step("card", "Camera card", "active", card.name if card else "Card", activity["title"])
-        elif card:
-            card_actions = [] if busy else (
-                [action("import_card", "Import now")] if can_reimport else []) + [action("eject_card", "Eject")]
-            card_step = step("card", "Camera card", "ok", card.name, "Already imported" if can_reimport else "Mounted",
-                             card_actions)
-        else:
-            card_step = step("card", "Camera card", "off", "No card", "Insert a card to begin")
-
-        if kind == "import" and stage == "copy":
-            archive_state, archive_head = "active", "Copying"
-        else:
-            archive_state, archive_head = "ok", "Up to date" if local else "Empty"
-        archive_detail = (f"{local:,} files indexed" if local else "Nothing indexed yet") if local is not None \
-            else "Catalog unavailable"
-        if kind == "import" and stage == "copy":
-            archive_detail = activity["detail"] or archive_detail
-        archive_step = step("archive", "Mac archive", archive_state, archive_head, archive_detail,
-                            (), activity["percent"] if kind == "import" and stage == "copy" else None)
-
-        if kind == "usb_backup":
-            usb_step = step("usb", "USB backup", "active", "Backing up", activity["detail"],
-                            (), activity["percent"])
-        elif usb_mounted:
-            usb_step = step("usb", "USB backup", "ok", "Connected",
-                            f"{usb:,} files backed up" if usb else "Ready to back up",
-                            [] if busy else [action("usb_backup", "Back up now"), action("eject_usb", "Eject")])
-        else:
-            usb_step = step("usb", "USB backup", "off", "Not connected", "Plug in the backup drive")
-
-        gstate = google["state"]
-        if not google["configured"]:
-            cloud_step = step("cloud", "Google Photos", "off", "Not set up", self._google_setup_step())
-        elif gstate == "running":
-            progress = google["progress"]
-            cloud_step = step("cloud", "Google Photos", "active",
-                              "Finishing upload" if progress and progress["finalizing"] else "Uploading",
-                              f"{progress['transferred']} of {progress['total']}" if progress else "Preparing",
-                              (), progress["percent"] if progress else None)
-        elif gstate == "interrupted":
-            cloud_step = step("cloud", "Google Photos", "error", "Upload interrupted",
-                              "It stopped before finishing", [action("google_sync", "Resume")])
-        elif gstate in ("failed", "error"):
-            cloud_step = step("cloud", "Google Photos", "error", "Upload failed", google["message"] or "See the log",
-                              [action("google_sync", "Retry")])
-        else:
-            uploaded = counts["uploaded"] if counts else 0
-            cloud_step = step("cloud", "Google Photos", "ok", "Up to date",
-                              f"{uploaded:,} files uploaded" if uploaded else "Nothing uploaded yet",
-                              [] if busy else [action("google_sync", "Sync now")])
-        return [card_step, archive_step, usb_step, cloud_step]
 
     # ---- actions ---------------------------------------------------------------------------
     def _spawn(self, argv: List[str]) -> None:

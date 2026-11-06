@@ -15,7 +15,7 @@ import os
 import sys
 import webbrowser
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence
 
 from photo_offloader.dashboard.core import DashboardCore, Paths
 from photo_offloader.dashboard.server import (
@@ -51,6 +51,25 @@ def _activate_pid(pid: int) -> bool:
     return bool(app and app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps))
 
 
+def _bring_forward(existing: Dict[str, Any], if_closed: bool, open_browser: Callable[[str], Any],
+                   activate: Callable[[int], bool]) -> None:
+    """Show the dashboard that is already running, unless ``if_closed`` and a page is open."""
+    if if_closed and float(existing.get("idle_seconds") or 1e9) < PAGE_OPEN_WITHIN_SECONDS:
+        return
+    url = f"http://127.0.0.1:{existing['port']}/#t={existing['token']}"
+    if not (existing.get("mode") == "window" and activate(int(existing.get("pid", 0)))):
+        open_browser(url)
+
+
+def _remove_own_record(record: Path) -> None:
+    """Delete the instance record if it still names this process."""
+    try:
+        if record.is_file() and int(json.loads(record.read_text())["pid"]) == os.getpid():
+            record.unlink()
+    except (OSError, ValueError, KeyError):
+        pass   # a leftover record is harmless: find_running_instance checks the server answers
+
+
 def main(
     argv: Optional[Sequence[str]] = None,
     *,
@@ -82,11 +101,7 @@ def main(
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         existing = find_running_instance(record)
         if existing:
-            if if_closed and float(existing.get("idle_seconds") or 1e9) < PAGE_OPEN_WITHIN_SECONDS:
-                return 0
-            url = f"http://127.0.0.1:{existing['port']}/#t={existing['token']}"
-            if not (existing.get("mode") == "window" and activate(int(existing.get("pid", 0)))):
-                open_browser(url)
+            _bring_forward(existing, if_closed, open_browser, activate)
             return 0
 
         webview = _import_webview() if webview_module == "auto" else webview_module
@@ -108,11 +123,7 @@ def main(
             # The page polls the server; once nothing has for a while, the server (and we) exit.
             server._thread.join()
     finally:
-        try:
-            if record.is_file() and int(json.loads(record.read_text())["pid"]) == os.getpid():
-                record.unlink()
-        except (OSError, ValueError, KeyError):
-            pass   # a leftover record is harmless: find_running_instance checks the server answers
+        _remove_own_record(record)
         server.stop()
     return 0
 
