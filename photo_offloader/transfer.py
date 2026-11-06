@@ -140,7 +140,7 @@ def _skip_if_already_copied(
             progress.add_progress_bytes(size)
             card.update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
             progress.note_status(
-                state="copying", phase="copy", message="Existing file verified; continuing"
+                state="scanning", phase="copy-decision", message="Existing file verified; continuing"
             )
             return DestinationResult(
                 destination_base,

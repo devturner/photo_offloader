@@ -154,6 +154,13 @@ class TestTransfer(support.CardFixtureTestCase):
         self.assertEqual((result.status, result.path), ("skipped", copy))
         self.assertEqual(catalog.catalog_row(source)[3], fileops.sha256_file(source))
 
+    def test_a_skipped_file_is_not_reported_as_copying(self):
+        # Dashboard log 2026-11-06: the panel flipped to Copying on a card with nothing to copy.
+        source, _, digest = self.saved_photo()
+        result = transfer.copy_one_to_destination(source, self.dcim, self.local)
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(progress._PROGRESS["state"], "scanning")
+
     def test_a_damaged_archive_copy_is_not_taken_for_the_card_file(self):
         source, destination, digest = self.saved_photo()
         manifest = {}
