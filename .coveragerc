@@ -1,0 +1,18 @@
+[run]
+branch = True
+source = photo_offloader
+# Some tests run bin/ programs as real subprocesses. Each one writes its own
+# data file, which `coverage combine` merges.
+parallel = True
+patch = subprocess
+# A thin rumps layer that no test imports; its logic is in menubar/model.py.
+omit = photo_offloader/menubar/app.py
+
+[report]
+# About 2 points under the measured baseline: runs differ by about 0.1 points,
+# and CI may differ from a local run. Raise it as tests are added.
+fail_under = 85
+show_missing = True
+skip_empty = True
+exclude_also =
+    if __name__ == .__main__.:

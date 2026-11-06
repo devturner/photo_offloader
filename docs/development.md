@@ -45,6 +45,19 @@ bash -n install.sh uninstall.sh scripts/*.sh tools/*.sh
 
 macOS ships bash 3.2, so write `${arr[@]+"${arr[@]}"}` for an array that may be empty under `set -u`.
 
+### Coverage
+
+```bash
+.venv/bin/python -m coverage run -m unittest discover
+.venv/bin/python -m coverage combine                  # merges the data from test subprocesses
+.venv/bin/python -m coverage report                   # add `html` for a browsable report in htmlcov/
+```
+
+The Coverage workflow runs the same steps, keeps the HTML report as an artifact, and fails below
+`fail_under` in `.coveragerc`. Raise that number when you add tests. The number measures Python
+only: the shell scripts and the JavaScript in `web/index.html` are tested but not counted, and
+`menubar/app.py` is excluded because no test imports it.
+
 ### The dashboard page
 
 The browser tests need one extra download. Without it they skip, and the rest of the suite still runs.
