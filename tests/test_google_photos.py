@@ -1,4 +1,6 @@
+import contextlib
 import fcntl
+import io
 import json
 import os
 import subprocess
@@ -278,6 +280,170 @@ class TestGooglePhotosSync(unittest.TestCase):
                 self.assertEqual(sync.run_sync(), 0)
             self.assertTrue((root / "google_photos_sync.log.1").exists())
             self.assertLess(log.stat().st_size, 1000)
+
+    def test_failed_sign_in_during_a_sync_names_the_fix(self):
+        # A Testing-status Google app stops working a week after sign-in; the dashboard
+        # shows this message, so it has to say what to do, not repeat rclone's error.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            photos = self.sync_environment(root)
+            (photos / "a.jpg").write_bytes(b"a")
+            run, _ = self.fake_rclone()
+
+            def expired(command, *args, **kwargs):
+                if command[1] == "mkdir":
+                    return subprocess.CompletedProcess(command, 1, stdout="", stderr=EXPIRED_TOKEN)
+                return run(command, *args, **kwargs)
+            with patch.object(sync.subprocess, "run", expired):
+                self.assertEqual(sync.run_sync(), 1)
+            payload = json.loads(config.GOOGLE_STATUS_PATH.read_text())
+            self.assertEqual(payload["state"], "failed")
+            self.assertIn("rclone config reconnect gphotos:", payload["message"])
+            self.assertNotIn("invalid_grant", payload["message"])
+
+    def test_other_album_failures_keep_rclones_own_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            photos = self.sync_environment(root)
+            (photos / "a.jpg").write_bytes(b"a")
+            run, _ = self.fake_rclone()
+
+            def broken(command, *args, **kwargs):
+                if command[1] == "mkdir":
+                    return subprocess.CompletedProcess(command, 1, stdout="", stderr="quota exceeded")
+                return run(command, *args, **kwargs)
+            with patch.object(sync.subprocess, "run", broken):
+                self.assertEqual(sync.run_sync(), 1)
+            self.assertIn("quota exceeded", json.loads(config.GOOGLE_STATUS_PATH.read_text())["message"])
+
+
+# What rclone really prints when Google refuses the saved sign-in.
+EXPIRED_TOKEN = ('2026/11/05 16:00:15 ERROR : error listing: couldn\'t list albums: Get "https://photoslibrary.'
+                 'googleapis.com/v1/albums?pageSize=50": couldn\'t fetch token: invalid_grant: maybe token expired? '
+                 '- try refreshing with "rclone config reconnect gphotos:"\n')
+
+
+class TestSetupCheck(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        support.isolate_config(self, self.root)
+        self.commands = []
+        self.remotes = "gphotos:\n"
+        self.albums = "Holiday/\nPhoto Offloader/\n"
+        self.albums_error = ""
+        for item in (patch.object(sync, "find_rclone", return_value="/usr/bin/rclone"),
+                     patch.object(sync.subprocess, "run", self.fake_run)):
+            item.start()
+            self.addCleanup(item.stop)
+
+    def fake_run(self, command, *args, **kwargs):
+        self.commands.append(list(command))
+        if command[1] == "listremotes":
+            return subprocess.CompletedProcess(command, 0, stdout=self.remotes, stderr="")
+        if self.albums_error:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr=self.albums_error)
+        return subprocess.CompletedProcess(command, 0, stdout=self.albums, stderr="")
+
+    def check(self):
+        """Returns (exit status, printed report, the steps)."""
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = sync.main(["--check"])
+        return status, output.getvalue(), sync.check_setup()
+
+    def test_everything_set_up(self):
+        status, report, steps = self.check()
+        self.assertEqual(status, 0)
+        self.assertEqual([step.passed for step in steps], [True, True, True, True])
+        self.assertIn("Sync now", report)
+
+    def test_missing_rclone_stops_at_the_first_step_and_says_how_to_install(self):
+        sync.find_rclone.return_value = None
+        status, report, steps = self.check()
+        self.assertEqual(status, 1)
+        self.assertEqual([step.passed for step in steps], [False, None, None, None])
+        self.assertIn("brew install rclone", report)
+        self.assertIn(sync.SETUP_GUIDE_URL, report)
+        self.assertEqual(self.commands, [])
+
+    def test_missing_remote_says_to_run_rclone_config(self):
+        self.remotes = "other:\ngphotos-old:\n"
+        status, report, steps = self.check()
+        self.assertEqual(status, 1)
+        self.assertEqual([step.passed for step in steps], [True, False, None, None])
+        self.assertIn("rclone config", report)
+        self.assertIn(sync.SETUP_GUIDE_URL, report)
+
+    def test_expired_sign_in_says_to_reconnect_and_warns_about_testing_status(self):
+        self.albums_error = EXPIRED_TOKEN
+        status, report, steps = self.check()
+        self.assertEqual(status, 1)
+        self.assertEqual([step.passed for step in steps], [True, True, False, None])
+        self.assertIn("rclone config reconnect gphotos:", report)
+        self.assertIn("In production", report)
+
+    def test_each_google_refusal_gets_its_own_next_step(self):
+        cases = {
+            "couldn't fetch token: invalid_client: if you're using your own client id/secret": "client ID",
+            "empty token found - please reconnect": "rclone config reconnect",
+            "Token has been expired or revoked": "rclone config reconnect",
+            "Error 403: Photos Library API has not been used in project 123 before or it is disabled":
+                "Photos Library API",
+            "Error 403: Request had insufficient authentication scopes": "scopes",
+        }
+        for error, expected in cases.items():
+            with self.subTest(error=error):
+                self.albums_error = error
+                status, report, _ = self.check()
+                self.assertEqual(status, 1)
+                self.assertIn(expected, report)
+
+    def test_a_network_failure_is_not_reported_as_a_sign_in_problem(self):
+        self.albums_error = 'ERROR : Get "https://photoslibrary.googleapis.com": dial tcp: no such host\n'
+        status, report, _ = self.check()
+        self.assertEqual(status, 1)
+        self.assertNotIn("reconnect", report)
+        self.assertIn("no such host", report)
+
+    def test_rclone_hanging_or_failing_to_start_is_a_failed_step_not_a_crash(self):
+        for error in (subprocess.TimeoutExpired("rclone", 60), OSError("no permission")):
+            with self.subTest(error=error), patch.object(sync.subprocess, "run", side_effect=error):
+                status, _, steps = self.check()
+                self.assertEqual(status, 1)
+                self.assertEqual([step.passed for step in steps], [True, False, None, None])
+
+    def test_album_not_created_yet_passes_because_the_first_sync_creates_it(self):
+        # A new setup has no album; that is not something for the user to fix.
+        self.albums = "Holiday/\n"
+        status, report, steps = self.check()
+        self.assertEqual(status, 0)
+        self.assertTrue(steps[-1].passed)
+        self.assertIn("first sync", report)
+
+    def test_check_only_reads(self):
+        # It runs on a working install, possibly during an upload: it must not create the
+        # album or disturb the status the dashboard shows.
+        config.INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+        before = sorted(path for path in self.root.rglob("*"))
+        self.check()
+        self.assertEqual({command[1] for command in self.commands}, {"listremotes", "lsf"})
+        self.assertEqual(sorted(path for path in self.root.rglob("*")), before)
+
+    def test_custom_remote_and_album_are_honored(self):
+        self.remotes = "photos-cloud:\n"
+        self.albums = "Trips/\n"
+        with patch.object(sync, "REMOTE_NAME", "photos-cloud"), patch.object(sync, "ALBUM_NAME", "Trips"):
+            status, report, _ = self.check()
+        self.assertEqual(status, 0)
+        self.assertIn("photos-cloud:album", self.commands[-1])
+        self.assertNotIn("first sync", report)
+
+    def test_unknown_arguments_still_print_usage(self):
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(sync.main(["--nope"]), 2)
+        self.assertIn("--check", errors.getvalue())
 
 
 if __name__ == "__main__":
