@@ -97,7 +97,12 @@ and another card with the same name doesn't get it. A card with no ID is matched
   dashboard's access token. File names and paths are included and show your Mac username, so look
   through it before you share it.
 
-Runs that finish cleanly offer the package too. The files behind these reports are in `run-reports`, in the
+A USB backup that fails gets the same report, whether it ran after an import or on its own, with what's on the
+drive and what isn't. Its files are still on the Mac, so the card gets no warning, and **Back up again** replaces
+**Try again**. It says so if the Mac's own copy couldn't be read, because then that copy isn't safe either.
+
+Runs that finish cleanly offer the package too. An import where some files needed a second try says so when you
+open it, because that can be an early sign of a failing card or reader. The files behind these reports are in `run-reports`, in the
 data folder: the latest 20 runs with problems and the latest 20 without, so clean runs can't push out a
 failure's report. Saving one never changes an import's result.
 

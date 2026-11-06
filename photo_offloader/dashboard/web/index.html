@@ -253,6 +253,8 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
 .problem-list .names .link { display: block; margin: 6px 0 0; padding: 0; font-family: var(--font); }
 .report-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .report-actions .btn { padding: 7px 14px; }
+.tries { padding: 9px 12px; border-radius: 10px; background: var(--warn-soft); font-size: 13px; }
+.tries b { font-weight: 650; }
 .report-note { margin: 0; font-size: 13px; color: var(--text-2); }
 .step .ask { margin-top: 8px; padding: 8px 10px; background: var(--err-soft); border-radius: 9px; font-size: 12.5px; }
 .step .ask .actions { padding-top: 4px; margin-top: 0; }
@@ -359,7 +361,7 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
   <div class="sheet" id="save-ask">
     <p>A zip with everything about this run, for checking it yourself or sending to someone who can help.</p>
     <div class="package-columns">
-      <div><h4>Included</h4><ul><li>A plain summary</li><li>Every card file's result</li><li>This run's log lines</li><li>App version and drive details</li></ul></div>
+      <div><h4>Included</h4><ul><li>A plain summary</li><li>Every file's result</li><li>This run's log lines</li><li>App version and drive details</li></ul></div>
       <div><h4>Never included</h4><ul><li>Your photos and videos</li><li>Google sign-in details</li><li>The dashboard's access token</li></ul></div>
     </div>
     <div class="privacy">File names and folder paths are included, and they show your Mac username. Look through it before you share it.</div>
@@ -906,26 +908,35 @@ function unknownRow(where) {
 function runProblems(r) {
   const p = r.details && r.details.problems;
   const save = r.report_saved && h("button", { type: "button", class: "btn secondary", onclick: () => openSave(r.id) }, "Save debug package…");
+  const tries = r.details && r.details.second_tries;
+  const triesNote = tries > 0 && h("div", { class: "tries" },
+    h("b", { text: fmtCount(tries) + (tries === 1 ? " file" : " files") + " needed a second try." }),
+    (tries === 1 ? " It's saved and verified" : " All are saved and verified") + ", but this can be an early sign of a failing card or reader.");
   if (!p) {
-    if (r.kind !== "import" || !r.report_saved) return null;
+    if (!["import", "usb_backup"].includes(r.kind) || !r.report_saved) return null;
     return h("div", { class: "problems-report" },
-      r.outcome === "complete" && h("p", { class: "report-note", text: "Nothing went wrong. The package is here if you want to check a run yourself; it's only built when you ask." }),
+      triesNote || (r.outcome === "complete" && h("p", { class: "report-note", text: "Nothing went wrong. The package is here if you want to check a run yourself; it's only built when you ask." })),
       h("div", { class: "report-actions" }, save));
   }
+  const notDone = p.usb ? "not backed up" : "not saved";
+  const heads = p.usb ? ["Not backed up", "On USB", "On Mac"] : ["Not saved", "Safe", "On card"];
   const figure = (value, cls, text) => h("span", {}, h("b", { class: cls, text: value }), " " + text);
   const folders = p.unknown.length;
   return h("div", { class: "problems-report" },
     h("div", { class: "figures" },
-      figure(fmtCount(p.safe), "good", "safe on the Mac"),
-      p.not_saved > 0 && figure(fmtCount(p.not_saved), "bad", (p.not_saved === 1 ? "file" : "files") + " not saved" + (p.not_saved_bytes ? " · " + fmtBytes(p.not_saved_bytes) : "")),
+      figure(fmtCount(p.safe), "good", p.safe_label || "safe on the Mac"),
+      p.not_saved > 0 && figure(fmtCount(p.not_saved), "bad", (p.not_saved === 1 ? "file " : "files ") + notDone + (p.not_saved_bytes ? " · " + fmtBytes(p.not_saved_bytes) : "")),
       folders > 0 && figure(fmtCount(folders), "bad", (folders === 1 ? "folder" : "folders") + " unknown")),
     h("div", { class: "pairs", text: p.pairs }),
     p.cause && h("div", { class: "cause" }, h("b", { text: p.cause.lead }), " " + p.cause.detail),
+    triesNote,
     h("ul", { class: "problem-list" },
-      h("li", { class: "thead" }, h("span", { text: "Type" }), h("span", { class: "n", text: "Not saved" }), h("span", { class: "n", text: "Safe" }), h("span", { class: "n", text: "On card" })),
+      h("li", { class: "thead" }, h("span", { text: "Type" }), heads.map(text => h("span", { class: "n", text }))),
       p.types.map(row => typeRow(r.id, row)), p.unknown.map(unknownRow)),
     h("div", { class: "report-actions" },
-      r.outcome === "failed" && h("button", { type: "button", class: "btn", onclick: () => run("import_card") }, "Try again"),
+      r.outcome === "failed" && (p.usb
+        ? h("button", { type: "button", class: "btn", onclick: () => run("usb_backup") }, "Back up again")
+        : h("button", { type: "button", class: "btn", onclick: () => run("import_card") }, "Try again")),
       r.report_saved && h("button", { type: "button", class: "btn secondary", onclick: () => run("open_file_list", { run_id: r.id }) }, "Open full list"),
       save));
 }

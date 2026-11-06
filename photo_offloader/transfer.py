@@ -36,7 +36,8 @@ class ImportStats:
     verified_copies: int = 0
     failed: int = 0
     errors: List[Tuple[str, str]] = field(default_factory=list)
-    outcomes: List[run_report.FileOutcome] = field(default_factory=list)  # card imports only
+    outcomes: List[run_report.FileOutcome] = field(default_factory=list)
+    sizes: Dict[str, int] = field(default_factory=dict)  # USB backups; a card's come from its scan
 
     def add_unreadable(self, paths: Sequence[Path]) -> None:
         """Count what the card scan couldn't read: its files were never even considered."""
@@ -507,6 +508,20 @@ def _local_archive_files(source_roots: Sequence[Path]) -> List[Tuple[Path, Path]
     return files
 
 
+def _note_usb_file(
+    stats: ImportStats, source: Path, destination: Path, result: str, reason: str = ""
+) -> None:
+    stats.outcomes.append(
+        run_report.FileOutcome(
+            card.MEDIA_EXTENSIONS.get(source.suffix.lower(), "OTHER"),
+            source,
+            result,
+            str(destination),
+            reason=reason,
+        )
+    )
+
+
 def _compare_with_usb(
     files: Sequence[Tuple[Path, Path]],
     source_roots: Sequence[Path],
@@ -532,6 +547,7 @@ def _compare_with_usb(
     for source, destination in files:
         try:
             fingerprint = fileops.file_fingerprint(source)
+            stats.sizes[str(source)] = fingerprint.size
             source_hash = known_hash(source, fingerprint)
             if not destination.exists():
                 pending.append((source, destination, fingerprint))
@@ -550,6 +566,7 @@ def _compare_with_usb(
             if matches:
                 stats.destination_skips += 1
                 stats.verified_copies += 1
+                _note_usb_file(stats, source, destination, "skipped")
             elif destination.is_file() and fileops.is_camera_index_file(destination):
                 replace_on_usb.add(destination)
                 pending.append((source, destination, fingerprint))
@@ -558,10 +575,15 @@ def _compare_with_usb(
                 stats.failed += 1
                 message = f"USB file differs from local archive; not overwriting: {destination}"
                 stats.errors.append((str(source), message))
+                _note_usb_file(
+                    stats, source, destination, run_report.FAILED, run_report.NOT_OVERWRITTEN
+                )
                 logger.error(message)
         except OSError as exc:
             stats.failed += 1
             stats.errors.append((str(source), str(exc)))
+            reason = run_report.usb_failure_reason(exc, source)
+            _note_usb_file(stats, source, destination, run_report.FAILED, reason)
             logger.exception("Could not inspect backup candidate %s", source)
     catalog.catalog_record_many(updates)
     return pending, replace_on_usb
@@ -654,12 +676,16 @@ def copy_local_archive_to_usb(
         }
     )
     progress.update_status()
-    for source, destination, before in pending:
+    for index, (source, destination, before) in enumerate(pending):
         if not volumes.usb_is_mounted():
             stats.failed += 1
             message = "USB backup volume was disconnected during the backup."
             stats.errors.append((str(config.USB_DEST_VOLUME), message))
             logger.error(message)
+            for left_source, left_destination, _ in pending[index:]:
+                _note_usb_file(
+                    stats, left_source, left_destination, run_report.FAILED, run_report.DRIVE_GONE
+                )
             break
         progress.update_status(
             current_file=source.name, current_path=str(source), message=f"USB backup: {source.name}"
@@ -671,9 +697,12 @@ def copy_local_archive_to_usb(
             stats.destination_copies += int(copied)
             stats.destination_skips += int(not copied)
             stats.verified_copies += 1
+            _note_usb_file(stats, source, destination, "copied" if copied else "skipped")
         except Exception as exc:
             stats.failed += 1
             stats.errors.append((str(source), f"{destination}: {exc}"))
+            reason = run_report.usb_failure_reason(exc, source)
+            _note_usb_file(stats, source, destination, run_report.FAILED, reason)
             logger.exception("USB backup failed for %s", source)
 
     if not volumes.usb_is_mounted() or not volumes.volume_identity_matches(

@@ -68,7 +68,7 @@ def _finish_run_record(exit_code: int) -> None:
     if exit_code == 2 and not message:
         message = "Copies completed, but the card could not be ejected."
     details = _run_details()
-    if kind == "import":
+    if kind in ("import", "usb_backup"):
         details.update(_save_run_report(outcome, message))
     catalog.record_import_run(
         kind=str(kind),
@@ -96,41 +96,69 @@ def _files_not_reached(
     ]
 
 
-def _save_run_report(outcome: str, message: str) -> Dict[str, object]:
-    """Save what this run did with each file. Whatever goes wrong here, the import's result stands."""
-    try:
-        dcim = _RUN.get("dcim")
-        if not isinstance(dcim, Path):
-            return {}
-        stats = _RUN.get("stats")
-        outcomes = stats.outcomes if isinstance(stats, transfer.ImportStats) else []
-        build = load_build_info()
-        problems = outcome == "failed"
-        folder, summary = run_report.save_report(
-            run_report.RunFacts(
-                source=str(_RUN["source"]),
-                started_at=float(_RUN.get("started_at", time.time())),  # type: ignore[arg-type]
-                outcome=outcome,
-                message=message,
-                dcim=dcim,
-                problems=problems,
-                outcomes=outcomes,
-                unreadable=list(_RUN.get("unreadable", [])),  # type: ignore[call-overload]
-                files_not_reached=_files_not_reached(
-                    _RUN.get("scan_files", {}),  # type: ignore[arg-type]
-                    outcomes,
-                ),
-                sizes=_RUN.get("sizes", {}),  # type: ignore[arg-type]
-                usb_errors=list(_RUN.get("usb_errors", [])),  # type: ignore[call-overload]
-                log_lines=list(_RUN_LOG.lines),
-                app_version=f"{build.get('version', 'unknown')} ({build.get('git_commit', '')[:7]})",
-                volume_info=run_report.volume_info(dcim.parent) if problems else "",
-            )
+def _archive_roots() -> Tuple[Path, ...]:
+    return (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT)
+
+
+def _usb_summary(stats: transfer.ImportStats) -> Dict[str, object]:
+    return run_report.summarize_usb(stats.outcomes, stats.sizes, _archive_roots())
+
+
+def _run_facts(outcome: str, message: str) -> Optional[run_report.RunFacts]:
+    """What a run's report holds. An import lists its card's files, and any USB ones that failed."""
+    alone = _RUN.get("kind") == "usb_backup"
+    dcim = _RUN.get("dcim")
+    if not alone and not isinstance(dcim, Path):
+        return None  # it never found a card
+    stats, usb = _RUN.get("stats"), _RUN.get("usb_stats")
+    outcomes = stats.outcomes if isinstance(stats, transfer.ImportStats) else []
+    usb_outcomes = usb.outcomes if isinstance(usb, transfer.ImportStats) else []
+    usb_errors = usb.errors if isinstance(usb, transfer.ImportStats) else []
+    if not alone:
+        usb_outcomes = [item for item in usb_outcomes if item.result == run_report.FAILED]
+    per_file = {str(item.source) for item in usb_outcomes}
+    problems = outcome == "failed"
+    usb_failed = alone or bool(usb_errors)
+    build = load_build_info()
+    return run_report.RunFacts(
+        source="USB backup" if alone else str(_RUN["source"]),
+        started_at=float(_RUN.get("started_at", time.time())),  # type: ignore[arg-type]
+        outcome=outcome,
+        message=message,
+        dcim=None if alone else dcim,  # type: ignore[arg-type]
+        problems=problems,
+        outcomes=outcomes,
+        unreadable=list(_RUN.get("unreadable", [])),  # type: ignore[call-overload]
+        files_not_reached=_files_not_reached(
+            _RUN.get("scan_files", {}),  # type: ignore[arg-type]
+            outcomes,
+        ),
+        sizes=_RUN.get("sizes", {}),  # type: ignore[arg-type]
+        usb_outcomes=usb_outcomes,
+        usb_sizes=usb.sizes if isinstance(usb, transfer.ImportStats) else {},
+        archive_roots=_archive_roots(),
+        usb_errors=[error for error in usb_errors if error[0] not in per_file],
+        log_lines=list(_RUN_LOG.lines),
+        app_version=f"{build.get('version', 'unknown')} ({build.get('git_commit', '')[:7]})",
+        volume_info=run_report.volume_info(
+            config.USB_DEST_VOLUME if usb_failed else dcim.parent  # type: ignore[union-attr]
         )
+        if problems
+        else "",
+    )
+
+
+def _save_run_report(outcome: str, message: str) -> Dict[str, object]:
+    """Save what this run did with each file. Whatever goes wrong here, the run's result stands."""
+    try:
+        facts = _run_facts(outcome, message)
+        if facts is None:
+            return {}
+        folder, summary = run_report.save_report(facts)
     except Exception as exc:
         logger.exception("Could not save this run's report: %s", exc)
         return {}
-    second_tries = sum(1 for item in outcomes if item.retried)
+    second_tries = sum(1 for item in facts.outcomes if item.retried)
     return {
         "report": folder,
         **({"problems": summary} if summary else {}),
@@ -405,6 +433,7 @@ def _run_usb_backup() -> int:
     logger.info("Starting independent local-to-USB backup.")
     backup_stats = transfer.copy_local_archive_to_usb()
     _RUN.update(
+        usb_stats=backup_stats,
         files=backup_stats.found,
         copied=backup_stats.destination_copies,
         skipped=backup_stats.destination_skips,
@@ -418,7 +447,14 @@ def _run_usb_backup() -> int:
         False,
     )
     if backup_stats.failed:
-        logs.notify("USB Backup Incomplete", f"{backup_stats.failed} backup failure(s).")
+        summary = _usb_summary(backup_stats)
+        message = (
+            run_report.usb_message(summary)
+            if summary["problems"]
+            else f"USB backup incomplete: {backup_stats.failed} failure(s)"
+        )
+        progress.update_status(message=message)
+        logs.notify("USB Backup Incomplete", message)
         return 1
     logs.notify(
         "USB Backup Complete",
@@ -641,10 +677,13 @@ def _report_outcome(
     """
     launch_google_photos_sync()
     if backup_stats.failed:
+        summary = _usb_summary(backup_stats)
         progress.update_status(
             state="failed",
             phase="usb-backup",
-            message=f"Local import succeeded; USB backup has {backup_stats.failed} failure(s)",
+            message=run_report.usb_message(summary)
+            if summary["problems"]
+            else f"Local import succeeded; USB backup has {backup_stats.failed} failure(s)",
             current_file="",
             current_path="",
         )
@@ -705,7 +744,7 @@ def _import_card(args: argparse.Namespace) -> int:
     if usb_expected:
         with _timed("usb_seconds"):
             backup_stats = _backup_after_import(usb_identity)
-        _RUN["usb_errors"] = backup_stats.errors
+        _RUN["usb_stats"] = backup_stats
     else:
         backup_stats = transfer.ImportStats()
         progress.update_status(

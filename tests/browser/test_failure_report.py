@@ -131,6 +131,56 @@ class TestCardWarning(BrowserTestCase):
         self.assertEqual(self.sandbox.core.actions[-1][0], "import_card")
 
 
+class TestUsbReport(BrowserTestCase):
+    def test_a_failed_backup_opens_with_its_own_wording(self):
+        self.show("usb_problems")
+        report = self.page.locator(".problems-report")
+        expect(report.locator(".figures")).to_contain_text("safe on USB")
+        expect(report.locator(".figures")).to_contain_text("files not backed up")
+        expect(report.locator(".pairs")).to_contain_text("All 3 are safe on the Mac")
+        heads = report.locator(".thead .n").all_inner_texts()
+        self.assertEqual(heads, ["Not backed up", "On USB", "On Mac"])
+
+    def test_it_never_warns_about_the_card(self):
+        self.show("usb_problems")
+        step = self.page.locator("#pipeline .step").first
+        self.assertEqual(step.get_attribute("data-state"), "ok")
+        expect(step).not_to_contain_text("Don't format")
+
+    def test_it_offers_to_back_up_again(self):
+        self.show("usb_problems")
+        report = self.page.locator(".problems-report")
+        expect(report.get_by_role("button", name="Try again")).to_have_count(0)
+        report.get_by_role("button", name="Back up again").click()
+        expect(self.page.locator("#toast")).to_have_class(re.compile("show"))
+        self.assertEqual(self.sandbox.core.actions[-1][0], "usb_backup")
+
+    def test_the_report_shows_all_three_places(self):
+        self.show("usb_problems")
+        places = self.page.locator("#hero .place .k").all_inner_texts()
+        self.assertEqual(places, ["Mac archive", "USB backup", "Google Photos"])
+
+    def test_a_clean_backup_offers_the_package_when_opened(self):
+        self.show("usb_clean")
+        expect(self.page.locator(".problems-report")).to_have_count(0)
+        self.page.locator("#history .row").first.click()
+        expect(self.page.locator(".report-note")).to_contain_text("Nothing went wrong")
+        expect(self.page.get_by_role("button", name="Save debug package…")).to_be_visible()
+
+
+class TestSecondTries(BrowserTestCase):
+    def test_it_waits_until_the_run_is_opened_and_does_not_ask_for_attention(self):
+        self.show("second_tries")
+        expect(self.page.locator(".tries")).to_have_count(0)
+        self.assertNotEqual(self.page.locator("#pill-text").inner_text(), "Needs attention")
+
+    def test_opening_the_run_shows_it_in_place_of_nothing_went_wrong(self):
+        self.show("second_tries")
+        self.page.locator("#history .row").first.click()
+        expect(self.page.locator(".tries")).to_contain_text("3 files needed a second try.")
+        expect(self.page.locator(".report-note")).to_have_count(0)
+
+
 class TestDebugPackage(BrowserTestCase):
     def open_sheet(self):
         self.show("few_problems")

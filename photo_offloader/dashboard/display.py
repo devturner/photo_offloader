@@ -465,8 +465,9 @@ def _import_steps(
     only_checked = not files_copied and states["copy"] == "done"
     copied = _new_files_text(row, details)
     problems = details.get("problems")
-    if problems:
-        copied = f"{int(problems['safe']):,} safe · {plural(int(problems['problems']), 'problem')}"
+    on_card = problems and not problems.get("usb")
+    if on_card:
+        copied = _safe_and_problems(problems)
     elif row["failed"]:
         copied += f" · {int(row['failed'])} failed"
     steps = [
@@ -492,11 +493,37 @@ def _import_steps(
         _usb_report_step(details, states["usb"]),
         _upload_report_step(details, states["upload"]),
     ]
-    if problems:
-        for step in steps:
-            if step["state"] == "skipped":
-                step["result"] = "Not started"
+    for step in steps:
+        if on_card and step["state"] == "skipped":
+            step["result"] = "Not started"
+        if problems and not on_card and step["id"] == "usb":
+            step["result"] = _safe_and_problems(problems)
     return steps
+
+
+def _safe_and_problems(problems: Dict[str, Any]) -> str:
+    return f"{int(problems['safe']):,} safe · {plural(int(problems['problems']), 'problem')}"
+
+
+def _usb_problem_steps(row: Dict[str, Any], problems: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """A backup that failed: where each of the three places stands."""
+    files = int(row["files"])
+    return [
+        _report_step(
+            "mac", "Mac archive", "Mac archive", "done", plural(files, "file"), files=files
+        ),
+        _report_step(
+            "usb",
+            "Back up to USB",
+            "USB backup",
+            "error",
+            _safe_and_problems(problems),
+            seconds=float(row["duration_seconds"]),
+        ),
+        _report_step(
+            "upload", "Upload to Google Photos", "Google Photos", "skipped", "Not part of this"
+        ),
+    ]
 
 
 def _single_step(row: Dict[str, Any], kind: str) -> Dict[str, Any]:
@@ -548,6 +575,8 @@ def run_report(row: Dict[str, Any], upload_state: Optional[str] = None) -> Dict[
             "Skipped",
             "Nothing to send",
         )
+    elif kind == "usb_backup" and details.get("problems"):
+        steps, whole_run = _usb_problem_steps(row, details["problems"]), True
     else:
         steps, whole_run = [_single_step(row, kind)], True
     upload_seconds = steps[-1]["seconds"] if kind == "import" else None
@@ -584,11 +613,10 @@ def describe_run(row: Dict[str, Any]) -> Dict[str, Any]:
     parts: List[str] = []
     details = _details(row)
     problems = details.get("problems")
-    if kind == "import" and problems:
-        summary = (
-            f"{int(problems['safe']):,} safe on the Mac · "
-            f"{plural(int(problems['problems']), 'problem')}"
-        )
+    if problems and (kind == "usb_backup" or (kind == "import" and not problems.get("usb"))):
+        label = problems.get("safe_label", "safe on the Mac")
+        count = plural(int(problems["problems"]), "problem")
+        summary = f"{int(problems['safe']):,} {label} · {count}"
         return {**row, "title": title, "tone": tone, "summary": summary}
     if kind == "import":
         parts.append(_new_files_text(row, details))

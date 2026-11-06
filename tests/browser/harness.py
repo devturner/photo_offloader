@@ -444,6 +444,93 @@ def _huge_problems(s: Sandbox) -> None:
     )
 
 
+def _usb_run(s: Sandbox, outcomes: List[run_report.FileOutcome]) -> None:
+    """A USB backup's folder and history row, made by the code the importer uses."""
+    s.add_card()
+    s.add_usb()
+    s.set_up_google()
+    roots = [
+        Path("/Users/you/Pictures/CameraImports"),
+        Path("/Users/you/Pictures/CameraImportsRaw"),
+    ]
+    sizes = {str(item.source): (34 if item.category == "RAW" else 13) * MB for item in outcomes}
+    usb = run_report.summarize_usb(outcomes, sizes, roots)
+    failed = bool(usb["problems"])
+    message = run_report.usb_message(usb) if failed else ""
+    folder, summary = run_report.save_report(
+        run_report.RunFacts(
+            source="USB backup",
+            started_at=s.now - 66,
+            outcome="failed" if failed else "complete",
+            message=message,
+            dcim=None,
+            problems=failed,
+            usb_outcomes=outcomes,
+            usb_sizes=sizes,
+            archive_roots=roots,
+            log_lines=["[2026-11-06 14:12:00] [INFO] An example log line"],
+            app_version="2.5 (abc1234)",
+        )
+    )
+    s.status(state="failed" if failed else "complete", ago=5, message=message)
+    s.record(
+        kind="usb_backup",
+        source="",
+        outcome="failed" if failed else "complete",
+        started_at=s.now - 66,
+        finished_at=s.now - 2,
+        files=len(outcomes),
+        copied=0,
+        skipped=len(outcomes) - int(usb["not_saved"]),
+        failed=int(usb["not_saved"]),
+        message=message,
+        details={"report": folder, **({"problems": summary} if summary else {})},
+    )
+
+
+def _usb_outcomes(
+    category: str, folder: str, names: List[str], result: str = "skipped", reason: str = ""
+) -> List[run_report.FileOutcome]:
+    root = Path("/Users/you/Pictures") / folder
+    return [
+        run_report.FileOutcome(
+            category, root / name, result, f"/Volumes/Photos/{name}", reason=reason
+        )
+        for name in names
+    ]
+
+
+def _usb_problems(s: Sandbox) -> None:
+    raws, jpgs = "CameraImportsRaw/2026-11/NIKON-Z-8/Raws", "CameraImports/2026-11/NIKON-Z-8/Photos"
+    _usb_run(
+        s,
+        _usb_outcomes("RAW", raws, _names(1, 1560, "NEF"))
+        + _usb_outcomes(
+            "RAW", raws, _names(1561, 2, "NEF"), run_report.FAILED, run_report.NOT_OVERWRITTEN
+        )
+        + _usb_outcomes("JPG", jpgs, _names(1, 1567, "JPG"))
+        + _usb_outcomes(
+            "JPG", jpgs, _names(1568, 1, "JPG"), run_report.FAILED, "Couldn't write to the drive"
+        ),
+    )
+
+
+def _usb_clean(s: Sandbox) -> None:
+    _usb_run(s, _usb_outcomes("JPG", "CameraImports/2026-11", _names(1, 20, "JPG")))
+
+
+def _second_tries(s: Sandbox) -> None:
+    _report_run(s, _outcomes("JPG", "100NIKON", _names(1, 16, "JPG")), outcome="complete")
+    row = catalog.list_import_history(limit=1)[0]
+    catalog.clear_import_history()
+    s.record(
+        started_at=s.now - 252,
+        finished_at=s.now - 2,
+        files=16,
+        details={**row["details"], "second_tries": 3},
+    )
+
+
 def _clean_with_report(s: Sandbox) -> None:
     _report_run(s, _outcomes("JPG", "100NIKON", _names(1, 16, "JPG")), outcome="complete")
 
@@ -517,6 +604,9 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "many_problems": _many_problems,
     "huge_problems": _huge_problems,
     "clean_with_report": _clean_with_report,
+    "usb_problems": _usb_problems,
+    "usb_clean": _usb_clean,
+    "second_tries": _second_tries,
     "stopped": lambda s: setattr(s, "service_up", False),
     "paused": lambda s: s.paths.pause_file.touch(),
 }

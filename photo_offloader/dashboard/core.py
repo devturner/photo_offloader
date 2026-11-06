@@ -542,8 +542,12 @@ class DashboardCore:
     def _finished(
         self, last: Optional[Dict[str, Any]], google: Dict[str, Any], now: float
     ) -> Optional[Dict[str, Any]]:
-        """The end of an import, shown in the transfer panel until it fades or is dismissed."""
-        if last is None or last["kind"] != "import":
+        """The end of an import or failed backup, in the panel until it fades or is dismissed."""
+        if last is None:
+            return None
+        if last["kind"] == "usb_backup" and last["details"].get("problems"):
+            return display.run_report(last)
+        if last["kind"] != "import":
             return None
         return display.run_report(last, self._upload_state_after(last, google, now))
 

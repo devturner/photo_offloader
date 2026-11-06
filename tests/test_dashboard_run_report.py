@@ -221,6 +221,18 @@ class TestCardWarningFollowsTheCard(ReportFixture):
             self.assertEqual(importer._run_details()["card_id"], "CARD-A")
 
 
+class TestUsbBackupInThePanel(ReportFixture):
+    def test_a_failed_backup_shows_its_report(self):
+        problems = {"usb": True, "safe": 3, "problems": 1, "safe_label": "safe on USB"}
+        self.record(kind="usb_backup", source="", outcome="failed", details={"problems": problems})
+        places = [step["place"] for step in self.core.state()["finished"]["steps"]]
+        self.assertEqual(places, ["Mac archive", "USB backup", "Google Photos"])
+
+    def test_a_clean_backup_does_not_take_over_the_panel(self):
+        self.record(kind="usb_backup", source="", outcome="complete", details={})
+        self.assertIsNone(self.core.state()["finished"])
+
+
 class TestRunWording(ReportFixture):
     def run_row(self):
         return self.core.history()[0]
