@@ -4,9 +4,9 @@
 
 - **Nothing is deleted from a card**, and existing files in the archive are never overwritten.
 - **Every copy is verified.** The SHA-256 of the source is computed while copying, so the card is
-  read once. The copy is then re-read from the destination, bypassing the macOS file cache where
-  possible, and compared. It only gets its final name if the hashes match. The Mac-to-USB copy
-  works the same way.
+  read once. The copy is written past the macOS file cache and flushed out of the drive's own cache,
+  then read back from the destination and compared. It only gets its final name if the hashes
+  match. The Mac-to-USB copy works the same way.
 - **The source is watched during the copy.** If a file changes or disappears mid-copy, that copy
   counts as failed.
 - **Free space is checked first.** Every destination needs room for the files plus a 100 MiB buffer.
