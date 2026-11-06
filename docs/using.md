@@ -72,7 +72,7 @@ A finished import's result fades after 10 minutes. A failed one stays until you 
 
 The panel says what to do, usually `Don't format this card`, and the run opens by itself in Recent
 activity. It shows how many files are safe on the Mac, then a line saying whether any photo lost both its
-RAW and its JPG, matched by name. A RAW or JPG shot alone counts like a movie: it has no second copy.
+RAW and its JPG, matched by name. A RAW or JPG shot alone counts like a movie: the line says it wasn't backed up.
 
 Below that is one row per file type, with what wasn't saved, what's safe and what's on the card. Click a
 row to see its files, and why they failed. A row with more than 30 files names the first 20 and offers

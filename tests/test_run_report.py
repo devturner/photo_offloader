@@ -155,7 +155,7 @@ class TestPairsLine(unittest.TestCase):
     def test_the_same_name_in_another_folder_is_not_a_pair(self):
         other = DCIM / "102NIKON"
         line = self.line([failed("RAW", "A.NEF"), outcome("JPG", "A.JPG", folder=other)])
-        self.assertEqual(line, "No photo lost both copies. 1 file has no second copy.")
+        self.assertEqual(line, "No photo lost both copies. 1 file wasn't backed up.")
 
     def test_a_photo_that_lost_both_copies_is_counted_once(self):
         line = self.line([failed("RAW", "A.NEF"), failed("JPG", "A.JPG")])
@@ -169,14 +169,14 @@ class TestPairsLine(unittest.TestCase):
         )
         self.assertEqual(line, "1 photo lost both RAW and JPG. 2 still have one copy.")
 
-    def test_a_movie_has_no_second_copy(self):
+    def test_a_movie_with_no_partner_was_not_backed_up(self):
         line = self.line([failed("VIDEO", "A.MOV"), failed("VIDEO", "B.MOV")])
-        self.assertEqual(line, "No photo lost both copies. 2 movies have no second copy.")
+        self.assertEqual(line, "No photo lost both copies. 2 movies weren't backed up.")
 
     def test_a_photo_shot_alone_counts_like_a_movie(self):
         # Chosen by the user: "lost both" isn't true of it, and leaving it out hides a lost file.
         line = self.line([failed("VIDEO", "A.MOV"), failed("RAW", "B.NEF")])
-        self.assertEqual(line, "No photo lost both copies. 2 files have no second copy.")
+        self.assertEqual(line, "No photo lost both copies. 2 files weren't backed up.")
 
     def test_an_unreadable_folder_stops_it_claiming_nothing_lost_both(self):
         # That folder could hold anything, and this line could persuade someone to format the card.

@@ -220,12 +220,12 @@ def _one_copy_text(raw_left: int, jpg_left: int) -> str:
     return ""
 
 
-def _no_second_copy_text(alone: Sequence[FileOutcome]) -> str:
+def _not_backed_up_text(alone: Sequence[FileOutcome]) -> str:
     if not alone:
         return ""
     noun = "movie" if all(item.category == "VIDEO" for item in alone) else "file"
-    verb = "has" if len(alone) == 1 else "have"
-    return f"{_plural(len(alone), noun)} {verb} no second copy."
+    verb = "wasn't" if len(alone) == 1 else "weren't"
+    return f"{_plural(len(alone), noun)} {verb} backed up."
 
 
 def _pairs_line(outcomes: Sequence[FileOutcome], unknown: Sequence[str]) -> str:
@@ -247,7 +247,7 @@ def _pairs_line(outcomes: Sequence[FileOutcome], unknown: Sequence[str]) -> str:
         left_out = f"This doesn't count {unknown[0]}, which couldn't be read."
     elif both and unknown:
         left_out = f"This doesn't count the {len(unknown)} folders that couldn't be read."
-    parts = (lead, _one_copy_text(raw_left, jpg_left), _no_second_copy_text(alone), left_out)
+    parts = (lead, _one_copy_text(raw_left, jpg_left), _not_backed_up_text(alone), left_out)
     return " ".join(part for part in parts if part)
 
 
