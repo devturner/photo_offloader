@@ -42,6 +42,9 @@ def parse_display_bytes(value: str) -> float:
     return amount * (1024**exponent)
 
 
+CHECKING_TITLE = "Checking for new files"
+
+
 def activity_stage(status: Dict[str, Any]) -> str:
     """Which step the importer is on; older importers only report phase/state."""
     stage = str(status.get("stage", "") or "")
@@ -141,7 +144,7 @@ def activity_text(status: Dict[str, Any], stage: str) -> Tuple[str, str]:
         # two per file. Name the step by what the session is doing overall so it holds still.
         new_files = int(status.get("new_files", 0) or 0)
         category = CATEGORY_LABELS.get(str(status.get("category", "") or ""), "")
-        title = "Copying new files" if state == "copying" or new_files else "Checking for new files"
+        title = "Copying new files" if state == "copying" or new_files else CHECKING_TITLE
         return title, " · ".join(part for part in (category, current_file) if part) or detail
     if stage == "metadata":
         return "Reading photo info", detail
@@ -220,7 +223,7 @@ def _archive_step(activity: Optional[Dict[str, Any]], local: Optional[int]) -> D
             "archive",
             "Mac archive",
             "active",
-            "Copying",
+            "Checking" if activity["title"] == CHECKING_TITLE else "Copying",
             activity["detail"] or detail,
         )
     return _step("archive", "Mac archive", "ok", "Up to date" if local else "Empty", detail)
