@@ -19,10 +19,10 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from unittest.mock import patch
 
-from photo_offloader import catalog, config
+from photo_offloader import catalog, config, run_report
 from photo_offloader.dashboard import core
 from photo_offloader.dashboard.server import DashboardServer
 from tests import support
@@ -37,6 +37,7 @@ except ImportError:
 WEB_ROOT = support.REPO_ROOT / "photo_offloader" / "dashboard" / "web"
 REQUIRE_BROWSER = "PHOTO_OFFLOADER_REQUIRE_BROWSER"
 CARD = "NIKON Z 8"
+REPORT_CARD = Path("/Volumes") / CARD
 GB = 1024**3
 MB = 1024**2
 
@@ -82,6 +83,7 @@ class Sandbox:
             local_archives=(root / "CameraImports", root / "CameraImportsRaw"),
             usb_archives=(self.usb / "CameraImports",),
             python=Path("/fake/python3"),
+            downloads=root / "Downloads",
         )
         self.core = RecordingCore(
             self.paths, clock=lambda: self.now, run=self._run, popen=self._popen
@@ -345,6 +347,107 @@ def _failed(s: Sandbox, message: str = "Copy failed: the Mac disk is full") -> N
     s.record(outcome="failed", failed=3, message=message)
 
 
+def _names(first: int, count: int, extension: str) -> List[str]:
+    return [f"DSC_{first + index:04}.{extension}" for index in range(count)]
+
+
+def _outcomes(
+    category: str, folder: str, names: List[str], result: str = "copied", reason: str = ""
+) -> List[run_report.FileOutcome]:
+    root = REPORT_CARD / "DCIM" / folder
+    return [run_report.FileOutcome(category, root / name, result, reason=reason) for name in names]
+
+
+def _lost(category: str, folder: str, names: List[str], reason: str = run_report.READ_ERROR):
+    return _outcomes(category, folder, names, run_report.FAILED, reason)
+
+
+def _report_run(
+    s: Sandbox,
+    outcomes: List[run_report.FileOutcome],
+    unreadable: Tuple[str, ...] = (),
+    outcome: str = "failed",
+) -> None:
+    """A run's folder and history row, made by the code the importer uses."""
+    s.add_card()
+    s.add_usb()
+    s.set_up_google()
+    sizes = {
+        str(item.source): (34 if item.category == "RAW" else 13 if item.category == "JPG" else 800)
+        * MB
+        for item in outcomes
+    }
+    dcim, paths = REPORT_CARD / "DCIM", [REPORT_CARD / "DCIM" / name for name in unreadable]
+    summary = run_report.summarize(outcomes, paths, sizes, dcim)
+    message = run_report.dont_format_message(summary) if outcome == "failed" else ""
+    folder, summary = run_report.save_report(
+        run_report.RunFacts(
+            source=CARD,
+            started_at=s.now - 252,
+            outcome=outcome,
+            message=message,
+            dcim=dcim,
+            problems=outcome == "failed",
+            outcomes=outcomes,
+            unreadable=paths,
+            sizes=sizes,
+            log_lines=["[2026-11-06 14:12:00] [INFO] An example log line"],
+            app_version="2.5 (abc1234)",
+        )
+    )
+    s.status(state="failed" if outcome == "failed" else "complete", ago=5, message=message)
+    s.record(
+        outcome=outcome,
+        started_at=s.now - 252,
+        finished_at=s.now - 2,
+        files=len(outcomes),
+        failed=summary["problems"] if summary else 0,
+        message=message,
+        details={"report": folder, **({"problems": summary} if summary else {})},
+    )
+
+
+def _few_problems(s: Sandbox) -> None:
+    _report_run(
+        s,
+        _outcomes("JPG", "100NIKON", _names(1, 1044, "JPG"))
+        + _outcomes("RAW", "100NIKON", _names(1, 1060, "NEF"))
+        + _lost("RAW", "100NIKON", _names(1061, 2, "NEF"))
+        + _outcomes("JPG", "100NIKON", _names(1061, 2, "JPG")),
+        ("101NIKON",),
+    )
+
+
+def _many_problems(s: Sandbox) -> None:
+    changed = "Changed during the copy"
+    _report_run(
+        s,
+        _outcomes("JPG", "100NIKON", _names(1, 1029, "JPG"))
+        + _lost("JPG", "100NIKON", _names(1030, 15, "JPG"))
+        + _outcomes("RAW", "100NIKON", _names(1, 1040, "NEF"))
+        + _lost("RAW", "100NIKON", _names(1030, 16, "NEF"))
+        + _lost("RAW", "102NIKON", _names(1, 6, "NEF"), changed)
+        + _outcomes("JPG", "102NIKON", _names(1, 6, "JPG")),
+        ("101NIKON",),
+    )
+
+
+def _huge_problems(s: Sandbox) -> None:
+    # The card died partway through. JPGs go first, so every RAW and movie after them fails too.
+    _report_run(
+        s,
+        _outcomes("JPG", "099NIKON", _names(1, 855, "JPG"))
+        + _outcomes("JPG", "100NIKON", _names(1, 2, "JPG"))
+        + _lost("JPG", "100NIKON", _names(3, 604, "JPG"))
+        + _lost("RAW", "100NIKON", _names(1, 606, "NEF"))
+        + _lost("VIDEO", "101NIKON", _names(801, 37, "MOV")),
+    )
+
+
+def _clean_with_report(s: Sandbox) -> None:
+    _report_run(s, _outcomes("JPG", "100NIKON", _names(1, 16, "JPG")), outcome="complete")
+
+
 SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "idle": lambda s: s.status(state="idle"),
     "card_mounted": lambda s: s.add_card(),
@@ -410,6 +513,10 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "failed_unreadable_card": lambda s: _failed(
         s, "Don't format this card: 2 folders couldn't be read."
     ),
+    "few_problems": _few_problems,
+    "many_problems": _many_problems,
+    "huge_problems": _huge_problems,
+    "clean_with_report": _clean_with_report,
     "stopped": lambda s: setattr(s, "service_up", False),
     "paused": lambda s: s.paths.pause_file.touch(),
 }

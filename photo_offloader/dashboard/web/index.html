@@ -225,6 +225,56 @@ dialog p { margin: 0 0 18px; color: var(--text-2); }
 dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .lost { background: var(--err-soft); color: var(--err); }
 
+/* what went wrong in a run: unfolds above its report, in Recent activity */
+.problems-report { display: grid; gap: 12px; margin-bottom: 14px; }
+.problems-report:last-child { margin-bottom: 0; }
+.figures { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; color: var(--text-2); }
+.figures b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
+.figures b.good { color: var(--ok); }
+.figures b.bad { color: var(--err); }
+.pairs { font-size: 13px; font-weight: 600; }
+.cause { padding: 9px 12px; border-radius: 10px; background: var(--err-soft); font-size: 13px; }
+.cause b { font-weight: 650; }
+.problem-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; min-width: 0; }
+.problem-list li { padding: 9px 12px; min-width: 0; }
+.problem-list li + li { border-top: 1px solid var(--border); }
+.problem-list .thead, .problem-list .tline { display: grid; grid-template-columns: minmax(48px, 1fr) repeat(3, 118px); gap: 8px; align-items: baseline; font-variant-numeric: tabular-nums; }
+.problem-list .thead { padding-block: 6px; padding-left: 26px; background: var(--surface-2); font-size: 12px; font-weight: 550; color: var(--text-2); }
+.problem-list .n { text-align: right; }
+.problem-list .tline { font-size: 15px; }
+.problem-list .tname { font-weight: 650; }
+.problem-list .not-saved { color: var(--err); font-weight: 650; }
+.problem-list .sz, .problem-list .sep { font-size: 12.5px; font-weight: 500; }
+.problem-list .tsub { display: block; margin-top: 1px; font-size: 12.5px; color: var(--text-2); overflow-wrap: anywhere; }
+.problem-list summary { cursor: pointer; list-style-position: outside; margin-left: 14px; }
+.problem-list li > .tline, .problem-list li > .tsub { padding-left: 14px; }
+.problem-list .names { margin: 6px 0 0 14px; padding: 6px 10px; max-height: 132px; overflow-y: auto; background: var(--surface-2); border-radius: 8px; font: 12px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.problem-list .more { font-family: var(--font); color: var(--text-2); }
+.problem-list .names .link { display: block; margin: 6px 0 0; padding: 0; font-family: var(--font); }
+.report-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.report-actions .btn { padding: 7px 14px; }
+.report-note { margin: 0; font-size: 13px; color: var(--text-2); }
+.step .ask { margin-top: 8px; padding: 8px 10px; background: var(--err-soft); border-radius: 9px; font-size: 12.5px; }
+.step .ask .actions { padding-top: 4px; margin-top: 0; }
+.step .ask .action.danger { color: var(--err); }
+
+/* the debug package's save sheet */
+#save-dialog { max-width: 520px; width: calc(100vw - 32px); }
+#save-dialog .sheet { display: grid; gap: 12px; }
+#save-dialog .sheet[hidden] { display: none; }
+#save-dialog p { margin: 0; }
+#save-dialog .actions { margin: 0; }
+#save-dialog .segmented { justify-self: start; }
+#save-dialog .segmented button { border: 0; background: none; padding: 4px 10px; border-radius: 7px; font-size: 12.5px; font-weight: 550; color: var(--text-2); }
+#save-dialog .segmented button[aria-checked="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+.package-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.package-columns h4 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.package-columns ul { margin: 0; padding-left: 16px; font-size: 13px; display: grid; gap: 2px; }
+.privacy { padding: 8px 12px; border-radius: 10px; background: var(--warn-soft); font-size: 13px; }
+.preview { font: 12px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; margin: 0; overflow: auto; white-space: pre; max-height: 180px; min-height: 60px; }
+.saved { padding: 10px 12px; background: var(--ok-soft); border-radius: 10px; font-size: 13px; overflow-wrap: anywhere; }
+.saved code { font: 12.5px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
 @keyframes pulse { 50% { opacity: .35; } }
 @keyframes glow { 0%, 100% { opacity: .08; } 50% { opacity: .55; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
@@ -304,6 +354,27 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+<dialog id="save-dialog" aria-labelledby="save-title">
+  <h3 id="save-title">Save debug package</h3>
+  <div class="sheet" id="save-ask">
+    <p>A zip with everything about this run, for checking it yourself or sending to someone who can help.</p>
+    <div class="package-columns">
+      <div><h4>Included</h4><ul><li>A plain summary</li><li>Every card file's result</li><li>This run's log lines</li><li>App version and drive details</li></ul></div>
+      <div><h4>Never included</h4><ul><li>Your photos and videos</li><li>Google sign-in details</li><li>The dashboard's access token</li></ul></div>
+    </div>
+    <div class="privacy">File names and folder paths are included, and they show your Mac username. Look through it before you share it.</div>
+    <div class="segmented" role="radiogroup" aria-label="Preview a file">
+      <button role="radio" data-preview-choice="summary" aria-checked="true">summary.txt</button>
+      <button role="radio" data-preview-choice="files" aria-checked="false">files.csv</button>
+    </div>
+    <pre class="preview" id="preview" tabindex="0"></pre>
+    <div class="actions"><button class="btn secondary" id="save-cancel">Cancel</button><button class="btn" id="save-go">Save to Downloads</button></div>
+  </div>
+  <div class="sheet" id="save-done" hidden>
+    <div class="saved">Saved to Downloads:<br><code id="saved-name"></code></div>
+    <div class="actions"><button class="btn secondary" id="save-reveal">Show in Finder</button><button class="btn" id="save-close">Done</button></div>
+  </div>
+</dialog>
 <dialog id="stop-dialog">
   <h3 id="stop-title">Stop Photo Offloader?</h3>
   <p id="stop-text"></p>
@@ -609,15 +680,31 @@ function renderHero(s) {
   hero.replaceChildren(...kids);
 }
 
+// An action with a question asks it in place, in its own box, before doing anything.
+let askingAction = null;
+function stepActions(st) {
+  const asking = st.actions.find(ac => ac.id === askingAction && ac.confirm);
+  return [
+    st.actions.length > 0 && h("div", { class: "actions" },
+      st.actions.map(ac => h("button", { class: "action", onclick: () => {
+        if (ac.confirm) { askingAction = ac.id; renderPipeline(LAST); } else run(ac.id);
+      } }, ac.label))),
+    asking && h("div", { class: "ask" }, asking.confirm,
+      h("div", { class: "actions" },
+        h("button", { class: "action", onclick: () => { askingAction = null; renderPipeline(LAST); } }, "Keep mounted"),
+        h("button", { class: "action danger", onclick: () => { askingAction = null; renderPipeline(LAST); run(asking.id); } }, asking.label))),
+  ];
+}
+
 function renderPipeline(s) {
-  if (!changed("pipeline", s.pipeline)) return;
+  if (!s.pipeline.some(st => st.actions.some(ac => ac.id === askingAction))) askingAction = null;
+  if (!changed("pipeline", [s.pipeline, askingAction])) return;
   $("#pipeline").replaceChildren(...s.pipeline.map(st => h("div", { class: "step", "data-state": st.state },
     h("div", { class: "step-head" }, h("span", { text: st.label }), h("span", { class: "dot", "aria-hidden": "true" })),
     h("h3", { text: st.headline }),
     h("div", { class: "detail", text: st.detail }),
     st.percent != null && h("div", { class: "mini" }, h("div", { style: `width:${Math.max(2, st.percent)}%` })),
-    st.actions.length > 0 && h("div", { class: "actions" },
-      st.actions.map(ac => h("button", { class: "action", onclick: () => run(ac.id) }, ac.label))))));
+    stepActions(st))));
 }
 
 const OUTCOME_ICON = { success: "check", warning: "alert", error: "xcircle" };
@@ -640,7 +727,7 @@ function renderHistory(now) {
         h("div", { class: "grow" }, h("div", { class: "t", text: r.title }), h("div", { class: "s", text: r.summary || (r.outcome === "complete" ? "Completed" : "") })),
         h("time", { datetime: new Date(r.finished_at * 1000).toISOString(), title: new Date(r.finished_at * 1000).toLocaleString(), text: relTime(r.finished_at, now) }),
         h("span", { class: "chev", "aria-hidden": "true" })),
-      isOpen && h("div", { class: "run-report" }, reportBody(r.report)));
+      isOpen && h("div", { class: "run-report" }, runProblems(r), reportBody(r.report)));
   }));
   if (focusedId != null) list.querySelector(`.row[data-run="${focusedId}"]`).focus();
 }
@@ -734,6 +821,7 @@ async function refresh(withHistory) {
       refresh.lastId = lastId; refresh.at = Date.now();
       HISTORY = (await api("/api/history?limit=100")).history;
     }
+    openNewFailure(s);
     renderHistory(s.generated_at);
   } catch (e) {
     if (++failures >= 3) { $("#pill").dataset.tone = "error"; $("#pill-text").textContent = "Disconnected"; }
@@ -784,6 +872,96 @@ $("#clear-history").onclick = (e) => {
   if (!clearArmed) { clearArmed = setTimeout(() => { clearArmed = 0; b.textContent = "Clear"; }, 4000); b.textContent = "Confirm clear"; return; }
   clearTimeout(clearArmed); clearArmed = 0; b.textContent = "Clear"; run("clear_history");
 };
+
+
+// ---- what went wrong in a run (from the importer's summary, details.problems). Its file names come
+// from the card, so they only ever reach the page through textContent.
+const openTypes = new Set(); // which rows are unfolded, since polling can draw the list again
+const countAndSize = (count, bytes, cls) => h("span", { class: "n" + (cls ? " " + cls : "") }, fmtCount(count),
+  bytes ? h("span", { class: "sep", text: " · " }) : null, bytes ? h("span", { class: "sz", text: fmtBytes(bytes) }) : null);
+
+function typeRow(runId, row) {
+  const key = runId + ":" + row.type;
+  const box = h("div", { class: "names" }, row.names.join("\n"));
+  if (row.more) {
+    box.append(h("div", { class: "more", text: "and " + fmtCount(row.more) + " more" }),
+      h("button", { type: "button", class: "link", onclick: () => run("open_file_list", { run_id: runId, type: row.type }) },
+        "Open these " + fmtCount(row.lost) + " " + row.type + " files in a list"));
+  }
+  const details = h("details", { open: openTypes.has(key), ontoggle: (e) => { if (e.target.open) openTypes.add(key); else openTypes.delete(key); } },
+    h("summary", {},
+      h("span", { class: "tline" }, h("span", { class: "tname", text: row.type }),
+        countAndSize(row.lost, row.lost_bytes, "not-saved"), countAndSize(row.safe, row.safe_bytes), countAndSize(row.total, row.total_bytes)),
+      h("span", { class: "tsub", text: row.where + ". " + row.why })),
+    box);
+  return h("li", {}, details);
+}
+
+function unknownRow(where) {
+  return h("li", {},
+    h("span", { class: "tline" }, h("span", { class: "tname", text: "Unknown" }), h("span", { class: "n not-saved", text: "?" }), h("span", { class: "n", text: "?" }), h("span", { class: "n", text: "?" })),
+    h("span", { class: "tsub", text: where + " couldn't be read. Its contents are unknown, so treat everything in it as not saved." }));
+}
+
+function runProblems(r) {
+  const p = r.details && r.details.problems;
+  const save = r.report_saved && h("button", { type: "button", class: "btn secondary", onclick: () => openSave(r.id) }, "Save debug package…");
+  if (!p) {
+    if (r.kind !== "import" || !r.report_saved) return null;
+    return h("div", { class: "problems-report" },
+      r.outcome === "complete" && h("p", { class: "report-note", text: "Nothing went wrong. The package is here if you want to check a run yourself; it's only built when you ask." }),
+      h("div", { class: "report-actions" }, save));
+  }
+  const figure = (value, cls, text) => h("span", {}, h("b", { class: cls, text: value }), " " + text);
+  const folders = p.unknown.length;
+  return h("div", { class: "problems-report" },
+    h("div", { class: "figures" },
+      figure(fmtCount(p.safe), "good", "safe on the Mac"),
+      p.not_saved > 0 && figure(fmtCount(p.not_saved), "bad", (p.not_saved === 1 ? "file" : "files") + " not saved" + (p.not_saved_bytes ? " · " + fmtBytes(p.not_saved_bytes) : "")),
+      folders > 0 && figure(fmtCount(folders), "bad", (folders === 1 ? "folder" : "folders") + " unknown")),
+    h("div", { class: "pairs", text: p.pairs }),
+    p.cause && h("div", { class: "cause" }, h("b", { text: p.cause.lead }), " " + p.cause.detail),
+    h("ul", { class: "problem-list" },
+      h("li", { class: "thead" }, h("span", { text: "Type" }), h("span", { class: "n", text: "Not saved" }), h("span", { class: "n", text: "Safe" }), h("span", { class: "n", text: "On card" })),
+      p.types.map(row => typeRow(r.id, row)), p.unknown.map(unknownRow)),
+    h("div", { class: "report-actions" },
+      r.outcome === "failed" && h("button", { type: "button", class: "btn", onclick: () => run("import_card") }, "Try again"),
+      r.report_saved && h("button", { type: "button", class: "btn secondary", onclick: () => run("open_file_list", { run_id: r.id }) }, "Open full list"),
+      save));
+}
+
+// ---- the debug package's save sheet
+let saveRun = null, previews = {};
+function showPreview(which) {
+  document.querySelectorAll("[data-preview-choice]").forEach(b => b.setAttribute("aria-checked", String(b.dataset.previewChoice === which)));
+  $("#preview").textContent = previews[which] || "";
+}
+async function openSave(id) {
+  const r = await run("report_preview", { run_id: id }, true);
+  if (!r) return;
+  saveRun = id; previews = r;
+  $("#save-ask").hidden = false; $("#save-done").hidden = true;
+  showPreview("summary");
+  $("#save-dialog").showModal();
+}
+document.querySelectorAll("[data-preview-choice]").forEach(b => b.addEventListener("click", () => showPreview(b.dataset.previewChoice)));
+$("#save-cancel").onclick = $("#save-close").onclick = () => $("#save-dialog").close();
+$("#save-reveal").onclick = () => run("reveal_debug_package", {}, true);
+$("#save-go").onclick = async () => {
+  const r = await run("save_debug_package", { run_id: saveRun }, true);
+  if (!r) { $("#save-dialog").close(); return; } // its toast would be hidden behind the sheet
+  $("#saved-name").textContent = r.name + " (" + fmtBytes(r.bytes) + ")";
+  $("#save-ask").hidden = true; $("#save-done").hidden = false;
+};
+
+// A failed run's problems open by themselves, once: closing them means they stay closed.
+let autoOpened = null;
+function openNewFailure(s) {
+  const id = s.last_transfer ? s.last_transfer.id : null;
+  if (id === null || id === autoOpened) return;
+  const r = HISTORY.find(x => x.id === id);
+  if (r && r.details && r.details.problems) { autoOpened = id; openRun = id; }
+}
 
 refresh(true).then(schedule);
 </script>
