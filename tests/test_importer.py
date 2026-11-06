@@ -2,6 +2,7 @@
 import json
 import logging
 import logging.handlers
+import os
 import unittest
 from unittest.mock import patch
 
@@ -282,6 +283,57 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         )
         self.assertEqual(result.returncode, 130, result.stdout + result.stderr)
         self.assertEqual(json.loads(status_path.read_text())["state"], "canceled")
+
+    def unreadable_card_folder(self):
+        if os.geteuid() == 0:
+            self.skipTest("root can read every folder")
+        folder = self.dcim / "101NIKON"
+        folder.mkdir()
+        (folder / "lost.jpg").write_bytes(b"x")
+        folder.chmod(0)  # TemporaryDirectory restores this when it cleans up
+        return folder
+
+    @patch("photo_offloader.volumes.eject_volume", return_value=True)
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    def test_a_card_folder_that_cannot_be_read_fails_the_import(self, notify, launch, eject):
+        # A failing card does this, and someone told "complete" might format it.
+        self.media()
+        self.unreadable_card_folder()
+        with patch("time.sleep"):
+            result = app.main(["--source", str(self.card), "--no-usb"])
+        self.assertEqual(result, 1)
+        status = json.loads(config.STATUS_FILE_PATH.read_text())
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(status["message"], "Don't format this card: 1 location couldn't be read.")
+        self.assertIn("Don't format", notify.call_args.args[1])
+        eject.assert_not_called()
+        launch.assert_not_called()
+        history = catalog.list_import_history()[0]
+        self.assertEqual(history["outcome"], "failed")
+        self.assertEqual(history["failed"], 1)
+        scan = card.load_card_manifest_payload(self.dcim)["history"]
+        self.assertEqual(scan["last_scan_status"], "incomplete")
+        self.assertNotIn("last_successful_import", scan)
+
+    @patch("photo_offloader.volumes.eject_volume", return_value=True)
+    @patch("photo_offloader.logs.notify")
+    def test_what_can_be_read_is_still_copied_from_a_failing_card(self, notify, eject):
+        self.media()
+        self.unreadable_card_folder()
+        with patch("time.sleep"):
+            app.main(["--source", str(self.card), "--no-usb"])
+        copied = [path.name for path in config.LOCAL_DEST_ROOT.rglob("*") if path.is_file()]
+        self.assertIn("photo.jpg", copied)
+
+    @patch("photo_offloader.logs.notify")
+    def test_a_card_with_nothing_readable_says_so(self, notify):
+        self.unreadable_card_folder()
+        with patch("time.sleep"):
+            result = app.main(["--source", str(self.card), "--no-usb"])
+        self.assertEqual(result, 1)
+        status = json.loads(config.STATUS_FILE_PATH.read_text())
+        self.assertIn("1 location couldn't be read", status["message"])
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
