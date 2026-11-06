@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A macOS tool that imports camera cards to the Mac (SHA-256 verified), mirrors them to a USB
 drive and uploads JPG/video to Google Photos via rclone. A local web dashboard and a menu-bar
-app sit on top. Open work and its reasons are in `scratch/todo.md` (gitignored); read it
-first when asked to "continue".
+app sit on top. Open work and its reasons are in `scratch/ai_tasks.md` (gitignored); read it
+first when asked to "continue". What only the user can do is in `scratch/human_todo.md`.
 
 ## Commands
 - Tests: `.venv/bin/python -m unittest discover` (about 375 tests, about 80 s). Use the

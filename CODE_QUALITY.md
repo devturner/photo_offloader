@@ -25,7 +25,7 @@ justifies weakening a safety check.
 - **Comment on why, not what.** Record the constraint or the failure that shaped the code.
   Do the same for anything that looks wrong but is deliberate, so nobody "fixes" it.
 - **Delete, don't disable.** No commented-out code or unused options; git keeps the history.
-  Open work goes in `scratch/todo.md`, and the code currently has no `TODO` comments.
+  Open work goes in `scratch/ai_tasks.md`, and the code currently has no `TODO` comments.
 - **Build only what's needed now.** Don't handle cases that can't happen or add settings nobody
   has asked for. Every addition has to be reviewed and maintained.
 
@@ -48,7 +48,7 @@ justifies weakening a safety check.
 - Fix small things in the code you're already changing: a misleading name, a stale comment, a
   missing test around a bug you just found.
 - Put the cleanup in its own commit so the behavior change stays easy to review.
-- A larger problem gets a note in `scratch/todo.md`, not a surprise rewrite inside a bug fix.
+- A larger problem gets a note in `scratch/ai_tasks.md`, not a surprise rewrite inside a bug fix.
 
 ## Maintainability
 
