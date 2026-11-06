@@ -27,6 +27,9 @@ ABSENT_FILE="${PHOTO_OFFLOADER_TRIGGER_ABSENT:-$STATE_FILE.absent}"
 REMOUNT_GRACE_SECONDS="${PHOTO_OFFLOADER_REMOUNT_GRACE_SECONDS:-20}"
 PAUSE_FILE="${PHOTO_OFFLOADER_PAUSE_FILE:-$INSTALL_DIR/.paused}"
 LOCK_DIR="${PHOTO_OFFLOADER_TRIGGER_LOCK:-$INSTALL_DIR/.trigger.lock}"
+# A run takes seconds. A lock this old is left over, even if its pid is in use: after a
+# restart, that number can belong to an unrelated process.
+LOCK_MAX_AGE_SECONDS="${PHOTO_OFFLOADER_TRIGGER_LOCK_MAX_AGE_SECONDS:-600}"
 SETTLE_SECONDS="${PHOTO_OFFLOADER_TRIGGER_SETTLE_SECONDS:-1}"
 PGREP="${PHOTO_OFFLOADER_PGREP:-/usr/bin/pgrep}"
 OSASCRIPT="${PHOTO_OFFLOADER_OSASCRIPT:-/usr/bin/osascript}"
@@ -167,14 +170,37 @@ fi
 
 mkdir -p "$(dirname "$STATE_FILE")"
 
+# Left behind by a power cut or SIGKILL: its owner is gone, or it's far too old to be real.
+lock_is_stale() {
+    local pid locked_at
+    pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && ! kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    locked_at="$(stat -f %m "$LOCK_DIR" 2>/dev/null || date +%s)"
+    (( $(date +%s) - locked_at >= LOCK_MAX_AGE_SECONDS ))
+}
+
 # launchd can deliver several /Volumes events while a device is mounting. Use
 # an atomic directory creation as a short-lived trigger lock. This is separate
 # from the Python import lock, which remains the final concurrency safeguard.
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+# A stale lock has to be replaced here: nothing else clears it, and until it goes
+# every run gives up and no card ever imports.
+acquire_lock() {
+    mkdir "$LOCK_DIR" 2>/dev/null && return 0
+    lock_is_stale || return 1
+    log "Replacing a stale trigger lock left by an earlier run: $LOCK_DIR"
+    # The rename is atomic, so only one run can take the old lock away.
+    mv "$LOCK_DIR" "$LOCK_DIR.stale.$$" 2>/dev/null || return 1
+    rm -rf "$LOCK_DIR.stale.$$"
+    mkdir "$LOCK_DIR" 2>/dev/null
+}
+if ! acquire_lock; then
     log "Another trigger invocation is already evaluating the mounted volumes; ignoring event."
     exit 0
 fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true; flush_log' EXIT
+printf '%s\n' "$$" > "$LOCK_DIR/pid"
+trap 'rm -f "$LOCK_DIR/pid"; rmdir "$LOCK_DIR" 2>/dev/null || true; flush_log' EXIT
 
 sleep "$SETTLE_SECONDS"
 

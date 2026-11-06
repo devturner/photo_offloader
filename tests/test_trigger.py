@@ -526,6 +526,77 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertFalse(self.state.exists())
         self.assertIn("Importer already running", self.log.read_text())
 
+    # ---- a lock left behind must not stop imports for good
+    def background_mode(self):
+        (self.install / ".terminal-output-enabled").unlink(missing_ok=True)
+
+    def leave_lock(self, pid=None, age_seconds=0):
+        self.lock.mkdir()
+        if pid is not None:
+            (self.lock / "pid").write_text(f"{pid}\n")
+        stamp = time.time() - age_seconds
+        os.utime(self.lock, (stamp, stamp))
+
+    def dead_pid(self):
+        process = subprocess.Popen(["/usr/bin/true"])
+        process.wait()
+        return process.pid
+
+    def live_pid(self):
+        process = subprocess.Popen(["/bin/sleep", "60"])
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        return process.pid
+
+    def test_a_lock_left_by_a_trigger_that_died_is_replaced(self):
+        # A power cut or SIGKILL during a run left the lock, and every later run gave up.
+        self.background_mode()
+        self.leave_lock(pid=self.dead_pid())
+        self.assertEqual(self.run_trigger().returncode, 0)
+        self.wait_for_workers()
+        self.assertTrue(self.background_args.exists())
+        self.assertIn("stale trigger lock", self.log.read_text())
+        self.assertFalse(self.lock.exists())
+
+    def test_a_lock_held_by_a_running_trigger_is_respected(self):
+        self.background_mode()
+        pid = self.live_pid()
+        self.leave_lock(pid=pid)
+        self.assertEqual(self.run_trigger().returncode, 0)
+        self.assertFalse(self.background_args.exists())
+        self.assertEqual((self.lock / "pid").read_text().strip(), str(pid))
+
+    def test_a_lock_far_too_old_to_be_real_is_replaced_even_if_its_pid_is_alive(self):
+        # After a restart, the recorded number can belong to an unrelated process.
+        self.background_mode()
+        self.leave_lock(pid=self.live_pid(), age_seconds=3600)
+        self.run_trigger()
+        self.wait_for_workers()
+        self.assertTrue(self.background_args.exists())
+
+    def test_an_old_lock_from_before_it_recorded_a_pid_is_replaced(self):
+        self.background_mode()
+        self.leave_lock(age_seconds=3600)
+        self.run_trigger()
+        self.wait_for_workers()
+        self.assertTrue(self.background_args.exists())
+
+    def test_a_new_lock_without_a_pid_yet_is_respected(self):
+        self.background_mode()
+        self.leave_lock()
+        self.run_trigger()
+        self.assertFalse(self.background_args.exists())
+        self.assertTrue(self.lock.is_dir())
+
+    def test_a_running_trigger_records_its_pid_and_removes_the_lock_at_the_end(self):
+        self.background_mode()
+        seen = self.root / "pid-while-running"
+        self.pgrep.write_text(f'#!/bin/bash\ncat "{self.lock}/pid" > "{seen}"\nexit 1\n')
+        self.run_trigger()
+        self.wait_for_workers()
+        self.assertRegex(seen.read_text(), r"^\d+$")
+        self.assertFalse(self.lock.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
