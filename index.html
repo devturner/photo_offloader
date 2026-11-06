@@ -6,30 +6,15 @@
   <meta name="description" content="Photo Offloader safely imports camera photos and videos to your Mac and a USB backup, with an optional Google Photos upload.">
   <title>Photo Offloader</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='85'%3E📸%3C/text%3E%3C/svg%3E">
-  <style>
-    :root { color-scheme: light dark; --bg:#f6f7fb; --panel:#fff; --text:#172033; --muted:#586174; --line:#e3e7ef; --link:#315ed5; }
-    @media (prefers-color-scheme: dark) { :root { --bg:#10141d; --panel:#171e2b; --text:#e8edf7; --muted:#a8b3c7; --line:#30394a; --link:#9ab5ff; } }
-    * { box-sizing:border-box; }
-    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.6 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-    main { width:min(100% - 32px, 760px); margin-inline:auto; padding:3rem 0; }
-    h1 { margin:0 0 .5rem; font-size:clamp(2rem,6vw,2.75rem); line-height:1.15; letter-spacing:-.03em; }
-    p { margin:0 0 1rem; color:var(--muted); font-size:1.08rem; }
-    img { display:block; width:100%; height:auto; margin:2rem 0; border:1px solid var(--line); border-radius:14px; }
-    ul { list-style:none; margin:0; padding:0; background:var(--panel); border:1px solid var(--line); border-radius:14px; }
-    li { padding:.85rem 1.15rem; border-top:1px solid var(--line); }
-    li:first-child { border-top:0; }
-    li a { display:block; color:var(--link); font-weight:600; text-decoration:none; }
-    li a:hover { text-decoration:underline; }
-    li span { color:var(--muted); font-size:.95rem; }
-  </style>
+  <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
-  <main>
+  <main class="landing">
     <h1>📸 Photo Offloader</h1>
     <p>Insert a camera card into your Mac and Photo Offloader does the rest. It copies everything to the Mac and checks each copy with SHA-256, mirrors the archive to a USB drive, and can upload JPGs and video to Google Photos. It never deletes anything from the card.</p>
     <img src="docs/images/dashboard.png" width="960" height="860" alt="The Photo Offloader dashboard copying files from a camera card, with step progress and cards for the camera card, Mac archive, USB backup and Google Photos.">
-    <ul>
-      <li><a href="https://github.com/devturner/photo_offloader#readme">Get started</a><span>Requirements (macOS only for now), install and uninstall</span></li>
+    <ul class="site-links">
+      <li><a href="get-started.html">Get started</a><span>Requirements (macOS only for now), install and uninstall</span></li>
       <li><a href="docs/using.html">Using Photo Offloader</a><span>The dashboard and menu bar, and what each step means</span></li>
       <li><a href="docs/google-photos.html">Google Photos setup</a><span>A step-by-step guide, with a command that checks your setup</span></li>
       <li><a href="docs/how-it-works.html">How it works</a><span>The safety model, archive layout, catalog and logs</span></li>
