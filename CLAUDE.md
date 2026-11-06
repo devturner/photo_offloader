@@ -60,7 +60,9 @@ Two consequences:
   Imports only point downward.
 - Modules call each other qualified (`catalog.catalog_row(...)`). Tests patch a name in
   the module that owns it.
-- `photo_offloader/dashboard/`: `core.py` holds all state and actions (unit-tested),
+- `photo_offloader/jsonfile.py`: tolerant reads and atomic writes of the JSON state files.
+- `photo_offloader/dashboard/`: `core.py` holds state and actions (unit-tested), `display.py`
+  the pure wording and cards, `paths.py` its file locations,
   `server.py` is the stdlib HTTP server (keep its token, Host/Origin and CSP checks),
   `web/index.html` is one static page that builds the DOM with `textContent` only and
   never puts card-derived text in `innerHTML`. `menubar/`: pure `model.py` plus a

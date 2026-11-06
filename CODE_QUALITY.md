@@ -31,14 +31,17 @@ justifies weakening a safety check.
 
 ## DRY and reuse
 
-- **Each fact has one home.** Paths and settings live in `config.py`, state and actions in
-  `dashboard/core.py`, and logging helpers in `logs.py`. Look there before adding a helper.
+- **Each fact has one home.** Paths and settings live in `config.py`, JSON state files in
+  `jsonfile.py`, logging helpers in `logs.py`, dashboard wording in `dashboard/display.py`, and
+  its state and actions in `dashboard/core.py`. Look there before adding a helper.
 - **Share rules, not resemblance.** Merge code when it has to change together. Two blocks that
   only look alike today can stay separate, and on a third copy, stop and extract it.
 - **Share with a small, plain interface.** Prefer functions that take their inputs and return
   data, like `menubar/model.py`, which can be tested without launching anything.
 - **Some duplication is deliberate.** Shell scripts can't read `config.py`, so they repeat its
-  paths; change both sides together. The overlapping trigger and session locks stay too.
+  paths; change both sides together. Each script's `log` helper also stays its own, because
+  they behave differently: `trigger.sh` buffers, `import_supervisor.sh` writes two files and
+  `uninstall.sh` has levels. The overlapping trigger and session locks stay too.
 
 ## Leave it better than you found it
 
@@ -64,8 +67,8 @@ justifies weakening a safety check.
 - **Catch what you can name.** Prefer `OSError` or `sqlite3.Error` to `Exception`.
 - **Catch `Exception` only at a boundary,** where one failure must not take down the rest. For
   example, a failed USB stage is recorded and logged, and the verified local import stands.
-- **Never fail silently.** Each `except` logs, records the failure, or has a comment saying why
-  doing nothing is right, as in `# best effort`.
+- **Never fail silently.** Each `except` logs, records the failure, returns a default its function
+  promises (`read_object` gives `{}`), or has a comment saying why doing nothing is right.
 - **Don't call it success unless it was verified.** Report partial results as partial. A status
   of "done" has to mean the data is safely there.
 
@@ -123,10 +126,5 @@ missed and a tool could catch it, add the tool.
 Where the code doesn't meet this guide yet, measured on 2026-11-05. Improve these when you're
 working nearby. They aren't a reason to copy the pattern.
 
-- `dashboard/core.py` is 1,048 lines, about twice the next largest Python module.
-- 7 of 253 functions are over 60 lines. The longest is `google_photos._sync`, at 131.
-- `ruff format` would change 45 of 56 Python files, so formatting isn't enforced.
-- `trigger.sh`, `import_supervisor.sh` and `uninstall.sh` each write their own timestamped log
-  helper, because the installed scripts share no library.
-- A few `except Exception` blocks return without logging, such as the one in
-  `dashboard/launcher.py` that returns `False`.
+- `dashboard/core.py` is still the largest module, at 666 lines.
+- `ruff format` would change 49 of 65 Python files, so formatting isn't enforced.
