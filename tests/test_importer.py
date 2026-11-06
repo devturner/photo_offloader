@@ -278,6 +278,25 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         history = card.load_card_manifest_payload(self.dcim)["history"]
         self.assertEqual(history["files_discovered"], 5)  # jpg, nef, mp4, xml, private mp4
 
+    def test_an_import_leaves_the_card_exactly_as_it_was(self):
+        self.media()
+        self.card.joinpath("PRIVATE").mkdir()
+        self.card.joinpath("PRIVATE", "clip.mp4").write_bytes(b"movie")
+
+        def card_state():
+            return {
+                str(path): (path.stat().st_size, path.stat().st_mtime_ns)
+                for path in [self.card, *self.card.rglob("*")]
+            }
+
+        before = card_state()
+        with patch("time.sleep"):
+            self.assertEqual(app.main(["--source", str(self.card), "--no-usb", "--no-eject"]), 0)
+        self.assertEqual(card_state(), before)
+        self.assertTrue(
+            any(entry.get("sha256") for entry in card.load_card_manifest(self.dcim).values())
+        )
+
     def test_importer_log_file_is_size_capped(self):
         app.configure_logging()
         handlers = [h for h in logs.logger.handlers if isinstance(h, logging.FileHandler)]

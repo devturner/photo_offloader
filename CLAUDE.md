@@ -51,8 +51,10 @@ Two consequences:
 - Never delete from a card and never overwrite a destination file. A differing file with the
   same name becomes `name__conflict-N`. The exceptions are index files the camera rewrites
   (`NC_FLLST.DAT`, `MEDIAPRO.XML`).
-- The catalog and the card manifest are caches. The filesystem is the source of truth, and a
-  missing or stale cache must fall back to hashing.
+- The catalog and the card manifests are caches. The filesystem is the source of truth, and a
+  missing or stale cache must fall back to hashing. Both outlive a format, so a cached hash only
+  skips a file after `fileops.ends_match` agrees with the saved copy.
+- Cards are read-only to this tool: nothing is ever written to one (macOS adds `.fseventsd` itself).
 - A USB or Google Photos failure never invalidates a verified local import.
 - The trigger locks and the importer's session lock overlap on purpose. Keep all of them.
 

@@ -75,11 +75,24 @@ missing or out-of-date cache just means hashing the file again.
   files, their fingerprints (size, modification time, inode), verified hashes, capture dates,
   camera models, Google Photos uploads and the run history. It lives outside the install folder, so
   it survives upgrades and uninstalling.
-- **The card manifest** (`.photo-offloader/manifest-v1.json` on the card) records the hashes of files
-  already verified, so a re-inserted card doesn't have to be read again. It holds no media. Read-only
-  cards simply go without one.
+- **The card manifests** (`~/Library/Application Support/PhotoOffloaderData/card-manifests/`, one file
+  per card, named by its volume ID) record the hashes of files already verified, so a re-inserted card
+  doesn't have to be read in full again. They hold no media, and the 50 most recently used are kept.
+  A card with no volume ID goes without one, and its files are hashed.
+
+Photo Offloader never writes to a card. Older versions kept the manifest on the card, in
+`.photo-offloader`; that folder is now ignored and left where it is, so such a card is hashed once more
+on its next insert unless the catalog still knows its files. macOS itself adds a `.fseventsd` folder
+when it mounts a card.
 
 The card's folders are still listed on every insert, so new files are always found.
+
+**After a format.** Both caches outlive a format. A new photo could have the same path, size and time
+as an old one, so before a file is skipped on a cached hash, its first and last 64 KB are compared with
+the saved copy. If they differ, both files are hashed in full, and a new photo gets saved as a
+`__conflict-N` copy. The Nikon Z 8 gave an SD card a new volume ID when it was formatted, which makes
+this rarer still. The comparison isn't proof that the files are identical; it only rules out a wrong
+cache entry. The full check happens when a file is copied.
 
 **Daylight saving and time zones.** Cameras store file times in local time, so after a clock change
 every file on a card can appear to have moved by exactly an hour. A shift of a whole number of hours,

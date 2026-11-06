@@ -89,6 +89,69 @@ class TestTransfer(support.CardFixtureTestCase):
             result = transfer.copy_one_to_destination(source, self.dcim, self.local, manifest)
         self.assertEqual(result.status, "skipped")
 
+    def saved_photo(self):
+        """A card file with a verified copy in the archive; returns (source, copy, its hash)."""
+        source = self.media()["RAW"]
+        destination = media_info.build_destination_path(source, self.dcim, self.local)
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(source.read_bytes())
+        digest = fileops.sha256_file(source)
+        catalog.catalog_record(destination, sha256=digest)
+        return source, destination, digest
+
+    def replace_keeping_details(self, path):
+        """New content with the same path, size and time, as a new photo after a format could be."""
+        before = path.stat()
+        content = bytes(reversed(path.read_bytes()))
+        path.write_bytes(content)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return content
+
+    def assert_new_photo_was_saved(self, destination, result, content):
+        self.assertEqual(result.status, "copied")
+        self.assertEqual(result.path.name, f"{destination.stem}__conflict-1{destination.suffix}")
+        self.assertEqual(result.path.read_bytes(), content)
+        self.assertNotEqual(destination.read_bytes(), content)
+
+    def test_a_new_photo_is_saved_when_the_manifest_has_an_old_photos_hash(self):
+        source, destination, digest = self.saved_photo()
+        manifest = {}
+        card.update_card_manifest_entry(manifest, source, self.dcim, digest)
+        content = self.replace_keeping_details(source)
+        result = transfer.copy_one_to_destination(source, self.dcim, self.local, manifest)
+        self.assert_new_photo_was_saved(destination, result, content)
+        # The wrong hash is gone, so the next insert finds the copy instead of adding another.
+        again = transfer.copy_one_to_destination(source, self.dcim, self.local, manifest)
+        self.assertEqual((again.status, again.path), ("skipped", result.path))
+
+    def test_a_new_photo_is_saved_when_the_catalog_has_an_old_photos_hash(self):
+        source, destination, digest = self.saved_photo()
+        catalog.catalog_record(source, sha256=digest)
+        content = self.replace_keeping_details(source)
+        result = transfer.copy_one_to_destination(source, self.dcim, self.local, {})
+        self.assert_new_photo_was_saved(destination, result, content)
+        self.assertEqual(catalog.catalog_row(source)[3], fileops.sha256_file(source))
+
+    def test_an_old_hash_in_the_catalog_is_replaced_when_the_conflict_copy_already_exists(self):
+        source, destination, digest = self.saved_photo()
+        catalog.catalog_record(source, sha256=digest)
+        content = self.replace_keeping_details(source)
+        copy = destination.with_name(f"{destination.stem}__conflict-1{destination.suffix}")
+        copy.write_bytes(content)
+        result = transfer.copy_one_to_destination(source, self.dcim, self.local, {})
+        self.assertEqual((result.status, result.path), ("skipped", copy))
+        self.assertEqual(catalog.catalog_row(source)[3], fileops.sha256_file(source))
+
+    def test_a_damaged_archive_copy_is_not_taken_for_the_card_file(self):
+        source, destination, digest = self.saved_photo()
+        manifest = {}
+        card.update_card_manifest_entry(manifest, source, self.dcim, digest)
+        self.replace_keeping_details(destination)
+        result = transfer.copy_one_to_destination(source, self.dcim, self.local, manifest)
+        self.assertEqual(result.status, "copied")
+        self.assertEqual(result.path.read_bytes(), source.read_bytes())
+        self.assertEqual(catalog.catalog_row(destination)[3], fileops.sha256_file(destination))
+
     def test_copy_and_verify(self):
         source = self.media()["RAW"]
         source.chmod(0o700)

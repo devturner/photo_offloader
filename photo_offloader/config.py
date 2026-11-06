@@ -42,6 +42,7 @@ TRIGGER_LOG_PATH = HOME / ".camera_transfer_trigger.log"  # written by scripts/t
 SESSION_LOCK_PATH = HOME / "Library" / "Caches" / "PhotoOffloader" / "import.lock"
 STATUS_FILE_PATH = INSTALL_DIR / "status.json"
 CATALOG_DB_PATH = DATA_DIR / "catalog.sqlite3"
+CARD_MANIFESTS_DIR = DATA_DIR / "card-manifests"  # one file per card, named by its volume ID
 LEGACY_CATALOG_DB_PATH = INSTALL_DIR / "catalog.sqlite3"  # before the catalog moved to DATA_DIR
 BUILD_INFO_PATH = APP_ROOT / "build_info.json"
 VERSION_PATH = APP_ROOT / "VERSION"

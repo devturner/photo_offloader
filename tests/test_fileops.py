@@ -248,5 +248,48 @@ class TestFileops(support.CardFixtureTestCase):
         self.assertEqual(fingerprint, FileFingerprint(stat.st_size, stat.st_mtime_ns, stat.st_ino))
 
 
+class TestEndsMatch(unittest.TestCase):
+    END = fileops.ENDS_CHECK_BYTES
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.first = Path(tmp.name) / "first"
+        self.second = Path(tmp.name) / "second"
+
+    def compare(self, first, second):
+        self.first.write_bytes(first)
+        self.second.write_bytes(second)
+        return fileops.ends_match(self.first, self.second)
+
+    def test_identical_files_match(self):
+        for size in (0, 10, self.END, 2 * self.END, 2 * self.END + 1, 3 * self.END):
+            with self.subTest(size=size):
+                self.assertTrue(self.compare(b"x" * size, b"x" * size))
+
+    def test_a_difference_in_either_end_is_found(self):
+        original = bytearray(b"x" * (3 * self.END))
+        for position in (0, self.END - 1, 2 * self.END, 3 * self.END - 1):
+            changed = bytearray(original)
+            changed[position] = ord("y")
+            with self.subTest(position=position):
+                self.assertFalse(self.compare(bytes(original), bytes(changed)))
+
+    def test_a_different_size_never_matches(self):
+        # Both ends read the same, so only the size tells these apart.
+        self.assertFalse(self.compare(b"x" * (3 * self.END), b"x" * (3 * self.END + 1)))
+
+    def test_the_middle_is_not_read(self):
+        original = bytearray(b"x" * (3 * self.END))
+        changed = bytearray(original)
+        changed[self.END] = ord("y")
+        self.assertTrue(self.compare(bytes(original), bytes(changed)))
+
+    def test_an_unreadable_file_raises(self):
+        self.first.write_bytes(b"x")
+        with self.assertRaises(OSError):
+            fileops.ends_match(self.first, self.second)
+
+
 if __name__ == "__main__":
     unittest.main()

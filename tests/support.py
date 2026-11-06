@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from photo_offloader import (
+    card,
     catalog,
     catalog_refresh,
     config,
@@ -49,6 +50,7 @@ def _test_locations(root: Path) -> dict:
         "SESSION_LOCK_PATH": root / "import.lock",
         "STATUS_FILE_PATH": install / "status.json",
         "CATALOG_DB_PATH": data / "catalog.sqlite3",
+        "CARD_MANIFESTS_DIR": data / "card-manifests",
         "LEGACY_CATALOG_DB_PATH": install / "catalog.sqlite3",
         "BUILD_INFO_PATH": root / "build_info.json",
         "VERSION_PATH": root / "VERSION",
@@ -80,6 +82,14 @@ def isolate_config(testcase: unittest.TestCase, root: Path, **overrides) -> None
         patcher = patch.object(config, name, value)
         patcher.start()
         testcase.addCleanup(patcher.stop)
+    # A test must never put a notification on the user's screen.
+    patcher = patch.object(logs, "notify")
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
+    # A fake card is a plain folder with no volume ID, and a test must not run diskutil on it.
+    patcher = patch.object(card, "card_volume_id", return_value="TEST-CARD-UUID")
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
     # The catalog schema is set up once per database path per process.
     patcher = patch.object(catalog, "_CATALOG_INITIALIZED_PATH", None)
     patcher.start()

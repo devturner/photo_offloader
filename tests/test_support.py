@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import config
+from photo_offloader import config, logs
 from tests import support
 
 
@@ -18,6 +18,13 @@ class TestIsolateConfig(unittest.TestCase):
                 if name.isupper() and isinstance(value, Path) and name not in support.CODE_PATHS:
                     with self.subTest(name=name):
                         self.assertTrue(value == root or root in value.parents, f"{name} = {value}")
+            self.doCleanups()
+
+    def test_a_test_can_not_send_a_real_notification(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("subprocess.run") as run:
+            support.isolate_config(self, Path(tmp))
+            logs.notify("Title", "Text")
+            run.assert_not_called()
             self.doCleanups()
 
     def test_a_new_config_path_without_a_test_location_is_refused(self):

@@ -5,14 +5,16 @@ from unittest.mock import MagicMock, patch
 from photo_offloader import logs
 from tests import support
 
+REAL_NOTIFY = logs.notify  # isolate_config replaces it during each test
+
 
 class TestLogs(support.CardFixtureTestCase):
     @patch("subprocess.run")
     def test_notify_nonfatal(self, run):
         run.return_value = MagicMock(returncode=0, stderr="")
-        logs.notify("T", "B")
+        REAL_NOTIFY("T", "B")
         run.return_value = MagicMock(returncode=1, stderr="bad")
-        logs.notify("T", "B")
+        REAL_NOTIFY("T", "B")
         self.assertEqual(run.call_count, 2)
 
     def test_rotate_log_file_keeps_bounded_generations(self):
