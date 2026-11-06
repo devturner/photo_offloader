@@ -11,7 +11,8 @@
   counts as failed.
 - **A card that can't be fully read isn't called complete.** What can be read is copied, but an
   unreadable folder fails the import. The card stays mounted, and no USB backup or upload starts.
-- **Free space is checked first.** Every destination needs room for the files plus a 100 MiB buffer.
+- **Free space is checked first.** Each disk needs room for the files that look new, plus a 100 MiB
+  buffer. If that estimate is wrong and a disk fills up, the affected copies fail and are reported.
 - **Each stage stands alone.** A USB or Google Photos failure never invalidates a verified copy on
   the Mac.
 - **Only one import runs at a time.** Mounting a card can fire several events, so the trigger

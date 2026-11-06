@@ -246,6 +246,15 @@ def expected_new_files(
     return (new_files, new_bytes) if verified else None
 
 
+def bytes_to_copy(paths: List[Path], manifest: Dict[str, dict], dcim_folder: Path) -> int:
+    """The size of the files without a verified hash, which are the ones that look unsaved."""
+    return sum(
+        source.stat().st_size
+        for source in paths
+        if not card_manifest_entry(manifest, source, dcim_folder)
+    )
+
+
 def update_card_scan_history(
     dcim_folder: Path,
     files: Dict[str, List[Path]],

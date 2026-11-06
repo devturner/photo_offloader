@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import plistlib
 import shutil
 import subprocess
@@ -97,6 +98,21 @@ def validate_destinations(destinations: Sequence[Path], required_bytes: int = 0)
                     )
         except OSError as exc:
             raise RuntimeError(f"Destination is not writable: {destination}: {exc}") from exc
+
+
+def validate_space(required: Dict[Path, int]) -> None:
+    """Check each destination is usable and has room, adding up those on the same disk."""
+    validate_destinations(list(required))
+    by_disk: Dict[int, Tuple[Path, int]] = {}
+    for destination, needed in required.items():
+        try:
+            disk = os.stat(destination).st_dev
+        except OSError as exc:
+            raise RuntimeError(f"Destination is not writable: {destination}: {exc}") from exc
+        first, total = by_disk.get(disk, (destination, 0))
+        by_disk[disk] = (first, total + needed)
+    for destination, total in by_disk.values():
+        validate_destinations([destination], total)
 
 
 def eject_volume(volume_path: Path) -> bool:
