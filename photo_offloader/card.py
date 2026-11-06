@@ -1,4 +1,5 @@
 """Camera cards: media types, finding and scanning a card, and the card-side manifest."""
+
 from __future__ import annotations
 
 import glob
@@ -24,16 +25,50 @@ PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".heic", ".heif", ".hif"}
 
 
 RAW_EXTENSIONS = {
-    ".3fr", ".arq", ".arw", ".cr2", ".cr3", ".crw", ".dcr", ".dng", ".erf",
-    ".fff", ".gpr", ".iiq", ".k25", ".kdc", ".mef", ".mos", ".mrw", ".nef",
-    ".nrw", ".orf", ".pef", ".raf", ".raw", ".rw2", ".rwl", ".sr2", ".srf",
-    ".srw", ".x3f",
+    ".3fr",
+    ".arq",
+    ".arw",
+    ".cr2",
+    ".cr3",
+    ".crw",
+    ".dcr",
+    ".dng",
+    ".erf",
+    ".fff",
+    ".gpr",
+    ".iiq",
+    ".k25",
+    ".kdc",
+    ".mef",
+    ".mos",
+    ".mrw",
+    ".nef",
+    ".nrw",
+    ".orf",
+    ".pef",
+    ".raf",
+    ".raw",
+    ".rw2",
+    ".rwl",
+    ".sr2",
+    ".srf",
+    ".srw",
+    ".x3f",
 }
 
 
 VIDEO_EXTENSIONS = {
-    ".mov", ".mp4", ".m4v", ".avi", ".mts", ".m2ts", ".mxf", ".mkv", ".3gp",
-    ".crm", ".braw",
+    ".mov",
+    ".mp4",
+    ".m4v",
+    ".avi",
+    ".mts",
+    ".m2ts",
+    ".mxf",
+    ".mkv",
+    ".3gp",
+    ".crm",
+    ".braw",
 }
 
 
@@ -76,10 +111,14 @@ def load_card_manifest_payload(dcim_folder: Path) -> Dict[str, object]:
     """Read the complete card-side manifest, tolerating absent/corrupt/read-only media."""
     try:
         payload = json.loads(card_manifest_path(dcim_folder).read_text(encoding="utf-8"))
-        if isinstance(payload, dict) and payload.get("schema") == 1 and isinstance(payload.get("files"), dict):
+        if (
+            isinstance(payload, dict)
+            and payload.get("schema") == 1
+            and isinstance(payload.get("files"), dict)
+        ):
             return payload
     except (OSError, ValueError, AttributeError):
-        pass
+        pass  # the card may be read-only or never imported: start with an empty manifest
     return {"schema": 1, "files": {}, "history": {}}
 
 
@@ -91,7 +130,9 @@ def load_card_manifest(dcim_folder: Path) -> Dict[str, dict]:
 
 
 def save_card_manifest(
-    dcim_folder: Path, files: Dict[str, dict], history: Optional[Dict[str, object]] = None,
+    dcim_folder: Path,
+    files: Dict[str, dict],
+    history: Optional[Dict[str, object]] = None,
 ) -> bool:
     """Atomically persist card metadata; inability to write never blocks import."""
     path = card_manifest_path(dcim_folder)
@@ -103,8 +144,12 @@ def save_card_manifest(
         fd, temp_name = tempfile.mkstemp(prefix=".manifest-", suffix=".tmp", dir=path.parent)
         temp_path = Path(temp_name)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"schema": 1, "files": files, "history": metadata},
-                      handle, separators=(",", ":"), sort_keys=True)
+            json.dump(
+                {"schema": 1, "files": files, "history": metadata},
+                handle,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
@@ -114,13 +159,14 @@ def save_card_manifest(
         if temp_path is not None:
             try:
                 temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as cleanup_exc:
+                logger.debug("Could not remove %s: %s", temp_path, cleanup_exc)
         return False
 
 
 def reconcile_card_manifest(
-    dcim_folder: Path, discovered: Dict[str, List[Path]],
+    dcim_folder: Path,
+    discovered: Dict[str, List[Path]],
 ) -> Dict[str, int]:
     """Compare the live card inventory with the prior manifest without trusting it to skip copies."""
     now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat() + "Z"
@@ -136,7 +182,8 @@ def reconcile_card_manifest(
             try:
                 relative = card_relative_key(source, dcim_folder)
                 fingerprint = fileops.file_fingerprint(source)
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
+                logger.debug("Leaving %s out of the card manifest check: %s", source, exc)
                 continue
             current_paths.add(relative)
             previous = manifest.get(relative)
@@ -151,8 +198,9 @@ def reconcile_card_manifest(
             else:
                 unchanged_files += 1
                 entry = dict(previous)
-            entry.update({"size": fingerprint.size, "mtime_ns": fingerprint.mtime_ns,
-                          "last_seen": now})
+            entry.update(
+                {"size": fingerprint.size, "mtime_ns": fingerprint.mtime_ns, "last_seen": now}
+            )
             manifest[relative] = entry
     counts = {
         "new_files": new_files,
@@ -170,8 +218,11 @@ def reconcile_card_manifest(
 
 
 def update_card_scan_history(
-    dcim_folder: Path, files: Dict[str, List[Path]], status: str,
-    verified_imported: int = 0, pending_or_failed: int = 0,
+    dcim_folder: Path,
+    files: Dict[str, List[Path]],
+    status: str,
+    verified_imported: int = 0,
+    pending_or_failed: int = 0,
 ) -> bool:
     """Record scan/import reconciliation metadata without claiming failed scans succeeded."""
     now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat() + "Z"
@@ -192,22 +243,29 @@ def update_card_scan_history(
 
 
 def card_manifest_entry(
-    manifest: Dict[str, dict], source: Path, dcim_folder: Path,
+    manifest: Dict[str, dict],
+    source: Path,
+    dcim_folder: Path,
 ) -> Optional[str]:
     """Return a card-cached hash only when relative path, size, and mtime still match."""
     try:
         relative = card_relative_key(source, dcim_folder)
         entry = manifest.get(relative)
         fingerprint = fileops.file_fingerprint(source)
-        if fileops.card_fingerprint_unchanged(entry, fingerprint) and isinstance(entry.get("sha256"), str):
+        if fileops.card_fingerprint_unchanged(entry, fingerprint) and isinstance(
+            entry.get("sha256"), str
+        ):
             return entry["sha256"]
     except (OSError, ValueError):
-        pass
+        pass  # a cache miss: the caller hashes the file instead
     return None
 
 
 def update_card_manifest_entry(
-    manifest: Dict[str, dict], source: Path, dcim_folder: Path, digest: str,
+    manifest: Dict[str, dict],
+    source: Path,
+    dcim_folder: Path,
+    digest: str,
 ) -> None:
     """Cache a verified source hash keyed by card-relative path and stable fingerprint."""
     try:
@@ -219,7 +277,7 @@ def update_card_manifest_entry(
             "sha256": digest,
         }
     except (OSError, ValueError):
-        pass
+        pass  # only a cache: without this entry the file is hashed next time
 
 
 def find_card_dcim() -> Path:

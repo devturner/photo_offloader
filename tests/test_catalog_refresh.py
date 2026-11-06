@@ -16,20 +16,22 @@ class TestCatalogRefresh(support.CardFixtureTestCase):
             # Provide deterministic batch metadata so this test covers the
             # fast catalog path without depending on a locally installed ExifTool.
             patch.object(
-                media_info, "get_exiftool_metadata_batch",
+                media_info,
+                "get_exiftool_metadata_batch",
                 side_effect=lambda paths, tags: {
-                    str(path.resolve()): {"Make": "NIKON", "Model": "Z 8"}
-                    for path in paths
+                    str(path.resolve()): {"Make": "NIKON", "Model": "Z 8"} for path in paths
                 },
             ),
             patch.object(
-                media_info, "get_month_folder",
+                media_info,
+                "get_month_folder",
                 side_effect=lambda p: (
                     catalog.catalog_record(p, capture_month="2026-10") or "2026-10"
                 ),
             ),
             patch.object(
-                media_info, "get_camera_model",
+                media_info,
+                "get_camera_model",
                 side_effect=lambda p: (
                     catalog.catalog_record(p, camera_model="NIKON-Z-8") or "NIKON-Z-8"
                 ),

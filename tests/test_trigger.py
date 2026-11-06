@@ -33,7 +33,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.background_path = self.root / "background-import-path.txt"
         self.python.write_text(
             "#!/bin/bash\n"
-            + "if [[ \"$1\" == \"$PHOTO_OFFLOADER_IMPORTER\" ]]; then "
+            + 'if [[ "$1" == "$PHOTO_OFFLOADER_IMPORTER" ]]; then '
             + f"printf '%s\\n' \"$@\" > {self.background_args}; "
             + f"printf '%s\\n' \"$PATH\" > {self.background_path}; sleep 0.2; fi\n"
             + "exit 0\n"
@@ -144,7 +144,9 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
                 "PHOTO_OFFLOADER_IMPORT_STATUS": str(self.install / ".import-status"),
                 "PHOTO_OFFLOADER_OSASCRIPT": str(self.osascript),
                 "PHOTO_OFFLOADER_VOLUMES_ROOT": str(self.volumes),
-                "PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE": str(self.install / ".terminal-output-enabled"),
+                "PHOTO_OFFLOADER_TERMINAL_OUTPUT_FILE": str(
+                    self.install / ".terminal-output-enabled"
+                ),
             }
         )
         env.update(extra)
@@ -180,6 +182,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertEqual(self.state.read_text().strip(), str(self.dcim))
         # Terminal output changes only where output is sent, not whether import runs.
         import time
+
         deadline = time.monotonic() + 2
         while not self.background_args.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -187,15 +190,16 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         args = self.background_args.read_text()
         self.assertIn("--source", args)
         self.assertIn(str(self.dcim), args)
-        self.assertIn("--no-eject", args, "auto-eject disabled must be enforced inside the importer")
+        self.assertIn(
+            "--no-eject", args, "auto-eject disabled must be enforced inside the importer"
+        )
         self.assertIn("/opt/homebrew/bin", self.background_path.read_text())
         self.assertIn("Submitted importer supervisor to launchd", self.log.read_text())
         import_log = self.root / ".camera_transfer.log"
         deadline = time.monotonic() + 2
         while (
-            (not import_log.exists() or "Background supervisor started" not in import_log.read_text())
-            and time.monotonic() < deadline
-        ):
+            not import_log.exists() or "Background supervisor started" not in import_log.read_text()
+        ) and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertTrue(import_log.exists(), "background importer log was not created")
         self.assertIn(
@@ -210,7 +214,9 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         )
         deadline = time.monotonic() + 2
         status_file = self.install / ".import-status"
-        while (not status_file.exists() or not status_file.read_text().startswith("success|")) and time.monotonic() < deadline:
+        while (
+            not status_file.exists() or not status_file.read_text().startswith("success|")
+        ) and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertTrue(status_file.exists(), "supervisor must persist import completion status")
         self.assertTrue(status_file.read_text().startswith("success|"), status_file.read_text())
@@ -220,16 +226,26 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.state.write_text(str(self.dcim) + "\n")
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.state.exists(), "an already-handled mount must not be reset without completion status")
-        self.assertFalse(self.background_args.exists(), "missing completion status must not trigger a relaunch loop")
+        self.assertTrue(
+            self.state.exists(),
+            "an already-handled mount must not be reset without completion status",
+        )
+        self.assertFalse(
+            self.background_args.exists(),
+            "missing completion status must not trigger a relaunch loop",
+        )
         self.assertIn("suppressing relaunch until unmount", self.log.read_text())
 
     def test_registered_worker_does_not_clear_handled_state_or_relaunch(self):
         self.state.write_text(str(self.dcim) + "\n")
         result = self.run_trigger(PHOTO_OFFLOADER_TEST_WORKER_REGISTERED="1")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.state.exists(), "registered worker must not cause handled-state to be deleted")
-        self.assertFalse(self.command_capture.exists(), "registered worker must suppress a duplicate launch")
+        self.assertTrue(
+            self.state.exists(), "registered worker must not cause handled-state to be deleted"
+        )
+        self.assertFalse(
+            self.command_capture.exists(), "registered worker must suppress a duplicate launch"
+        )
         self.assertIn("preserving handled state", self.log.read_text())
 
     def test_failed_background_import_is_not_retried_until_unmount(self):
@@ -239,9 +255,13 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
 
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.background_args.exists(), "a recorded failure must suppress immediate relaunch")
+        self.assertFalse(
+            self.background_args.exists(), "a recorded failure must suppress immediate relaunch"
+        )
         self.assertTrue(self.state.exists(), "failed mount state must remain until unmount")
-        self.assertIn("suppressing automatic retry until the card is unmounted", self.log.read_text())
+        self.assertIn(
+            "suppressing automatic retry until the card is unmounted", self.log.read_text()
+        )
 
     def test_failed_mount_can_retry_after_unmount_and_remount(self):
         (self.install / ".terminal-output-enabled").unlink()
@@ -259,10 +279,13 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0, result.stderr)
         import time
+
         deadline = time.monotonic() + 2
         while not self.background_args.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
-        self.assertTrue(self.background_args.exists(), "remounted card should be eligible for a fresh import")
+        self.assertTrue(
+            self.background_args.exists(), "remounted card should be eligible for a fresh import"
+        )
 
     def test_terminal_can_be_enabled_by_dashboard_toggle(self):
         (self.install / ".terminal-output-enabled").touch()
@@ -290,9 +313,13 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
 
         result = self.run_trigger()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.state.exists(), "successful handled-state must survive transient DCIM absence")
+        self.assertTrue(
+            self.state.exists(), "successful handled-state must survive transient DCIM absence"
+        )
         self.assertEqual(self.state.read_text().strip(), str(self.dcim))
-        self.assertIn("preserving successful handled-state through mount visibility gap", self.log.read_text())
+        self.assertIn(
+            "preserving successful handled-state through mount visibility gap", self.log.read_text()
+        )
 
     # ------------------------------------------------------------------ helpers
     def wait_for(self, predicate, timeout=6.0):
@@ -334,8 +361,10 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.dcim.mkdir(parents=True)  # card B, same volume name
         self.set_card_uuid("BBBB-BBBB")
         self.assertEqual(self.run_trigger().returncode, 0)
-        self.assertTrue(self.wait_for(self.background_args.exists),
-                        "a different card with the same volume name was never imported")
+        self.assertTrue(
+            self.wait_for(self.background_args.exists),
+            "a different card with the same volume name was never imported",
+        )
         self.assertTrue(self.wait_for_workers(), "card B's import worker did not finish")
         self.assertIn("different card", self.log.read_text().lower())
 
@@ -377,8 +406,10 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.remove_card_and_backdate_absence(seconds_ago=120)
 
         self.assertEqual(self.run_trigger().returncode, 0)
-        self.assertTrue(self.wait_for(self.background_args.exists),
-                        "re-inserted card with new photos was never imported")
+        self.assertTrue(
+            self.wait_for(self.background_args.exists),
+            "re-inserted card with new photos was never imported",
+        )
         self.assertTrue(self.wait_for_workers())
         self.assertIn("re-inserted", self.log.read_text())
 
@@ -390,15 +421,19 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertEqual(self.run_trigger().returncode, 0)
         time.sleep(0.5)
         self.assertFalse(self.background_args.exists(), "a brief mount gap must not re-import")
-        self.assertFalse(Path(str(self.state) + ".absent").exists(),
-                         "absence marker must be cleared once the card is seen again")
+        self.assertFalse(
+            Path(str(self.state) + ".absent").exists(),
+            "absence marker must be cleared once the card is seen again",
+        )
 
     def test_remount_grace_period_is_configurable(self):
         (self.install / ".terminal-output-enabled").unlink()
         self.insert_card_in_background_mode("AAAA-AAAA")
         self.remove_card_and_backdate_absence(seconds_ago=120)
 
-        self.assertEqual(self.run_trigger(PHOTO_OFFLOADER_REMOUNT_GRACE_SECONDS="600").returncode, 0)
+        self.assertEqual(
+            self.run_trigger(PHOTO_OFFLOADER_REMOUNT_GRACE_SECONDS="600").returncode, 0
+        )
         time.sleep(0.5)
         self.assertFalse(self.background_args.exists())
 

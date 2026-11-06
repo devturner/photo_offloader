@@ -21,9 +21,11 @@ class TestTransfer(support.CardFixtureTestCase):
         raw.write_bytes(b"raw-content")
         identity = VolumeIdentity(self.usb_volume, "disk-test", "volume-test")
 
-        with patch.object(volumes, "usb_is_mounted", return_value=True), \
-                patch.object(volumes, "get_volume_identity", return_value=identity), \
-                patch.object(volumes, "volume_identity_matches", return_value=True):
+        with (
+            patch.object(volumes, "usb_is_mounted", return_value=True),
+            patch.object(volumes, "get_volume_identity", return_value=identity),
+            patch.object(volumes, "volume_identity_matches", return_value=True),
+        ):
             stats = transfer.copy_local_archive_to_usb(identity)
 
         self.assertEqual(stats.failed, 0)
@@ -50,7 +52,9 @@ class TestTransfer(support.CardFixtureTestCase):
         manifest = {}
         card.update_card_manifest_entry(manifest, source, self.dcim, digest)
         catalog.catalog_record(destination, sha256=digest)
-        with patch.object(fileops, "sha256_file", side_effect=AssertionError("must reuse cached hashes")):
+        with patch.object(
+            fileops, "sha256_file", side_effect=AssertionError("must reuse cached hashes")
+        ):
             result = transfer.copy_one_to_destination(source, self.dcim, self.local, manifest)
         self.assertEqual(result.status, "skipped")
 
@@ -66,7 +70,9 @@ class TestTransfer(support.CardFixtureTestCase):
         card.update_card_manifest_entry(manifest, source, self.dcim, digest)
         catalog.catalog_record(destination, sha256=digest)
         self.shift_mtime(source, 3600)
-        with patch.object(fileops, "sha256_file", side_effect=AssertionError("must reuse cached hashes")):
+        with patch.object(
+            fileops, "sha256_file", side_effect=AssertionError("must reuse cached hashes")
+        ):
             result = transfer.copy_one_to_destination(source, self.dcim, self.local, manifest)
         self.assertEqual(result.status, "skipped")
 
@@ -106,8 +112,12 @@ class TestTransfer(support.CardFixtureTestCase):
     def test_camera_index_file_is_replaced_not_conflict_copied(self):
         # User log 2026-11-04: Nikon rewrites NC_FLLST.DAT on every shoot, so each
         # import left another NC_FLLST__conflict-N.DAT in Other.
-        first = transfer.copy_one_to_destination(self.camera_index_file(b"index v1"), self.dcim, self.local)
-        second = transfer.copy_one_to_destination(self.camera_index_file(b"index v2 longer"), self.dcim, self.local)
+        first = transfer.copy_one_to_destination(
+            self.camera_index_file(b"index v1"), self.dcim, self.local
+        )
+        second = transfer.copy_one_to_destination(
+            self.camera_index_file(b"index v2 longer"), self.dcim, self.local
+        )
         self.assertEqual(second.status, "copied")
         self.assertEqual(second.path, first.path)
         self.assertEqual(first.path.read_bytes(), b"index v2 longer")
@@ -135,6 +145,35 @@ class TestTransfer(support.CardFixtureTestCase):
             with self.assertRaisesRegex(IOError, "Source changed"):
                 transfer.copy_one_to_destination(source, self.dcim, self.local)
 
+    def test_a_corrupt_temporary_copy_is_never_installed(self):
+        source = self.media()["RAW"]
+        destination = media_info.build_destination_path(source, self.dcim, self.local)
+        good_hash = fileops.sha256_file(source)
+
+        def corrupt_copy(_src, dst):
+            Path(dst).write_bytes(b"corrupted on the way to the disk")
+            return good_hash
+
+        with patch("photo_offloader.fileops.copy_file_with_progress", side_effect=corrupt_copy):
+            with self.assertRaisesRegex(IOError, "Verification failed for temporary copy"):
+                transfer.copy_one_to_destination(source, self.dcim, self.local)
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(destination.parent.iterdir()), [])  # temporary file cleaned up
+
+    def test_a_corrupt_final_copy_is_removed_and_reported(self):
+        # A fallback install (exFAT has no hard links) is a fresh write that needs its own check.
+        source = self.media()["RAW"]
+        destination = media_info.build_destination_path(source, self.dcim, self.local)
+
+        def corrupt_install(_temp, final, replace=False):
+            Path(final).write_bytes(b"corrupted on the way to the disk")
+            return True
+
+        with patch("photo_offloader.fileops.install_file", side_effect=corrupt_install):
+            with self.assertRaisesRegex(IOError, "Final verification failed"):
+                transfer.copy_one_to_destination(source, self.dcim, self.local)
+        self.assertFalse(destination.exists())
+
     def test_second_import_skips(self):
         self.media()
         files = card.find_media_files(self.dcim)
@@ -151,7 +190,9 @@ class TestTransfer(support.CardFixtureTestCase):
         files = card.find_media_files(self.dcim)
         stats = ImportStats(found=3)
         for category in ("JPG", "RAW", "VIDEO"):
-            transfer.copy_category(files[category], self.dcim, [self.local, self.usb], category, stats)
+            transfer.copy_category(
+                files[category], self.dcim, [self.local, self.usb], category, stats
+            )
         self.assertEqual((stats.destination_copies, stats.verified_copies, stats.failed), (6, 6, 0))
 
     def test_usb_backup_copies_missing_files_and_skips_matching_files(self):
@@ -176,7 +217,7 @@ class TestTransfer(support.CardFixtureTestCase):
         # 2,784 files and ~90 s at 50,000; one bulk read takes 0.06 s.
         self.archive_already_on_usb(5)
         with patch.object(volumes, "usb_is_mounted", return_value=True):
-            transfer.copy_local_archive_to_usb()   # first run hashes and records everything
+            transfer.copy_local_archive_to_usb()  # first run hashes and records everything
         small = self.connections_during_usb_backup()
         self.archive_already_on_usb(60)
         with patch.object(volumes, "usb_is_mounted", return_value=True):
@@ -190,8 +231,10 @@ class TestTransfer(support.CardFixtureTestCase):
         with patch.object(volumes, "usb_is_mounted", return_value=True):
             first = transfer.copy_local_archive_to_usb()
         self.assertEqual(first.destination_skips, 4)
-        with patch.object(volumes, "usb_is_mounted", return_value=True), \
-                patch.object(fileops, "sha256_file", side_effect=AssertionError("re-read a file")):
+        with (
+            patch.object(volumes, "usb_is_mounted", return_value=True),
+            patch.object(fileops, "sha256_file", side_effect=AssertionError("re-read a file")),
+        ):
             second = transfer.copy_local_archive_to_usb()
         self.assertEqual((second.destination_skips, second.failed), (4, 0))
 
@@ -256,9 +299,11 @@ class TestTransfer(support.CardFixtureTestCase):
                 opened.append(1)
             return real_open(path_self, *args, **kwargs)
 
-        with patch.object(volumes, "usb_is_mounted", return_value=True), \
-                patch.object(volumes, "get_volume_identity", return_value=None), \
-                patch.object(pathlib.Path, "open", spy):
+        with (
+            patch.object(volumes, "usb_is_mounted", return_value=True),
+            patch.object(volumes, "get_volume_identity", return_value=None),
+            patch.object(pathlib.Path, "open", spy),
+        ):
             stats = transfer.copy_local_archive_to_usb()
         self.assertEqual((stats.destination_copies, stats.failed), (1, 0))
         self.assertEqual(len(opened), 1, f"local file was read {len(opened)} times")
@@ -280,7 +325,10 @@ class TestTransfer(support.CardFixtureTestCase):
             DestinationResult(self.local, "copied", copied_path, "copied and verified"),
         ]
 
-        with patch("photo_offloader.transfer.copy_one_to_destination", side_effect=[results[0], OSError("backup unavailable")]):
+        with patch(
+            "photo_offloader.transfer.copy_one_to_destination",
+            side_effect=[results[0], OSError("backup unavailable")],
+        ):
             transfer.copy_category([source], self.root, [self.local, self.usb], "JPG", stats)
 
         self.assertEqual(stats.destination_copies, 1)

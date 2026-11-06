@@ -15,6 +15,7 @@ first when asked to "continue".
 - Browser tests: `.venv/bin/python -m unittest tests.browser.test_dashboard_page` (about 20 s). They
   are part of `discover` and skip without Playwright's Chromium (`.venv/bin/python -m playwright
   install chromium`). See "How the user likes to work" for screenshots.
+- Format: `.venv/bin/python -m ruff format .` (CI runs it with `--check`).
 - Lint: `.venv/bin/python -m ruff check .`. ruff enforces max complexity 15 (C901), so
   split functions instead of raising the limit.
 - Shell syntax: `bash -n install.sh uninstall.sh scripts/*.sh tools/*.sh`. macOS ships
@@ -60,7 +61,9 @@ Two consequences:
   Imports only point downward.
 - Modules call each other qualified (`catalog.catalog_row(...)`). Tests patch a name in
   the module that owns it.
-- `photo_offloader/dashboard/`: `core.py` holds all state and actions (unit-tested),
+- `photo_offloader/jsonfile.py`: tolerant reads and atomic writes of the JSON state files.
+- `photo_offloader/dashboard/`: `core.py` holds state and actions (unit-tested), `display.py`
+  the pure wording and cards, `paths.py` its file locations,
   `server.py` is the stdlib HTTP server (keep its token, Host/Origin and CSP checks),
   `web/index.html` is one static page that builds the DOM with `textContent` only and
   never puts card-derived text in `innerHTML`. `menubar/`: pure `model.py` plus a
@@ -97,6 +100,7 @@ Two consequences:
 - Commits in reviewable units: the message explains why, and behavior changes stay
   separate from moves and renames.
 - Work on a branch from `main` and open a PR; merge with a merge commit (not squash).
+- Follow `CODE_QUALITY.md` for clean code, reuse, errors, logging and ease of use.
 - UI preferences: a modern look, controls hidden until needed, one fixed-size transfer
   panel for the whole run, nothing that flashes in or out. Check page changes with the
   browser tests, and look at the result: set `PHOTO_OFFLOADER_TEST_SCREENSHOTS=<folder>` and run

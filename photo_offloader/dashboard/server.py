@@ -10,6 +10,7 @@ open in your browser. Every API request therefore needs:
 * a ``Host`` header that names this server (defeats DNS rebinding);
 * for POST, ``Content-Type: application/json`` and, when present, a same-origin ``Origin``.
 """
+
 from __future__ import annotations
 
 import hmac
@@ -46,8 +47,16 @@ class _QuietServer(ThreadingHTTPServer):
 
 
 class DashboardServer:
-    def __init__(self, core: DashboardCore, web_root: Path, *, token: Optional[str] = None,
-                 host: str = "127.0.0.1", port: int = 0, idle_timeout: Optional[float] = None) -> None:
+    def __init__(
+        self,
+        core: DashboardCore,
+        web_root: Path,
+        *,
+        token: Optional[str] = None,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        idle_timeout: Optional[float] = None,
+    ) -> None:
         self.core = core
         self.web_root = web_root
         self.token = token or secrets.token_urlsafe(24)
@@ -66,7 +75,11 @@ class DashboardServer:
         return f"http://127.0.0.1:{self.port}/#t={self.token}"
 
     def start(self) -> None:
-        self._thread = threading.Thread(target=lambda: self.httpd.serve_forever(poll_interval=0.1), name="dashboard-http", daemon=True)
+        self._thread = threading.Thread(
+            target=lambda: self.httpd.serve_forever(poll_interval=0.1),
+            name="dashboard-http",
+            daemon=True,
+        )
         self._thread.start()
         if self.idle_timeout:
             threading.Thread(target=self._watchdog, name="dashboard-idle", daemon=True).start()
@@ -94,7 +107,6 @@ class DashboardServer:
         return type("Handler", (_DashboardHandler,), {"dashboard": self})
 
 
-
 # ------------------------------------------------------------------ single-instance support
 def write_instance_file(path: Path, server: DashboardServer, mode: str = "browser") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,7 +127,9 @@ def find_running_instance(path: Path, timeout: float = 1.0) -> Optional[Dict[str
         return None
     try:
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
-        connection.request("GET", "/api/ping", headers={TOKEN_HEADER: token, "Host": f"127.0.0.1:{port}"})
+        connection.request(
+            "GET", "/api/ping", headers={TOKEN_HEADER: token, "Host": f"127.0.0.1:{port}"}
+        )
         response = connection.getresponse()
         body = response.read()
         ok = response.status == 200
@@ -139,7 +153,9 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         return
 
     # ---- helpers
-    def _send(self, status: int, body: bytes, content_type: str, extra: Optional[Dict[str, str]] = None) -> None:
+    def _send(
+        self, status: int, body: bytes, content_type: str, extra: Optional[Dict[str, str]] = None
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -197,13 +213,21 @@ class _DashboardHandler(BaseHTTPRequestHandler):
                 self._json(500, {"error": "dashboard page is missing; re-run install.sh"})
                 return
             self.dashboard.last_request = time.monotonic()
-            self._send(200, body, content_type, {"Content-Security-Policy": CONTENT_SECURITY_POLICY})
+            self._send(
+                200, body, content_type, {"Content-Security-Policy": CONTENT_SECURITY_POLICY}
+            )
             return
         if parsed.path == "/api/ping":
             # A ping asks "is a page showing the dashboard?", so it must not count as one.
             if self._guard_api(touch=False):
-                self._json(200, {"ok": True, "pid": os.getpid(),
-                                 "idle_seconds": round(time.monotonic() - self.dashboard.last_request, 3)})
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "pid": os.getpid(),
+                        "idle_seconds": round(time.monotonic() - self.dashboard.last_request, 3),
+                    },
+                )
             return
         if parsed.path == "/api/state":
             if self._guard_api():
@@ -228,7 +252,9 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             return
         if not self._guard_api():
             return
-        if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+        if (self.headers.get("Content-Type") or "").split(";")[
+            0
+        ].strip().lower() != "application/json":
             self._json(415, {"error": "expected application/json"})
             return
         try:
@@ -245,7 +271,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         except ValueError:
             self._json(400, {"error": "invalid JSON"})
             return
-        result = self.dashboard.core.act(parsed.path[len(prefix):], params)
+        result = self.dashboard.core.act(parsed.path[len(prefix) :], params)
         self._json(200 if result.get("ok") or result.get("needs_choice") else 400, result)
 
     def do_PUT(self) -> None:  # noqa: N802

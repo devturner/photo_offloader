@@ -4,6 +4,7 @@
 launchctl and pgrep are replaced with stubs: launchctl keeps a "loaded labels"
 directory and records every call, pgrep reports whatever the test says is running.
 """
+
 import os
 import subprocess
 import tempfile
@@ -25,7 +26,7 @@ class TestServiceControl(unittest.TestCase):
         self.agents = self.root / "agents"
         self.loaded = self.root / "loaded"
         self.calls = self.root / "launchctl-calls.txt"
-        self.running = self.root / "running-pids.txt"   # lines: "<pid> <pattern>"
+        self.running = self.root / "running-pids.txt"  # lines: "<pid> <pattern>"
         self.killed = self.root / "killed.txt"
         self.teardown_seconds = self.root / "teardown-seconds.txt"
         self.refuse_bootstrap = self.root / "refuse-bootstrap"
@@ -84,8 +85,9 @@ grep -F -- "$pattern" "{self.running}" | cut -d' ' -f1 | grep .
             "PHOTO_OFFLOADER_STOP_TERM_GRACE_SECONDS": "1",
             **extra_env,
         }
-        return subprocess.run(["/bin/bash", str(SCRIPT), *args], env=env,
-                              capture_output=True, text=True, timeout=30)
+        return subprocess.run(
+            ["/bin/bash", str(SCRIPT), *args], env=env, capture_output=True, text=True, timeout=30
+        )
 
     def pretend_running(self, pid, path):
         with self.running.open("a") as handle:
@@ -122,7 +124,11 @@ grep -F -- "$pattern" "{self.running}" | cut -d' ' -f1 | grep .
     def test_stop_unloads_the_trigger_before_the_menu_bar(self):
         # The menu bar may be the process that invoked us; it must go last.
         self.run_service("stop")
-        order = [c.split()[-1].rsplit("/", 1)[-1] for c in self.launchctl_calls() if c.startswith("bootout")]
+        order = [
+            c.split()[-1].rsplit("/", 1)[-1]
+            for c in self.launchctl_calls()
+            if c.startswith("bootout")
+        ]
         self.assertEqual(order, [TRIGGER, MENUBAR])
 
     def test_stop_closes_open_dashboard_windows(self):
@@ -157,8 +163,7 @@ grep -F -- "$pattern" "{self.running}" | cut -d' ' -f1 | grep .
     def test_stop_wait_blocks_new_imports_first_then_waits_for_the_transfer(self):
         self.pretend_running(4242, self.importer)
         # The "transfer" finishes shortly after we start waiting.
-        finisher = subprocess.Popen(
-            ["/bin/bash", "-c", f'sleep 0.5; : > "{self.running}"'])
+        finisher = subprocess.Popen(["/bin/bash", "-c", f'sleep 0.5; : > "{self.running}"'])
         self.addCleanup(finisher.wait)
         result = self.run_service("stop", "--wait")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -212,8 +217,10 @@ grep -F -- "$pattern" "{self.running}" | cut -d' ' -f1 | grep .
     def test_start_is_idempotent_when_already_running(self):
         result = self.run_service("start")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse([c for c in self.launchctl_calls() if c.startswith("bootstrap")],
-                         "an already-loaded agent must not be bootstrapped again")
+        self.assertFalse(
+            [c for c in self.launchctl_calls() if c.startswith("bootstrap")],
+            "an already-loaded agent must not be bootstrapped again",
+        )
 
     # ------------------------------------------------ --keep-ui (menu bar / dashboard Stop)
     def test_stop_keep_ui_leaves_the_menu_bar_and_dashboards_running(self):

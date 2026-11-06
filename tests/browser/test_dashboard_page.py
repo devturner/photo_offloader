@@ -4,6 +4,7 @@ Needs Playwright and its Chromium (``requirements-dev.txt``, then ``python -m pl
 chromium``). Without them this module skips, so a plain ``unittest discover`` still works. Set
 PHOTO_OFFLOADER_TEST_SCREENSHOTS to a folder to also save a picture of every state.
 """
+
 from __future__ import annotations
 
 import os
@@ -16,12 +17,21 @@ from tests.browser.harness import CARD, ONE_RUN, SCENARIOS, Browser, BrowserTest
 try:
     from playwright.sync_api import expect
 except ImportError:
-    expect = None   # setUpModule skips every test
+    expect = None  # setUpModule skips every test
 
 NATIVE_WINDOW = {"width": 960, "height": 860}
 NARROW = {"width": 540, "height": 860}
-TRANSFER_STATES = ("scan", "read_photo_info", "checking", "copying", "copying_big_card", "usb_backup",
-                   "finishing_import", "starting_upload", "uploading")
+TRANSFER_STATES = (
+    "scan",
+    "read_photo_info",
+    "checking",
+    "copying",
+    "copying_big_card",
+    "usb_backup",
+    "finishing_import",
+    "starting_upload",
+    "uploading",
+)
 SUMMARY_STATES = ("finished", "failed", "failed_on_usb")
 RESTING_STATES = ("idle", "card_mounted", "already_imported", "paused")
 SLOT_NAMES = ["Progress", "Speed", "Files", "Elapsed", "Remaining"]
@@ -44,7 +54,9 @@ class PageTestCase(BrowserTestCase):
             .map(s => [s.querySelector('.k').textContent, s.querySelector('.v').textContent]))""")
 
     def steps(self) -> List[str]:
-        return self.page.evaluate("[...document.querySelectorAll('.stages span')].map(s => s.dataset.state)")
+        return self.page.evaluate(
+            "[...document.querySelectorAll('.stages span')].map(s => s.dataset.state)"
+        )
 
     def background(self) -> str:
         return self.page.evaluate("getComputedStyle(document.body).backgroundColor")
@@ -54,9 +66,14 @@ class PageTestCase(BrowserTestCase):
 
     def click_action(self, selector_or_locator, action: str):
         """Click and wait until the server has answered this action."""
-        target = (self.page.locator(selector_or_locator) if isinstance(selector_or_locator, str)
-                  else selector_or_locator)
-        with self.page.expect_response(lambda r: r.url.endswith("/api/action/" + action)) as response:
+        target = (
+            self.page.locator(selector_or_locator)
+            if isinstance(selector_or_locator, str)
+            else selector_or_locator
+        )
+        with self.page.expect_response(
+            lambda r: r.url.endswith("/api/action/" + action)
+        ) as response:
             target.click()
         self.assertTrue(response.value.ok, f"{action}: {response.value.status}")
 
@@ -79,9 +96,11 @@ class TestFixedPanel(PageTestCase):
 
     def test_nothing_moves_while_one_page_follows_a_whole_run(self):
         self.show("idle", **NATIVE_WINDOW)
-        where = "[document.querySelector('#hero').getBoundingClientRect().top," \
-                " document.querySelector('#hero').getBoundingClientRect().height," \
-                " document.querySelector('#pipeline').getBoundingClientRect().top]"
+        where = (
+            "[document.querySelector('#hero').getBoundingClientRect().top,"
+            " document.querySelector('#hero').getBoundingClientRect().height,"
+            " document.querySelector('#pipeline').getBoundingClientRect().top]"
+        )
         start = self.page.evaluate(where)
         for state in ONE_RUN:
             with self.subTest(state=state):
@@ -105,7 +124,9 @@ class TestFixedPanel(PageTestCase):
         expect(self.page.locator("#banner")).to_be_visible()
         self.assertEqual(self.page.locator("#pill-text").text_content(), "Stopped")
         self.click_action("#banner-start", "service_start")
-        self.assertIn(["/bin/bash", str(self.sandbox.paths.service_script), "start"], self.sandbox.ran)
+        self.assertIn(
+            ["/bin/bash", str(self.sandbox.paths.service_script), "start"], self.sandbox.ran
+        )
 
 
 class TestSlots(PageTestCase):
@@ -123,22 +144,38 @@ class TestSlots(PageTestCase):
 
     def test_a_value_not_known_yet_is_a_dash_not_missing(self):
         self.show("scan")
-        self.assertEqual(self.slots(), {"Progress": "—", "Speed": "—", "Files": "—",
-                                        "Elapsed": "2s", "Remaining": "—"})
+        self.assertEqual(
+            self.slots(),
+            {"Progress": "—", "Speed": "—", "Files": "—", "Elapsed": "2s", "Remaining": "—"},
+        )
         self.assertEqual(self.page.locator(".slot .v.none").count(), 4)
 
     def test_copying_fills_every_slot(self):
         self.show("copying")
-        self.assertEqual(self.slots(), {"Progress": "43% · 34.0 of 80.0 GB", "Speed": "168.0 MB/s",
-                                        "Files": "1,214 of 2,378 · 27 new", "Elapsed": "1m 59s",
-                                        "Remaining": "4m 00s"})
+        self.assertEqual(
+            self.slots(),
+            {
+                "Progress": "43% · 34.0 of 80.0 GB",
+                "Speed": "168.0 MB/s",
+                "Files": "1,214 of 2,378 · 27 new",
+                "Elapsed": "1m 59s",
+                "Remaining": "4m 00s",
+            },
+        )
         self.assertEqual(self.page.locator(".slot .v.none").count(), 0)
 
     def test_the_finished_summary_totals_the_run(self):
         self.show("finished")
-        self.assertEqual(self.slots(), {"Progress": "100% · 412.0 MB", "Average speed": "4.1 MB/s",
-                                        "Files": "18 new · 2,378 on card", "Took": "1m 40s",
-                                        "Remaining": "Done"})
+        self.assertEqual(
+            self.slots(),
+            {
+                "Progress": "100% · 412.0 MB",
+                "Average speed": "4.1 MB/s",
+                "Files": "18 new · 2,378 on card",
+                "Took": "1m 40s",
+                "Remaining": "Done",
+            },
+        )
 
     def test_a_run_that_did_not_finish_is_not_called_done(self):
         self.show("failed")
@@ -176,15 +213,24 @@ class TestStepStrip(PageTestCase):
             with self.subTest(state=state):
                 self.show(state)
                 self.assertEqual(self.steps(), expected)
-                self.assertEqual(self.page.locator(".stages span").all_text_contents(),
-                                 ["Scan card", "Read photo info", "Copy new files", "Back up to USB",
-                                  "Upload to Google Photos"])
+                self.assertEqual(
+                    self.page.locator(".stages span").all_text_contents(),
+                    [
+                        "Scan card",
+                        "Read photo info",
+                        "Copy new files",
+                        "Back up to USB",
+                        "Upload to Google Photos",
+                    ],
+                )
 
     def test_steps_that_will_not_run_are_skipped(self):
         sandbox = self.load("idle")
         sandbox.add_card()
         sandbox.importer_up = True
-        sandbox.status(state="copying", stage="copy", usb_planned=False, bytes_done=1, bytes_total=2)
+        sandbox.status(
+            state="copying", stage="copy", usb_planned=False, bytes_done=1, bytes_total=2
+        )
         self.open_page()
         self.assertEqual(self.steps(), ["done", "done", "active", "skipped", "skipped"])
 
@@ -248,8 +294,10 @@ class TestMenu(PageTestCase):
         expect(self.page.locator("#menu")).to_be_hidden()
 
     def test_switches_keep_it_open_and_show_the_change(self):
-        for selector, action, flag in (("#m-eject", "toggle_auto_eject", "auto_eject_file"),
-                                       ("#m-terminal", "toggle_terminal_output", "terminal_output_file")):
+        for selector, action, flag in (
+            ("#m-eject", "toggle_auto_eject", "auto_eject_file"),
+            ("#m-terminal", "toggle_terminal_output", "terminal_output_file"),
+        ):
             with self.subTest(action=action):
                 self.open_menu()
                 self.assertEqual(self.page.get_attribute(selector, "aria-checked"), "false")
@@ -260,11 +308,13 @@ class TestMenu(PageTestCase):
                 self.assert_acted((action, {}))
 
     def test_actions_close_it_and_call_the_server(self):
-        for selector, action, params in (("#m-pause", "pause", {}),
-                                         ("#m-catalog", "update_catalog", {}),
-                                         ("#m-usb", "usb_backup", {}),
-                                         ("#m-google", "google_sync", {}),
-                                         ("[data-log=dashboard]", "open_log", {"log": "dashboard"})):
+        for selector, action, params in (
+            ("#m-pause", "pause", {}),
+            ("#m-catalog", "update_catalog", {}),
+            ("#m-usb", "usb_backup", {}),
+            ("#m-google", "google_sync", {}),
+            ("[data-log=dashboard]", "open_log", {"log": "dashboard"}),
+        ):
             with self.subTest(action=action):
                 self.open_menu()
                 self.click_action(selector, action)
@@ -290,13 +340,17 @@ class TestMenu(PageTestCase):
         expect(self.page.locator("#menu")).to_be_hidden()
         expect(self.page.locator("#stop-title")).to_have_text("Stop Photo Offloader?")
         self.assert_acted()
-        self.click_action(self.page.locator("#stop-actions").get_by_role("button", name="Stop"), "service_stop")
+        self.click_action(
+            self.page.locator("#stop-actions").get_by_role("button", name="Stop"), "service_stop"
+        )
         self.assert_acted(("service_stop", {}))
 
         self.open_menu("copying")
         self.page.click("#m-service")
         expect(self.page.locator("#stop-title")).to_have_text("A transfer is in progress")
-        self.click_action(self.page.get_by_role("button", name="Stop after transfer"), "service_stop")
+        self.click_action(
+            self.page.get_by_role("button", name="Stop after transfer"), "service_stop"
+        )
         self.assert_acted(("service_stop", {"mode": "wait"}))
 
 
@@ -312,8 +366,12 @@ class TestAppearance(PageTestCase):
         self.assertEqual(self.theme(), "dark")
         self.assertEqual(self.background(), DARK_BACKGROUND)
         expect(self.page.locator("#menu")).to_be_visible()
-        expect(self.page.locator("[data-theme-choice=dark]")).to_have_attribute("aria-checked", "true")
-        expect(self.page.locator("[data-theme-choice=system]")).to_have_attribute("aria-checked", "false")
+        expect(self.page.locator("[data-theme-choice=dark]")).to_have_attribute(
+            "aria-checked", "true"
+        )
+        expect(self.page.locator("[data-theme-choice=system]")).to_have_attribute(
+            "aria-checked", "false"
+        )
 
     def test_auto_follows_the_system_and_a_choice_overrides_it(self):
         self.show("idle", color_scheme="dark")
@@ -337,7 +395,7 @@ class TestAppearance(PageTestCase):
         self.wait_for_render()
         self.assertEqual(self.theme(), "dark")
 
-        self.open_page()   # new browser storage: only the server can remember it now
+        self.open_page()  # new browser storage: only the server can remember it now
         expect(self.page.locator("html")).to_have_attribute("data-theme", "dark")
         self.assertEqual(self.background(), DARK_BACKGROUND)
 
@@ -351,15 +409,21 @@ class TestStepButtons(PageTestCase):
 
     def test_import_now_starts_the_trigger(self):
         self.press("Camera card", "Import now", "import_card")
-        self.assertEqual(self.sandbox.spawned, [["/bin/bash", str(self.sandbox.paths.trigger_script)]])
+        self.assertEqual(
+            self.sandbox.spawned, [["/bin/bash", str(self.sandbox.paths.trigger_script)]]
+        )
 
     def test_eject_card_ejects_the_card(self):
         self.press("Camera card", "Eject", "eject_card")
-        self.assertIn(["/usr/sbin/diskutil", "eject", str(self.sandbox.volumes / CARD)], self.sandbox.ran)
+        self.assertIn(
+            ["/usr/sbin/diskutil", "eject", str(self.sandbox.volumes / CARD)], self.sandbox.ran
+        )
 
     def test_back_up_now_starts_the_backup(self):
         self.press("USB backup", "Back up now", "usb_backup")
-        self.assertEqual(self.sandbox.spawned, [["/fake/python3", str(self.sandbox.paths.backup_launcher)]])
+        self.assertEqual(
+            self.sandbox.spawned, [["/fake/python3", str(self.sandbox.paths.backup_launcher)]]
+        )
 
     def test_eject_usb_ejects_the_drive(self):
         self.press("USB backup", "Eject", "eject_usb")
@@ -367,15 +431,19 @@ class TestStepButtons(PageTestCase):
 
     def test_sync_now_starts_the_upload(self):
         self.press("Google Photos", "Sync now", "google_sync")
-        self.assertEqual(self.sandbox.spawned,
-                         [["/fake/python3", str(self.sandbox.paths.google_script), "--sync"]])
+        self.assertEqual(
+            self.sandbox.spawned,
+            [["/fake/python3", str(self.sandbox.paths.google_script), "--sync"]],
+        )
 
     def buttons(self) -> List[str]:
         return self.page.locator(".step .action").all_text_contents()
 
     def test_buttons_only_show_when_they_apply(self):
         self.show("already_imported")
-        self.assertEqual(self.buttons(), ["Import now", "Eject", "Back up now", "Eject", "Sync now"])
+        self.assertEqual(
+            self.buttons(), ["Import now", "Eject", "Back up now", "Eject", "Sync now"]
+        )
         self.show("copying")
         self.assertEqual(self.buttons(), [])
         self.show("idle")
@@ -390,7 +458,7 @@ class TestCardTextIsNeverMarkup(PageTestCase):
     """Volume and file names come from the card, so they can say anything."""
 
     def assert_inert(self) -> None:
-        self.page.wait_for_timeout(100)   # a blocked image would run onerror about now
+        self.page.wait_for_timeout(100)  # a blocked image would run onerror about now
         self.assertFalse(self.page.evaluate("'__pwned' in window"), "script from the card ran")
         self.assertEqual(self.page.evaluate("document.querySelectorAll('img').length"), 0)
 
@@ -404,12 +472,20 @@ class TestCardTextIsNeverMarkup(PageTestCase):
 
     def test_a_file_name_during_a_copy(self):
         sandbox = self.load("idle")
-        sandbox.transfer(state="copying", stage="copy", card=HOSTILE, current_file=HOSTILE,
-                         bytes_done=1, bytes_total=2)
+        sandbox.transfer(
+            state="copying",
+            stage="copy",
+            card=HOSTILE,
+            current_file=HOSTILE,
+            bytes_done=1,
+            bytes_total=2,
+        )
         self.open_page()
         self.assert_inert()
         expect(self.page.locator("#hero p")).to_contain_text(HOSTILE)
-        expect(self.page.locator(".step", has_text="Mac archive").locator(".detail")).to_have_text(HOSTILE)
+        expect(self.page.locator(".step", has_text="Mac archive").locator(".detail")).to_have_text(
+            HOSTILE
+        )
 
     def test_the_history_and_a_failure_message(self):
         sandbox = self.load("idle")
@@ -422,8 +498,10 @@ class TestCardTextIsNeverMarkup(PageTestCase):
         expect(self.page.locator("#history .s")).to_contain_text(HOSTILE)
 
 
-@unittest.skipUnless(os.environ.get("PHOTO_OFFLOADER_TEST_SCREENSHOTS"),
-                     "set PHOTO_OFFLOADER_TEST_SCREENSHOTS to a folder to save screenshots")
+@unittest.skipUnless(
+    os.environ.get("PHOTO_OFFLOADER_TEST_SCREENSHOTS"),
+    "set PHOTO_OFFLOADER_TEST_SCREENSHOTS to a folder to save screenshots",
+)
 class TestScreenshots(PageTestCase):
     def test_save_every_state(self):
         folder = Path(os.environ["PHOTO_OFFLOADER_TEST_SCREENSHOTS"])

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for the dashboard launcher (photo_offloader.dashboard.launcher): single instance, window or browser."""
+
 import fcntl
 import http.client
 import json
@@ -44,24 +45,41 @@ class LauncherCase(unittest.TestCase):
         self.web = root / "web"
         self.web.mkdir()
         (self.web / "index.html").write_text("<!doctype html><title>Photo Offloader</title>")
-        support.isolate_config(self, root, CATALOG_DB_PATH=self.data / "catalog.sqlite3",
-                               LEGACY_CATALOG_DB_PATH=root / "legacy.sqlite3")
+        support.isolate_config(
+            self,
+            root,
+            CATALOG_DB_PATH=self.data / "catalog.sqlite3",
+            LEGACY_CATALOG_DB_PATH=root / "legacy.sqlite3",
+        )
         self.paths = core.Paths(
-            install_dir=self.install, data_dir=self.data, volumes_root=root / "Volumes",
-            usb_volume=root / "Volumes" / "Photos", local_archives=(root / "a", root / "b"),
-            usb_archives=(root / "Volumes" / "Photos" / "c",), python=Path("/usr/bin/python3"))
+            install_dir=self.install,
+            data_dir=self.data,
+            volumes_root=root / "Volumes",
+            usb_volume=root / "Volumes" / "Photos",
+            local_archives=(root / "a", root / "b"),
+            usb_archives=(root / "Volumes" / "Photos" / "c",),
+            python=Path("/usr/bin/python3"),
+        )
         self.record = self.install / "dashboard.json"
         self.opened = []
         self.servers = []
 
     def launch(self, **kwargs):
-        defaults = dict(paths=self.paths, web_root=self.web, open_browser=self.opened.append,
-                        webview_module=None, idle_timeout=0.4, activate=lambda pid: False)
+        defaults = dict(
+            paths=self.paths,
+            web_root=self.web,
+            open_browser=self.opened.append,
+            webview_module=None,
+            idle_timeout=0.4,
+            activate=lambda pid: False,
+        )
         defaults.update(kwargs)
         return ui.main([], **defaults)
 
     def existing_server(self, mode="browser"):
-        server = srv.DashboardServer(core.DashboardCore(self.paths), self.web, token="existing-token")
+        server = srv.DashboardServer(
+            core.DashboardCore(self.paths), self.web, token="existing-token"
+        )
         server.start()
         self.addCleanup(server.stop)
         srv.write_instance_file(self.record, server, mode=mode)
@@ -75,13 +93,16 @@ class TestStartingTheDashboard(LauncherCase):
         def during_window():
             info = json.loads(self.record.read_text())
             connection = http.client.HTTPConnection("127.0.0.1", info["port"], timeout=3)
-            connection.request("GET", "/api/state", headers={srv.TOKEN_HEADER: info["token"],
-                                                             "Host": f"127.0.0.1:{info['port']}"})
+            connection.request(
+                "GET",
+                "/api/state",
+                headers={srv.TOKEN_HEADER: info["token"], "Host": f"127.0.0.1:{info['port']}"},
+            )
             reachable.append(connection.getresponse().status)
 
         webview = FakeWebview(on_start=during_window)
         self.assertEqual(self.launch(webview_module=webview), 0)
-        (title, url, kwargs), = webview.windows
+        ((title, url, kwargs),) = webview.windows
         self.assertEqual(title, "Photo Offloader")
         self.assertRegex(url, r"^http://127\.0\.0\.1:\d+/#t=[\w-]+$")
         self.assertTrue(webview.started)
@@ -92,7 +113,7 @@ class TestStartingTheDashboard(LauncherCase):
         # User request 2026-11-04: fixed-size window; Recent activity scrolls inside it.
         webview = FakeWebview()
         self.launch(webview_module=webview)
-        (_title, _url, kwargs), = webview.windows
+        ((_title, _url, kwargs),) = webview.windows
         self.assertEqual((kwargs["width"], kwargs["height"]), ui.WINDOW_SIZE)
         self.assertIs(kwargs["resizable"], False)
 
@@ -151,12 +172,23 @@ class TestSingleInstance(LauncherCase):
         # polling, there is nothing to open (and no reason to steal focus).
         existing = self.existing_server(mode="browser")
         connection = http.client.HTTPConnection("127.0.0.1", existing.port, timeout=3)
-        connection.request("GET", "/api/state", headers={srv.TOKEN_HEADER: "existing-token",
-                                                         "Host": f"127.0.0.1:{existing.port}"})
+        connection.request(
+            "GET",
+            "/api/state",
+            headers={srv.TOKEN_HEADER: "existing-token", "Host": f"127.0.0.1:{existing.port}"},
+        )
         connection.getresponse().read()
-        self.assertEqual(ui.main(["--if-closed"], paths=self.paths, web_root=self.web,
-                                 open_browser=self.opened.append, webview_module=None,
-                                 activate=lambda pid: False), 0)
+        self.assertEqual(
+            ui.main(
+                ["--if-closed"],
+                paths=self.paths,
+                web_root=self.web,
+                open_browser=self.opened.append,
+                webview_module=None,
+                activate=lambda pid: False,
+            ),
+            0,
+        )
         self.assertEqual(self.opened, [])
 
     def test_if_closed_reopens_when_nothing_has_polled_lately(self):
@@ -164,9 +196,17 @@ class TestSingleInstance(LauncherCase):
         existing = self.existing_server(mode="browser")
         time.sleep(0.3)
         with patch.object(ui, "PAGE_OPEN_WITHIN_SECONDS", 0.1):
-            self.assertEqual(ui.main(["--if-closed"], paths=self.paths, web_root=self.web,
-                                     open_browser=self.opened.append, webview_module=None,
-                                     activate=lambda pid: False), 0)
+            self.assertEqual(
+                ui.main(
+                    ["--if-closed"],
+                    paths=self.paths,
+                    web_root=self.web,
+                    open_browser=self.opened.append,
+                    webview_module=None,
+                    activate=lambda pid: False,
+                ),
+                0,
+            )
         self.assertEqual(self.opened, [f"http://127.0.0.1:{existing.port}/#t=existing-token"])
 
     def test_an_existing_native_window_is_brought_to_the_front(self):

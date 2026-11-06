@@ -1,4 +1,5 @@
 """Native macOS menu-bar control for Photo Offloader."""
+
 from __future__ import annotations
 
 import json
@@ -14,6 +15,7 @@ except ImportError as exc:  # pragma: no cover - dependency is installed by inst
     raise SystemExit("Photo Offloader menu-bar UI requires rumps. Re-run ./install.sh.") from exc
 
 from photo_offloader import config
+from photo_offloader.logs import logger
 from photo_offloader.menubar.model import Snapshot, menu_entries, menu_title, parse_status
 
 INSTALL_DIR = config.INSTALL_DIR
@@ -34,9 +36,13 @@ class PhotoOffloaderMenuBar(rumps.App):
     def __init__(self) -> None:
         super().__init__("Photo Offloader", title="📷", quit_button=None)
         self.handlers = {
-            "open_dashboard": self.open_dashboard, "copy_usb": self.copy_to_usb,
-            "pause": self.toggle_pause, "stop": self.stop_service,
-            "start": self.start_service, "quit": self.quit_app, "view_log": self.view_log,
+            "open_dashboard": self.open_dashboard,
+            "copy_usb": self.copy_to_usb,
+            "pause": self.toggle_pause,
+            "stop": self.stop_service,
+            "start": self.start_service,
+            "quit": self.quit_app,
+            "view_log": self.view_log,
         }
         self._snapshot: Optional[Snapshot] = None
         self.refresh()
@@ -48,8 +54,13 @@ class PhotoOffloaderMenuBar(rumps.App):
     def read_snapshot() -> Snapshot:
         usb = USB_VOLUME.is_mount()
         try:
-            result = subprocess.run(["/bin/bash", str(SERVICE_SCRIPT), "status"], check=False,
-                                    capture_output=True, text=True, timeout=5)
+            result = subprocess.run(
+                ["/bin/bash", str(SERVICE_SCRIPT), "status"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
         except (OSError, subprocess.TimeoutExpired):
             return Snapshot(running=False, usb=usb)
         return parse_status(result.stdout, result.returncode, usb=usb)
@@ -70,30 +81,47 @@ class PhotoOffloaderMenuBar(rumps.App):
 
     def copy_to_usb(self, _sender: object = None) -> None:
         if not USB_VOLUME.is_mount():
-            rumps.notification("Photo Offloader", "USB drive not found",
-                               "Mount the Photos drive to run the backup.")
+            rumps.notification(
+                "Photo Offloader",
+                "USB drive not found",
+                "Mount the Photos drive to run the backup.",
+            )
             return
         try:
-            subprocess.Popen([str(PYTHON), str(BACKUP_LAUNCHER_SCRIPT)],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(
+                [str(PYTHON), str(BACKUP_LAUNCHER_SCRIPT)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             self.open_dashboard()
-            rumps.notification("Photo Offloader", "USB backup started",
-                               "Missing files will be copied from the Mac archive.")
+            rumps.notification(
+                "Photo Offloader",
+                "USB backup started",
+                "Missing files will be copied from the Mac archive.",
+            )
         except OSError as exc:
             rumps.notification("Photo Offloader", "Could not start USB backup", str(exc))
 
     def open_dashboard(self, _sender: object = None) -> None:
-        subprocess.Popen([str(PYTHON), str(DASHBOARD_SCRIPT)],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(
+            [str(PYTHON), str(DASHBOARD_SCRIPT)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     def view_log(self, _sender: object = None) -> None:
         """Open the import log in Console, which follows new lines as they are written."""
         log = config.LOG_FILE_PATH
         if not log.is_file():
-            rumps.notification("Photo Offloader", "No import log yet", "It is created by the first import.")
+            rumps.notification(
+                "Photo Offloader", "No import log yet", "It is created by the first import."
+            )
             return
-        subprocess.Popen(["/usr/bin/open", "-a", "Console", str(log)],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(
+            ["/usr/bin/open", "-a", "Console", str(log)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     def toggle_pause(self, _sender: object = None) -> None:
         if PAUSE_FILE.exists():
@@ -102,16 +130,24 @@ class PhotoOffloaderMenuBar(rumps.App):
             except OSError as exc:
                 rumps.notification("Photo Offloader", "Could not resume", str(exc))
                 return
-            rumps.notification("Photo Offloader", "Automatic imports resumed",
-                               "Checking for a camera card now.")
+            rumps.notification(
+                "Photo Offloader", "Automatic imports resumed", "Checking for a camera card now."
+            )
             # Reset trigger deduplication: a card may have been inserted while paused.
             # Evaluate the current mount state immediately instead of waiting for another event.
             try:
                 (INSTALL_DIR / ".last_camera_source").unlink(missing_ok=True)
-            except OSError:
-                pass
-            subprocess.Popen(["/bin/bash", str(TRIGGER_SCRIPT)],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError as exc:
+                logger.warning(
+                    "Could not reset the last-card record; a mounted card "
+                    "may not import until it is re-inserted: %s",
+                    exc,
+                )
+            subprocess.Popen(
+                ["/bin/bash", str(TRIGGER_SCRIPT)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             self.refresh()
         else:
             try:
@@ -120,15 +156,23 @@ class PhotoOffloaderMenuBar(rumps.App):
             except OSError as exc:
                 rumps.notification("Photo Offloader", "Could not pause", str(exc))
                 return
-            rumps.notification("Photo Offloader", "Automatic imports paused",
-                               "Already-running copies will continue safely.")
+            rumps.notification(
+                "Photo Offloader",
+                "Automatic imports paused",
+                "Already-running copies will continue safely.",
+            )
             self.refresh()
 
     @staticmethod
     def transfer_running() -> bool:
         try:
-            result = subprocess.run(["/usr/bin/pgrep", "-f", str(IMPORTER_SCRIPT)],
-                                    check=False, capture_output=True, text=True, timeout=3)
+            result = subprocess.run(
+                ["/usr/bin/pgrep", "-f", str(IMPORTER_SCRIPT)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
         except (OSError, subprocess.TimeoutExpired):
             return False
         return bool(result.stdout.strip())
@@ -144,26 +188,35 @@ class PhotoOffloaderMenuBar(rumps.App):
             choice = rumps.alert(
                 title="A transfer is in progress",
                 message="Photo Offloader can stop once the current transfer finishes, "
-                        "or cancel it now. Cancelled copies are safe to resume later.",
-                ok="Stop After Transfer", cancel="Keep Running",
+                "or cancel it now. Cancelled copies are safe to resume later.",
+                ok="Stop After Transfer",
+                cancel="Keep Running",
                 other="Cancel Transfer and Stop",
             )
             if choice == 0:
                 return
             flags = ["--wait"] if choice == 1 else ["--force"]
-        elif rumps.alert(
-            title="Stop Photo Offloader?",
-            message="Cards will no longer be detected until you start it again "
-                    "(or log in again).",
-            ok="Stop", cancel="Cancel",
-        ) != 1:
+        elif (
+            rumps.alert(
+                title="Stop Photo Offloader?",
+                message="Cards will no longer be detected until you start it again "
+                "(or log in again).",
+                ok="Stop",
+                cancel="Cancel",
+            )
+            != 1
+        ):
             return
         try:
             # --keep-ui: only the trigger stops. This menu bar stays alive (showing "stopped"
             # with a Start item) instead of being torn down along with the service.
-            subprocess.Popen(["/bin/bash", str(SERVICE_SCRIPT), "stop", "--keep-ui", *flags],
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+            subprocess.Popen(
+                ["/bin/bash", str(SERVICE_SCRIPT), "stop", "--keep-ui", *flags],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
         except OSError as exc:
             rumps.notification("Photo Offloader", "Could not stop the service", str(exc))
             return
@@ -171,17 +224,26 @@ class PhotoOffloaderMenuBar(rumps.App):
 
     def start_service(self, _sender: object = None) -> None:
         try:
-            result = subprocess.run(["/bin/bash", str(SERVICE_SCRIPT), "start"], check=False,
-                                    capture_output=True, text=True, timeout=30)
+            result = subprocess.run(
+                ["/bin/bash", str(SERVICE_SCRIPT), "start"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
         except (OSError, subprocess.TimeoutExpired) as exc:
             rumps.notification("Photo Offloader", "Could not start the service", str(exc))
             return
         if result.returncode != 0:
-            rumps.notification("Photo Offloader", "Could not start the service",
-                               (result.stderr or result.stdout).strip()[:200])
+            rumps.notification(
+                "Photo Offloader",
+                "Could not start the service",
+                (result.stderr or result.stdout).strip()[:200],
+            )
         else:
-            rumps.notification("Photo Offloader", "Photo Offloader started",
-                               "Camera cards will be imported again.")
+            rumps.notification(
+                "Photo Offloader", "Photo Offloader started", "Camera cards will be imported again."
+            )
         self.refresh()
 
     def quit_app(self, _sender: object = None) -> None:
@@ -191,20 +253,27 @@ class PhotoOffloaderMenuBar(rumps.App):
         try:
             subprocess.run(
                 ["/bin/launchctl", "bootout", f"gui/{os.getuid()}/{UI_LABEL}"],
-                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            rumps.notification("Photo Offloader", "Could not disable menu-bar auto-restart", str(exc))
+            rumps.notification(
+                "Photo Offloader", "Could not disable menu-bar auto-restart", str(exc)
+            )
             return
 
-        # The dashboard is a separate Tk process. Close dashboard instances started
+        # The dashboard is a separate process. Close dashboard instances started
         # from this installation, but deliberately leave any active importer/backup
         # running so quitting the UI cannot interrupt a photo transfer or catalog write.
         try:
             result = subprocess.run(
                 ["/usr/bin/pgrep", "-f", str(DASHBOARD_SCRIPT)],
-                check=False, capture_output=True, text=True, timeout=3,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
             )
             for line in result.stdout.splitlines():
                 try:
@@ -212,9 +281,9 @@ class PhotoOffloaderMenuBar(rumps.App):
                     if pid != os.getpid() and pid != os.getppid():
                         os.kill(pid, signal.SIGTERM)
                 except (ValueError, ProcessLookupError, PermissionError):
-                    continue
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+                    continue  # already gone, or not ours to stop
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("Could not look for the dashboard to close it: %s", exc)
         rumps.quit_application()
 
 

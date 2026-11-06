@@ -6,6 +6,7 @@ Run on the Mac where the configured archives and ExifTool are available:
 
 The production SQLite catalog, log, and dashboard status files are not modified.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,21 +42,29 @@ def main() -> int:
                 started = time.perf_counter()
                 stats = catalog_refresh.update_file_catalog()
                 elapsed = time.perf_counter() - started
-                results.append({
-                    "run": label,
-                    "seconds": round(elapsed, 3),
-                    "files_scanned": stats.get("scanned"),
-                    "metadata_refreshed": stats.get("metadata_refreshed"),
-                    "roots": stats.get("roots"),
-                })
-            print(json.dumps({
-                "catalog": "temporary; production catalog unchanged",
-                "results": results,
-                "repeat_speedup": (
-                    round(results[0]["seconds"] / results[1]["seconds"], 2)
-                    if results[1]["seconds"] else None
-                ),
-            }, indent=2))
+                results.append(
+                    {
+                        "run": label,
+                        "seconds": round(elapsed, 3),
+                        "files_scanned": stats.get("scanned"),
+                        "metadata_refreshed": stats.get("metadata_refreshed"),
+                        "roots": stats.get("roots"),
+                    }
+                )
+            print(
+                json.dumps(
+                    {
+                        "catalog": "temporary; production catalog unchanged",
+                        "results": results,
+                        "repeat_speedup": (
+                            round(results[0]["seconds"] / results[1]["seconds"], 2)
+                            if results[1]["seconds"]
+                            else None
+                        ),
+                    },
+                    indent=2,
+                )
+            )
     finally:
         for name, value in originals.items():
             setattr(config, name, value)

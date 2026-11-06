@@ -8,6 +8,7 @@ The importer never deletes source media and never overwrites an existing
 same-name destination. It verifies the Mac SSD archive first, then ejects the
 card when enabled and independently synchronizes missing files to USB.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -53,11 +54,18 @@ def _finish_run_record(exit_code: int) -> None:
     if exit_code == 2 and not message:
         message = "Copies completed, but the card could not be ejected."
     catalog.record_import_run(
-        kind=str(kind), outcome=outcome, source=str(_RUN.get("source", "")),
-        started_at=float(_RUN.get("started_at", time.time())), finished_at=time.time(),
-        files=int(_RUN.get("files", 0)), copied=int(_RUN.get("copied", 0)),
-        skipped=int(_RUN.get("skipped", 0)), failed=int(_RUN.get("failed", 0)),
-        bytes=int(_RUN.get("bytes", 0)), usb=bool(_RUN.get("usb", False)), message=message,
+        kind=str(kind),
+        outcome=outcome,
+        source=str(_RUN.get("source", "")),
+        started_at=float(_RUN.get("started_at", time.time())),
+        finished_at=time.time(),
+        files=int(_RUN.get("files", 0)),
+        copied=int(_RUN.get("copied", 0)),
+        skipped=int(_RUN.get("skipped", 0)),
+        failed=int(_RUN.get("failed", 0)),
+        bytes=int(_RUN.get("bytes", 0)),
+        usb=bool(_RUN.get("usb", False)),
+        message=message,
         details=_run_details(),
     )
 
@@ -66,7 +74,9 @@ def _run_details() -> Dict[str, object]:
     """What this session itself did, for the dashboard's Recent activity."""
     details: Dict[str, object] = {}
     if _RUN.get("kind") == "import":
-        details["new"] = {k: v for k, v in dict(progress._PROGRESS.get("new_by_category") or {}).items() if v}
+        details["new"] = {
+            k: v for k, v in dict(progress._PROGRESS.get("new_by_category") or {}).items() if v
+        }
         details["new_bytes"] = int(progress._PROGRESS.get("new_bytes", 0) or 0)
     if "usb_copied" in _RUN:
         details["usb_copied"] = int(_RUN["usb_copied"])  # type: ignore[call-overload]
@@ -81,7 +91,7 @@ def load_build_info() -> Dict[str, str]:
         if isinstance(loaded, dict):
             info.update({str(key): str(value) for key, value in loaded.items()})
     except (OSError, ValueError):
-        pass
+        pass  # a source checkout has no build file: the version and git lookups below fill in
 
     if not info.get("version"):
         try:
@@ -92,11 +102,15 @@ def load_build_info() -> Dict[str, str]:
     # Source checkouts get useful provenance even when run without install.sh.
     if not info.get("git_commit") or not info.get("git_branch"):
         source_dir = Path(__file__).resolve().parent
+
         def git_value(*args: str) -> str:
             try:
                 result = subprocess.run(
                     ["git", "-C", str(source_dir), *args],
-                    check=False, capture_output=True, text=True, timeout=2,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
                 )
                 return result.stdout.strip() if result.returncode == 0 else "unknown"
             except (OSError, subprocess.SubprocessError):
@@ -122,8 +136,13 @@ def launch_google_photos_sync() -> None:
         log_path = config.GOOGLE_LAUNCHER_LOG_PATH
         logs.rotate_log_file(log_path, max_bytes=1024 * 1024, backups=1)
         with log_path.open("a", encoding="utf-8") as output:
-            subprocess.Popen([sys.executable, str(config.GOOGLE_PHOTOS_SYNC_PATH), "--sync"], stdin=subprocess.DEVNULL,
-                             stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+            subprocess.Popen(
+                [sys.executable, str(config.GOOGLE_PHOTOS_SYNC_PATH), "--sync"],
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
         logger.info("Started optional Google Photos upload in the background.")
     except OSError as exc:
         logger.warning("Could not start optional Google Photos upload: %s", exc)
@@ -138,7 +157,11 @@ def configure_logging(verbose: bool = False) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     fh = logging.handlers.RotatingFileHandler(
-        config.LOG_FILE_PATH, maxBytes=logs.LOG_MAX_BYTES, backupCount=logs.LOG_BACKUP_COUNT, encoding="utf-8")
+        config.LOG_FILE_PATH,
+        maxBytes=logs.LOG_MAX_BYTES,
+        backupCount=logs.LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(formatter)
     ch = logging.StreamHandler()
@@ -162,7 +185,9 @@ def import_session_lock() -> Iterator[None]:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise SessionBusyError("Another Photo Offloader import session is already running.") from exc
+            raise SessionBusyError(
+                "Another Photo Offloader import session is already running."
+            ) from exc
         handle.write(str(os.getpid()))
         handle.flush()
         yield
@@ -173,24 +198,45 @@ def import_session_lock() -> Iterator[None]:
             handle.close()
             try:
                 config.SESSION_LOCK_PATH.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as exc:  # harmless: the flock is already released
+                logger.debug("Could not remove the session lock file: %s", exc)
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Safely import camera media to local and backup storage.")
+    parser = argparse.ArgumentParser(
+        description="Safely import camera media to local and backup storage."
+    )
     parser.add_argument("--source", type=Path, help="Camera volume or DCIM path.")
-    parser.add_argument("--no-usb", action="store_true", help="Import to the Mac SSD only; do not start a USB backup.")
-    parser.add_argument("--backup-usb", action="store_true", help="Sync missing files from the Mac archive to the USB backup; no camera card required.")
-    parser.add_argument("--update-catalog", action="store_true", help="Initialize/update the SQLite catalog by scanning the local archive and mounted USB backup.")
+    parser.add_argument(
+        "--no-usb",
+        action="store_true",
+        help="Import to the Mac SSD only; do not start a USB backup.",
+    )
+    parser.add_argument(
+        "--backup-usb",
+        action="store_true",
+        help="Sync missing files from the Mac archive to the USB backup; no camera card required.",
+    )
+    parser.add_argument(
+        "--update-catalog",
+        action="store_true",
+        help="Initialize/update the SQLite catalog by scanning the local archive and mounted USB backup.",
+    )
     parser.add_argument("--no-eject", action="store_true", help="Do not eject the camera card.")
-    parser.add_argument("--sha256", action="store_true", help="Use SHA-256 for all copy verification.")
+    parser.add_argument(
+        "--sha256", action="store_true", help="Use SHA-256 for all copy verification."
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     return parser.parse_args(argv)
 
 
-def print_summary(dcim_folder: Path, destinations: Sequence[Path], stats: transfer.ImportStats,
-                  eject_attempted: bool, eject_success: bool) -> None:
+def print_summary(
+    dcim_folder: Path,
+    destinations: Sequence[Path],
+    stats: transfer.ImportStats,
+    eject_attempted: bool,
+    eject_success: bool,
+) -> None:
     print("\n" + "=" * 64)
     print("CAMERA IMPORT SUMMARY")
     print("=" * 64)
@@ -204,7 +250,9 @@ def print_summary(dcim_folder: Path, destinations: Sequence[Path], stats: transf
     print(f"Destination skips:    {stats.destination_skips}")
     print(f"Verified copies:      {stats.verified_copies}")
     print(f"Failures:             {stats.failed}")
-    print(f"Eject:                {'SUCCESS' if eject_attempted and eject_success else 'FAILED' if eject_attempted else 'not requested'}")
+    print(
+        f"Eject:                {'SUCCESS' if eject_attempted and eject_success else 'FAILED' if eject_attempted else 'not requested'}"
+    )
     if stats.errors:
         print("\nErrors:")
         for source, message in stats.errors:
@@ -245,11 +293,16 @@ def _log_provenance(argv: Optional[Sequence[str]]) -> str:
         "Run provenance: run_id=%s version=%s git_commit=%s git_branch=%s "
         "git_tag=%s git_dirty=%s build_time_utc=%s python=%s executable=%s "
         "script=%s argv=%r",
-        run_id, build_info.get("version", "unknown"),
-        build_info.get("git_commit", "unknown"), build_info.get("git_branch", "unknown"),
-        build_info.get("git_tag", "unknown"), build_info.get("git_dirty", "unknown"),
-        build_info.get("build_time_utc", "unknown"), sys.version.split()[0],
-        sys.executable, build_info.get("source_path", str(Path(__file__).resolve())),
+        run_id,
+        build_info.get("version", "unknown"),
+        build_info.get("git_commit", "unknown"),
+        build_info.get("git_branch", "unknown"),
+        build_info.get("git_tag", "unknown"),
+        build_info.get("git_dirty", "unknown"),
+        build_info.get("build_time_utc", "unknown"),
+        sys.version.split()[0],
+        sys.executable,
+        build_info.get("source_path", str(Path(__file__).resolve())),
         list(argv) if argv is not None else sys.argv[1:],
     )
     return run_id
@@ -270,16 +323,27 @@ def _run_usb_backup() -> int:
     _RUN.update(kind="usb_backup", usb=True)
     logger.info("Starting independent local-to-USB backup.")
     backup_stats = transfer.copy_local_archive_to_usb()
-    _RUN.update(files=backup_stats.found, copied=backup_stats.destination_copies,
-                skipped=backup_stats.destination_skips, failed=backup_stats.failed)
-    print_summary(config.LOCAL_DEST_ROOT,
-                  [config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT, config.USB_DEST_ROOT],
-                  backup_stats, False, False)
+    _RUN.update(
+        files=backup_stats.found,
+        copied=backup_stats.destination_copies,
+        skipped=backup_stats.destination_skips,
+        failed=backup_stats.failed,
+    )
+    print_summary(
+        config.LOCAL_DEST_ROOT,
+        [config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT, config.USB_DEST_ROOT],
+        backup_stats,
+        False,
+        False,
+    )
     if backup_stats.failed:
         logs.notify("USB Backup Incomplete", f"{backup_stats.failed} backup failure(s).")
         return 1
-    logs.notify("USB Backup Complete", f"{backup_stats.destination_copies} files copied; "
-                f"{backup_stats.destination_skips} already matched.")
+    logs.notify(
+        "USB Backup Complete",
+        f"{backup_stats.destination_copies} files copied; "
+        f"{backup_stats.destination_skips} already matched.",
+    )
     return 0
 
 
@@ -293,9 +357,19 @@ def _scan_card(args: argparse.Namespace) -> Tuple[Path, Path, Dict[str, List[Pat
     card_volume = dcim_folder.parent.resolve()
     _RUN["source"] = card_volume.name
     logger.info("Source card volume: %s", card_volume)
-    progress.update_status(source=str(card_volume), state="scanning", phase="card-to-ssd", stage="scan",
-                           files_total=0, files_done=0, new_files=0, new_by_category={}, new_bytes=0,
-                           usb_planned=False, message="Scanning camera card")
+    progress.update_status(
+        source=str(card_volume),
+        state="scanning",
+        phase="card-to-ssd",
+        stage="scan",
+        files_total=0,
+        files_done=0,
+        new_files=0,
+        new_by_category={},
+        new_bytes=0,
+        usb_planned=False,
+        message="Scanning camera card",
+    )
     logger.info("Scanning: %s", dcim_folder)
     time.sleep(1)
     files = card.scan_with_retry(dcim_folder)
@@ -304,16 +378,23 @@ def _scan_card(args: argparse.Namespace) -> Tuple[Path, Path, Dict[str, List[Pat
 
     total_found = sum(len(items) for items in files.values())
     _RUN.update(files=total_found, bytes=volumes.required_source_bytes(files))
-    logger.info("Scan complete: %d files (%d JPG, %d RAW, %d VIDEO, %d other)",
-                total_found, len(files["JPG"]), len(files["RAW"]), len(files["VIDEO"]),
-                len(files["OTHER"]))
+    logger.info(
+        "Scan complete: %d files (%d JPG, %d RAW, %d VIDEO, %d other)",
+        total_found,
+        len(files["JPG"]),
+        len(files["RAW"]),
+        len(files["VIDEO"]),
+        len(files["OTHER"]),
+    )
     if files["OTHER"]:
         kinds: Dict[str, int] = {}
         for path in files["OTHER"]:
             extension = path.suffix.lower() or "(no extension)"
             kinds[extension] = kinds.get(extension, 0) + 1
-        logger.info("Unrecognized file types will be copied to 'Other': %s",
-                    ", ".join(f"{ext} x{count}" for ext, count in sorted(kinds.items())))
+        logger.info(
+            "Unrecognized file types will be copied to 'Other': %s",
+            ", ".join(f"{ext} x{count}" for ext, count in sorted(kinds.items())),
+        )
     # Reconcile the live card inventory with the previous manifest. The
     # manifest is diagnostic/cache data only; copy decisions still verify destinations.
     reconciliation = card.reconcile_card_manifest(dcim_folder, files)
@@ -324,20 +405,28 @@ def _scan_card(args: argparse.Namespace) -> Tuple[Path, Path, Dict[str, List[Pat
     metadata_started = time.monotonic()
     prefetched = media_info.prefetch_card_metadata(files)
     if prefetched:
-        logger.info("Read photo info for %d new RAW/video files in %.1fs.",
-                    prefetched, time.monotonic() - metadata_started)
+        logger.info(
+            "Read photo info for %d new RAW/video files in %.1fs.",
+            prefetched,
+            time.monotonic() - metadata_started,
+        )
     return dcim_folder, card_volume, files
 
 
 def _check_local_space(files: Dict[str, List[Path]]) -> None:
     required = {
-        config.LOCAL_DEST_ROOT: sum(path.stat().st_size for category in ("JPG", "VIDEO", "OTHER")
-                                    for path in files[category]),
+        config.LOCAL_DEST_ROOT: sum(
+            path.stat().st_size
+            for category in ("JPG", "VIDEO", "OTHER")
+            for path in files[category]
+        ),
         config.LOCAL_RAW_DEST_ROOT: sum(path.stat().st_size for path in files["RAW"]),
     }
     for destination, needed in required.items():
         volumes.validate_destinations([destination], needed)
-    logger.info("Stage 1 destinations: %s and %s", config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT)
+    logger.info(
+        "Stage 1 destinations: %s and %s", config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT
+    )
 
 
 def _backup_after_import(usb_identity: Optional[volumes.VolumeIdentity]) -> transfer.ImportStats:
@@ -361,11 +450,109 @@ def _backup_after_import(usb_identity: Optional[volumes.VolumeIdentity]) -> tran
     return backup_stats
 
 
+def _copy_card_to_mac(
+    dcim_folder: Path,
+    files: Dict[str, List[Path]],
+    local_stats: transfer.ImportStats,
+    usb_expected: bool,
+) -> None:
+    """Stage 1: card -> Mac archive."""
+    progress._PROGRESS_STARTED = time.monotonic()
+    progress._PROGRESS.update(
+        {
+            "bytes_total": local_stats.source_bytes,
+            "bytes_done": 0,
+            "bytes_transferred": 0,
+            "state": "copying",
+            "stage": "copy",
+            "files_total": local_stats.found,
+            "files_done": 0,
+            "usb_planned": bool(usb_expected),
+            "phase": "card-to-ssd",
+            "message": "Copying camera card to Mac SSD",
+        }
+    )
+    progress.update_status()
+    for category in card.MEDIA_CATEGORIES:
+        category_root = media_info.local_root_for_category(category)
+        transfer.copy_category(files[category], dcim_folder, [category_root], category, local_stats)
+
+    _RUN.update(
+        copied=local_stats.destination_copies,
+        skipped=local_stats.destination_skips,
+        failed=local_stats.failed,
+    )
+
+
+def _report_local_failure(
+    dcim_folder: Path,
+    files: Dict[str, List[Path]],
+    destinations: List[Path],
+    local_stats: transfer.ImportStats,
+) -> None:
+    print_summary(dcim_folder, destinations, local_stats, False, False)
+    progress.update_status(
+        state="failed",
+        phase="card-to-ssd",
+        message=f"Local SSD import failed: {local_stats.failed} failure(s)",
+        current_file="",
+        current_path="",
+    )
+    card.update_card_scan_history(
+        dcim_folder, files, "incomplete", local_stats.verified_copies, local_stats.failed
+    )
+    logger.error("Local SSD import failed; card was not ejected and USB backup was not started.")
+    logs.notify(
+        "Photo Import Incomplete",
+        "Local SSD copy failed. Card remains mounted; USB backup was not started.",
+    )
+
+
+def _report_outcome(
+    local_stats: transfer.ImportStats,
+    backup_stats: transfer.ImportStats,
+    usb_expected: bool,
+    eject_attempted: bool,
+    eject_success: bool,
+) -> int:
+    """Say how a verified local import ended and start the upload. Returns the exit code."""
+    if backup_stats.failed:
+        progress.update_status(
+            state="failed",
+            phase="usb-backup",
+            message=f"Local import succeeded; USB backup has {backup_stats.failed} failure(s)",
+            current_file="",
+            current_path="",
+        )
+        logs.notify(
+            "USB Backup Incomplete", "The card was copied to the Mac. USB backup needs attention."
+        )
+        return 1
+    if eject_attempted and not eject_success:
+        logger.error("Local import and USB backup succeeded, but automatic card ejection failed.")
+        logs.notify(
+            "Photo Import Complete — Eject Failed",
+            "Copies completed, but the camera card could not be ejected.",
+        )
+        return 2
+    logger.info(
+        "Photo Offloader finished. Local copies: %d; USB copies: %d; USB skips: %d.",
+        local_stats.destination_copies,
+        backup_stats.destination_copies,
+        backup_stats.destination_skips,
+    )
+    launch_google_photos_sync()
+    logs.notify(
+        "Photo Import Complete",
+        f"{local_stats.found} media files copied to the Mac; USB backup "
+        + ("completed." if usb_expected else "was not run."),
+    )
+    return 0
+
+
 def _import_card(args: argparse.Namespace) -> int:
     dcim_folder, card_volume, files = _scan_card(args)
-    total_found = int(_RUN["files"])
-    source_bytes = int(_RUN["bytes"])
-    local_stats = transfer.ImportStats(found=total_found, source_bytes=source_bytes)
+    local_stats = transfer.ImportStats(found=int(_RUN["files"]), source_bytes=int(_RUN["bytes"]))
 
     usb_expected = not args.no_usb and volumes.usb_is_mounted()
     usb_identity = volumes.get_volume_identity(config.USB_DEST_VOLUME) if usb_expected else None
@@ -376,29 +563,9 @@ def _import_card(args: argparse.Namespace) -> int:
     else:
         logger.info("USB backup not selected or not mounted; local SSD import only.")
 
-    # Stage 1: card -> Mac archive.
-    progress._PROGRESS_STARTED = time.monotonic()
-    progress._PROGRESS.update({"bytes_total": source_bytes, "bytes_done": 0,
-                               "bytes_transferred": 0, "state": "copying", "stage": "copy",
-                               "files_total": total_found, "files_done": 0, "usb_planned": bool(usb_expected),
-                               "phase": "card-to-ssd", "message": "Copying camera card to Mac SSD"})
-    progress.update_status()
-    for category in card.MEDIA_CATEGORIES:
-        category_root = media_info.local_root_for_category(category)
-        transfer.copy_category(files[category], dcim_folder, [category_root], category, local_stats)
-
-    _RUN.update(copied=local_stats.destination_copies, skipped=local_stats.destination_skips,
-                failed=local_stats.failed)
+    _copy_card_to_mac(dcim_folder, files, local_stats, usb_expected)
     if local_stats.failed:
-        print_summary(dcim_folder, local_destinations, local_stats, False, False)
-        progress.update_status(state="failed", phase="card-to-ssd",
-                               message=f"Local SSD import failed: {local_stats.failed} failure(s)",
-                               current_file="", current_path="")
-        card.update_card_scan_history(dcim_folder, files, "incomplete",
-                                      local_stats.verified_copies, local_stats.failed)
-        logger.error("Local SSD import failed; card was not ejected and USB backup was not started.")
-        logs.notify("Photo Import Incomplete",
-                    "Local SSD copy failed. Card remains mounted; USB backup was not started.")
+        _report_local_failure(dcim_folder, files, local_destinations, local_stats)
         return 1
 
     card.update_card_scan_history(dcim_folder, files, "complete", local_stats.verified_copies, 0)
@@ -412,30 +579,22 @@ def _import_card(args: argparse.Namespace) -> int:
         backup_stats = _backup_after_import(usb_identity)
     else:
         backup_stats = transfer.ImportStats()
-        progress.update_status(state="complete", phase="card-to-ssd",
-                               message="Mac SSD import complete; USB backup skipped",
-                               current_file="", current_path="")
+        progress.update_status(
+            state="complete",
+            phase="card-to-ssd",
+            message="Mac SSD import complete; USB backup skipped",
+            current_file="",
+            current_path="",
+        )
 
-    print_summary(dcim_folder, local_destinations + ([config.USB_DEST_ROOT] if usb_expected else []),
-                  backup_stats if usb_expected else local_stats, eject_attempted, eject_success)
-    if backup_stats.failed:
-        progress.update_status(state="failed", phase="usb-backup",
-                               message=f"Local import succeeded; USB backup has {backup_stats.failed} failure(s)",
-                               current_file="", current_path="")
-        logs.notify("USB Backup Incomplete", "The card was copied to the Mac. USB backup needs attention.")
-        return 1
-    if eject_attempted and not eject_success:
-        logger.error("Local import and USB backup succeeded, but automatic card ejection failed.")
-        logs.notify("Photo Import Complete — Eject Failed",
-                    "Copies completed, but the camera card could not be ejected.")
-        return 2
-    logger.info("Photo Offloader finished. Local copies: %d; USB copies: %d; USB skips: %d.",
-                local_stats.destination_copies, backup_stats.destination_copies,
-                backup_stats.destination_skips)
-    launch_google_photos_sync()
-    logs.notify("Photo Import Complete", f"{total_found} media files copied to the Mac; USB backup "
-                + ("completed." if usb_expected else "was not run."))
-    return 0
+    print_summary(
+        dcim_folder,
+        local_destinations + ([config.USB_DEST_ROOT] if usb_expected else []),
+        backup_stats if usb_expected else local_stats,
+        eject_attempted,
+        eject_success,
+    )
+    return _report_outcome(local_stats, backup_stats, usb_expected, eject_attempted, eject_success)
 
 
 def _main(argv: Optional[Sequence[str]] = None) -> int:
@@ -450,9 +609,18 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             logger.info("--- Starting new photo offloader session run_id=%s ---", run_id)
             _RUN.update(kind="import", started_at=time.time())
             progress._PROGRESS_STARTED = time.monotonic()
-            progress._PROGRESS.update({"state": "scanning", "phase": "startup", "bytes_done": 0,
-                                       "bytes_total": 0, "bytes_transferred": 0, "current_file": "",
-                                       "source": "", "message": "Preparing Photo Offloader"})
+            progress._PROGRESS.update(
+                {
+                    "state": "scanning",
+                    "phase": "startup",
+                    "bytes_done": 0,
+                    "bytes_total": 0,
+                    "bytes_transferred": 0,
+                    "current_file": "",
+                    "source": "",
+                    "message": "Preparing Photo Offloader",
+                }
+            )
             progress.update_status()
             if args.update_catalog:
                 return _run_catalog_update()
@@ -465,7 +633,9 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         logs.notify("Photo Offloader Canceled", "The operation was canceled.")
         return 130
     except SessionBusyError:
-        logger.warning("Duplicate launch ignored because another Photo Offloader session owns the lock.")
+        logger.warning(
+            "Duplicate launch ignored because another Photo Offloader session owns the lock."
+        )
         return 0
     except Exception as exc:
         progress.update_status(state="failed", message=str(exc), current_file="")

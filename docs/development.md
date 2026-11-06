@@ -21,9 +21,9 @@ photo_offloader/
     media_info    EXIF and ExifTool, camera model, archive folder
     transfer      copy decisions, copying a card, USB backup
     catalog       SQLite catalog, history, upload records
-    catalog_refresh, fileops, volumes, progress, logs
+    catalog_refresh, fileops, jsonfile, volumes, progress, logs
     google_photos, usb_backup
-    dashboard/    core (state and actions), server, launcher, web/index.html
+    dashboard/    core (state and actions), display (wording and cards), paths, server, launcher, web/index.html
     menubar/      model, app
 scripts/          trigger.sh (launchd), import_supervisor.sh, service.sh (start, stop, status)
 tools/            benchmark and one-off migration scripts
@@ -38,6 +38,7 @@ install.sh        installs the same layout into ~/Library/Application Support/Ph
 ```bash
 .venv/bin/python -m unittest discover                 # everything
 .venv/bin/python -m unittest tests.test_usb_backup    # one module
+.venv/bin/python -m ruff format .                     # format; CI fails on unformatted code
 .venv/bin/python -m ruff check .                      # lint; maximum complexity is 15
 bash -n install.sh uninstall.sh scripts/*.sh tools/*.sh
 ```
@@ -103,6 +104,7 @@ library plus one static page, and it builds the page with `textContent`, so text
 
 ## Contributing changes
 
+- Follow the [code quality guide](../CODE_QUALITY.md).
 - Write the failing test first and check it fails for the right reason. For important fixes, break the code
   again and confirm the test goes red.
 - Base claims on measurements (logs, timings on real data). Benchmark against a copy of the catalog.

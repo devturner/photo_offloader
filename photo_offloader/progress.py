@@ -1,26 +1,31 @@
 """Publish import progress for the dashboard (status.json) and the terminal bar."""
+
 from __future__ import annotations
 
-import json
-import os
 import sys
 import time
 from datetime import datetime
 from typing import Optional
 
-from photo_offloader import config
+from photo_offloader import config, jsonfile
 from photo_offloader.logs import logger
 
 try:
     from alive_progress import alive_bar
+
     HAS_ALIVE_PROGRESS = True
 except ImportError:  # pragma: no cover
     HAS_ALIVE_PROGRESS = False
 
     class _NullProgress:
-        def __enter__(self): return self
-        def __exit__(self, exc_type, exc_value, traceback): return False
-        def __call__(self, *args, **kwargs): return None
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def __call__(self, *args, **kwargs):
+            return None
 
     def alive_bar(*args, **kwargs):
         return _NullProgress()
@@ -46,18 +51,17 @@ def update_status(**updates: object) -> None:
     transfer_speed = transferred / elapsed
     remaining = max(total - done, 0)
     status = dict(_PROGRESS)
-    status.update({
-        "speed_bps": speed,
-        "transfer_speed_bps": transfer_speed,
-        "eta_seconds": remaining / speed if speed > 0 and total > done else 0,
-        "elapsed_seconds": elapsed,
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-    })
+    status.update(
+        {
+            "speed_bps": speed,
+            "transfer_speed_bps": transfer_speed,
+            "eta_seconds": remaining / speed if speed > 0 and total > done else 0,
+            "elapsed_seconds": elapsed,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
     try:
-        config.STATUS_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temp = config.STATUS_FILE_PATH.with_suffix(".tmp")
-        temp.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
-        os.replace(temp, config.STATUS_FILE_PATH)
+        jsonfile.write_json(config.STATUS_FILE_PATH, status, ensure_ascii=False)
         _LAST_STATUS_WRITE = time.monotonic()
     except OSError as exc:
         logger.debug("Could not publish dashboard status: %s", exc)
@@ -86,5 +90,12 @@ def progress_bar(total: int, label: str):
     and prefixes each line with the bar position ("on 12: ..."); that ends up in
     the log files. The bar is only drawn when stdout is a terminal.
     """
-    return alive_bar(total, title=label, bar="filling", monitor=True, force_tty=False,
-                     enrich_print=False, disable=not sys.stdout.isatty())
+    return alive_bar(
+        total,
+        title=label,
+        bar="filling",
+        monitor=True,
+        force_tty=False,
+        enrich_print=False,
+        disable=not sys.stdout.isatty(),
+    )
