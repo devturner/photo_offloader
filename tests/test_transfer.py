@@ -1,14 +1,26 @@
 #!/usr/bin/env python3
+import errno
 import pathlib
 import stat
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import card, catalog, config, fileops, media_info, transfer, volumes
+from photo_offloader import card, catalog, config, fileops, media_info, progress, transfer, volumes
 from photo_offloader.transfer import DestinationResult, ImportStats
 from photo_offloader.volumes import VolumeIdentity
 from tests import support
+
+
+def file_appears_during_the_copy(content):
+    """Another process creates the destination just before the verified file is installed."""
+    real_install = fileops.install_file
+
+    def install(temp, final, replace=False):
+        Path(final).write_bytes(content)
+        return real_install(temp, final, replace=replace)
+
+    return patch("photo_offloader.fileops.install_file", side_effect=install)
 
 
 class TestTransfer(support.CardFixtureTestCase):
@@ -336,6 +348,204 @@ class TestTransfer(support.CardFixtureTestCase):
         self.assertEqual(stats.failed, 1)
         self.assertEqual(len(stats.errors), 1)
         self.assertIn("backup unavailable", stats.errors[0][1])
+
+    def test_copy_category_counts_a_result_that_did_not_copy(self):
+        source = self.root / "source.jpg"
+        source.write_bytes(b"photo")
+        stats = ImportStats(found=1)
+        with patch(
+            "photo_offloader.transfer.copy_one_to_destination",
+            return_value=DestinationResult(self.local, "failed"),
+        ):
+            transfer.copy_category([source], self.root, [self.local], "JPG", stats)
+        self.assertEqual((stats.failed, stats.verified_copies), (1, 0))
+        self.assertEqual(stats.errors, [(str(source), "copy failed")])
+
+    def test_a_matching_file_that_appears_during_the_copy_counts_as_skipped(self):
+        source = self.media()["RAW"]
+        with file_appears_during_the_copy(source.read_bytes()):
+            result = transfer.copy_one_to_destination(source, self.dcim, self.local)
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(result.path.read_bytes(), b"raw")
+
+    def test_a_different_file_that_appears_during_the_copy_is_kept_and_reported(self):
+        source = self.media()["RAW"]
+        destination = media_info.build_destination_path(source, self.dcim, self.local)
+        with file_appears_during_the_copy(b"someone else's file"):
+            with self.assertRaisesRegex(FileExistsError, "does not match source"):
+                transfer.copy_one_to_destination(source, self.dcim, self.local)
+        self.assertEqual(destination.read_bytes(), b"someone else's file")
+        self.assertEqual(list(destination.parent.iterdir()), [destination])  # no temporary file
+
+
+class TestUsbBackupFailures(support.CardFixtureTestCase):
+    """What a backup does when the drive or a file misbehaves part way through."""
+
+    def setUp(self):
+        super().setUp()
+        self.identity = VolumeIdentity(self.usb_volume.resolve(), "disk4s1", "uuid-a")
+        self.drive = self.identity  # the drive mounted right now; None once it's unplugged
+        for name, fake in (
+            ("usb_is_mounted", lambda: self.drive is not None),
+            ("get_volume_identity", lambda _path: self.drive),
+        ):
+            patcher = patch.object(volumes, name, side_effect=fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def archived(self, name="photo.jpg", content=b"local version"):
+        source = self.local / "2026-10" / "Photos" / name
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(content)
+        return source
+
+    def on_usb(self, source):
+        return self.usb / source.relative_to(self.local)
+
+    def backup(self):
+        return transfer.copy_local_archive_to_usb(self.identity)
+
+    def assertNoTemporaryFiles(self):
+        self.assertEqual(list(self.usb.rglob(".photo-backup-*")), [])
+
+    def test_a_source_that_changes_during_the_copy_is_not_installed(self):
+        source = self.archived()
+        real_copy = fileops.copy_file_with_progress
+
+        def changes(src, dst):
+            digest = real_copy(src, dst)
+            Path(src).write_bytes(b"edited while the backup was reading it")
+            return digest
+
+        with patch("photo_offloader.fileops.copy_file_with_progress", side_effect=changes):
+            stats = self.backup()
+        self.assertEqual((stats.failed, stats.destination_copies), (1, 0))
+        self.assertIn("changed during backup", stats.errors[0][1])
+        self.assertFalse(self.on_usb(source).exists())
+        self.assertNoTemporaryFiles()
+
+    def test_a_corrupt_temporary_copy_is_never_installed(self):
+        source = self.archived()
+        good_hash = fileops.sha256_file(source)
+
+        def corrupt(_src, dst):
+            Path(dst).write_bytes(b"corrupted on the way to the drive")
+            return good_hash
+
+        with patch("photo_offloader.fileops.copy_file_with_progress", side_effect=corrupt):
+            stats = self.backup()
+        self.assertEqual((stats.failed, stats.destination_copies), (1, 0))
+        self.assertIn("verification failed for USB temporary copy", stats.errors[0][1])
+        self.assertFalse(self.on_usb(source).exists())
+        self.assertNoTemporaryFiles()
+
+    def test_a_corrupt_final_copy_is_removed_and_reported(self):
+        # A fallback install (exFAT has no hard links) is a fresh write that needs its own check.
+        source = self.archived()
+
+        def corrupt(_temp, final, replace=False):
+            Path(final).write_bytes(b"corrupted on the way to the drive")
+            return True
+
+        with patch("photo_offloader.fileops.install_file", side_effect=corrupt):
+            stats = self.backup()
+        self.assertEqual((stats.failed, stats.destination_copies), (1, 0))
+        self.assertIn("verification failed for USB copy", stats.errors[0][1])
+        self.assertFalse(self.on_usb(source).exists())
+
+    def test_a_different_file_that_appears_on_usb_is_kept_and_reported(self):
+        source = self.archived()
+        with file_appears_during_the_copy(b"someone else's file"):
+            stats = self.backup()
+        self.assertEqual((stats.failed, stats.destination_copies), (1, 0))
+        self.assertIn("appeared and differs", stats.errors[0][1])
+        self.assertEqual(self.on_usb(source).read_bytes(), b"someone else's file")
+        self.assertNoTemporaryFiles()
+
+    def test_a_matching_file_that_appears_on_usb_counts_as_skipped(self):
+        source = self.archived()
+        with file_appears_during_the_copy(source.read_bytes()):
+            stats = self.backup()
+        self.assertEqual((stats.failed, stats.destination_copies), (0, 0))
+        self.assertEqual((stats.destination_skips, stats.verified_copies), (1, 1))
+
+    def test_a_matching_file_that_appears_on_a_drive_without_hard_links_counts_as_skipped(self):
+        source = self.archived()
+        with (
+            file_appears_during_the_copy(source.read_bytes()),
+            patch("os.link", side_effect=OSError(errno.EXDEV, "cross-device")),
+        ):
+            stats = self.backup()
+        self.assertEqual(stats.failed, 0, stats.errors)
+        self.assertEqual(stats.destination_skips, 1)
+
+    def test_one_failed_file_does_not_stop_the_others(self):
+        bad, good = self.archived("bad.jpg", b"bad"), self.archived("good.jpg", b"good")
+        real_copy = fileops.copy_file_with_progress
+
+        def fails_on_one(src, dst):
+            if src == bad:
+                raise OSError("read error")
+            return real_copy(src, dst)
+
+        with patch("photo_offloader.fileops.copy_file_with_progress", side_effect=fails_on_one):
+            stats = self.backup()
+        self.assertEqual((stats.failed, stats.destination_copies), (1, 1))
+        self.assertEqual(stats.errors[0][0], str(bad))
+        self.assertEqual(self.on_usb(good).read_bytes(), b"good")
+        self.assertFalse(self.on_usb(bad).exists())
+        self.assertEqual(progress._PROGRESS["state"], "failed")
+
+    def test_a_backup_refuses_to_start_when_the_drive_is_not_mounted(self):
+        source = self.archived()
+        self.drive = None
+        with self.assertRaisesRegex(RuntimeError, "not mounted"):
+            self.backup()
+        self.assertFalse(self.on_usb(source).exists())
+
+    def test_a_backup_refuses_to_start_on_a_different_drive(self):
+        source = self.archived()
+        self.drive = VolumeIdentity(self.usb_volume.resolve(), "disk5s1", "uuid-b")
+        with self.assertRaisesRegex(RuntimeError, "identity changed"):
+            self.backup()
+        self.assertFalse(self.on_usb(source).exists())
+
+    def after_the_first_copy(self, change_drive):
+        real_copy = transfer._copy_one_to_usb
+
+        def copy(*args, **kwargs):
+            copied = real_copy(*args, **kwargs)
+            change_drive()
+            return copied
+
+        return patch.object(transfer, "_copy_one_to_usb", side_effect=copy)
+
+    def test_unplugging_the_drive_stops_the_backup_and_reports_it(self):
+        self.archived("a.jpg", b"a")
+        self.archived("b.jpg", b"b")
+
+        def unplug():
+            self.drive = None
+
+        with self.after_the_first_copy(unplug) as copy:
+            stats = self.backup()
+        self.assertEqual(copy.call_count, 1, "must not keep copying to a missing drive")
+        self.assertEqual(stats.destination_copies, 1)
+        self.assertGreater(stats.failed, 0)
+        self.assertIn("disconnected during the backup", stats.errors[0][1])
+        self.assertEqual(progress._PROGRESS["state"], "failed")
+
+    def test_swapping_the_drive_during_the_backup_is_reported(self):
+        self.archived()
+
+        def swap():
+            self.drive = VolumeIdentity(self.usb_volume.resolve(), "disk5s1", "uuid-b")
+
+        with self.after_the_first_copy(swap):
+            stats = self.backup()
+        self.assertEqual(stats.failed, 1)
+        self.assertIn("disconnected or replaced", stats.errors[0][1])
+        self.assertEqual(progress._PROGRESS["state"], "failed")
 
 
 if __name__ == "__main__":

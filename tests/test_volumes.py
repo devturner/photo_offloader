@@ -80,6 +80,18 @@ class TestVolumes(support.CardFixtureTestCase):
         self.assertTrue(volumes.volume_identity_matches(expected, current))
         self.assertFalse(volumes.volume_identity_matches(expected, replacement))
 
+    def test_volume_identity_rejects_a_missing_volume_or_another_mount_point(self):
+        expected = VolumeIdentity(self.usb_volume, "disk4s1", "uuid-a")
+        elsewhere = VolumeIdentity(self.root / "other", "disk4s1", "uuid-a")
+        self.assertFalse(volumes.volume_identity_matches(expected, None))
+        self.assertFalse(volumes.volume_identity_matches(expected, elsewhere))
+
+    def test_volume_identity_without_ids_falls_back_to_the_mount_point(self):
+        expected = VolumeIdentity(self.usb_volume, None, None)
+        self.assertTrue(
+            volumes.volume_identity_matches(expected, VolumeIdentity(self.usb_volume, None, None))
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

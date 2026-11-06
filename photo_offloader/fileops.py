@@ -122,7 +122,10 @@ def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
         }
         if exc.errno not in unsupported:
             raise
-    fd = os.open(final_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    try:
+        fd = os.open(final_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    except FileExistsError:
+        return False
     try:
         with os.fdopen(fd, "wb") as output, temp_path.open("rb") as source:
             shutil.copyfileobj(source, output)
