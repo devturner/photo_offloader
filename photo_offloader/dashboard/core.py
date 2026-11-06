@@ -213,10 +213,15 @@ class DashboardCore:
         total = int(status.get("bytes_total", 0) or 0)
         kind = {"catalog": "catalog", "usb": "usb_backup"}.get(stage, "import")
         title, detail = display.activity_text(status, stage)
-        # One overall measure for checks and copies alike (skipped files count as done).
+        new_only = stage == "copy" and int(status.get("expected_new_bytes") or 0) > 0
+        if new_only:
+            # The new files are the work left: already-saved files take no copying time.
+            total = int(status["expected_new_bytes"])
+            done = min(int(status.get("bytes_transferred", 0) or 0), total)
+        # Without an estimate, one measure for checks and copies (skipped files count as done).
         percent = min(100.0, done / total * 100.0) if stage in ("copy", "usb") and total else None
         speed = self._transfer_speed(status, kind, stage, now)
-        eta = float(status.get("eta_seconds", 0) or 0)
+        eta = 0.0 if new_only else float(status.get("eta_seconds", 0) or 0)
         if eta <= 0 and speed > 0 and total > done:
             eta = (total - done) / speed
         moving = stage in ("copy", "usb")
@@ -231,7 +236,8 @@ class DashboardCore:
             "bytes_total": total,
             "files_done": int(status.get("files_done", 0) or 0),
             "files_total": int(status.get("files_total", 0) or 0),
-            "new_files": int(status.get("new_files", 0) or 0),
+            "new_files": int(status.get("new_media_files", status.get("new_files", 0)) or 0),
+            "new_files_expected": status.get("expected_new_files") if stage == "copy" else None,
             "speed_bps": speed if moving else 0.0,
             "eta_seconds": eta if moving and total > done and eta > 0 else None,
             "elapsed_seconds": float(status.get("elapsed_seconds", 0) or 0),

@@ -335,6 +335,46 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         )
         self.assertFalse(last_copy["usb_planned"])
 
+    def _last_copy_status(self):
+        seen = []
+        real = progress.update_status
+
+        def spy(**updates):
+            real(**updates)
+            seen.append(dict(progress._PROGRESS))
+
+        with patch("time.sleep"), patch.object(progress, "update_status", side_effect=spy):
+            app.main(["--source", str(self.card), "--no-usb", "--no-eject"])
+        return [s for s in seen if s.get("stage") == "copy"][-1]
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    def test_a_later_import_knows_how_many_files_are_new(self, notify, launch):
+        media = self.media()
+        first = self._last_copy_status()
+        self.assertIsNone(first["expected_new_files"])  # nothing verified on this card yet
+        self.assertEqual(first["new_media_files"], 3)
+        extra = media["JPG"].parent / "shot-later.jpg"
+        extra.write_bytes(b"a new photo")
+        second = self._last_copy_status()
+        self.assertEqual(second["expected_new_files"], 1)
+        self.assertEqual(second["expected_new_bytes"], extra.stat().st_size)
+        self.assertEqual(second["new_media_files"], 1)
+        self.assertEqual(second["files_total"], 4)
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    def test_a_rewritten_camera_index_file_is_not_a_new_photo(self, notify, launch):
+        media = self.media()
+        index = media["JPG"].parent / "NC_FLLST.DAT"
+        index.write_bytes(b"first")
+        self._last_copy_status()
+        index.write_bytes(b"rewritten by the camera")
+        status = self._last_copy_status()
+        self.assertEqual(status["new_files"], 1)  # history still records what was copied
+        self.assertEqual(status["new_media_files"], 0)
+        self.assertEqual(status["expected_new_files"], 0)
+
     @patch("photo_offloader.logs.notify")
     def test_failed_import_is_recorded_with_its_reason(self, notify):
         self.media()

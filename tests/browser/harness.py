@@ -153,6 +153,7 @@ README_CARD_FILES = 2478
 README_MB_PER_FILE = 25
 README_COPY_SECONDS = 120
 README_ALREADY_SAVED = 477
+README_SAVED_BEFORE = 1200  # the card after the last import listed in Recent activity
 
 COPY_PROGRESS = dict(
     bytes_done=34 * GB,
@@ -224,7 +225,7 @@ def _readme_import(s: Sandbox) -> None:
     elapsed = README_COPY_SECONDS + 6  # the scan came first
     _past_import(s, days_ago=12, seconds=58, new_files=342, card_files=443)
     _past_import(s, days_ago=5, seconds=41, new_files=251, card_files=694)
-    _past_import(s, days_ago=1, seconds=83, new_files=506, card_files=1200)
+    _past_import(s, days_ago=1, seconds=83, new_files=506, card_files=README_SAVED_BEFORE)
     with catalog.catalog_db() as db:
         db.executemany(
             "INSERT INTO google_photos_uploads (path, size, mtime_ns, inode, uploaded_at, remote,"
@@ -240,6 +241,8 @@ def _readme_import(s: Sandbox) -> None:
         files_done=files_done,
         files_total=README_CARD_FILES,
         new_files=new_files,
+        expected_new_files=README_CARD_FILES - README_SAVED_BEFORE,
+        expected_new_bytes=(README_CARD_FILES - README_SAVED_BEFORE) * file_bytes,
         bytes_done=done,
         bytes_total=total,
         bytes_transferred=copied,

@@ -167,6 +167,15 @@ def _action(action_id: str, label: str) -> Dict[str, str]:
     return {"id": action_id, "label": label}
 
 
+def card_contents(files_total: int, expected_new: Optional[int]) -> str:
+    """The Camera card box during a copy; with no estimate, only what is on the card is known."""
+    if expected_new is None:
+        return plural(files_total, "file")
+    if expected_new == 0:
+        return f"No new files of {files_total:,}"
+    return f"{plural(expected_new, 'new file')} of {files_total:,}"
+
+
 def _card_step(
     card: Optional[Path], activity: Optional[Dict[str, Any]], busy: bool, can_reimport: bool
 ) -> Dict[str, Any]:
@@ -174,6 +183,9 @@ def _card_step(
         return _step(
             "card", "Camera card", "active", card.name if card else "Card", activity["title"]
         )
+    if activity and activity["kind"] == "import" and activity.get("stage") == "copy":
+        contents = card_contents(activity["files_total"], activity["new_files_expected"])
+        return _step("card", "Camera card", "ok", card.name if card else "Card", contents)
     if card:
         actions = (
             []
@@ -205,8 +217,6 @@ def _archive_step(activity: Optional[Dict[str, Any]], local: Optional[int]) -> D
             "active",
             "Copying",
             activity["detail"] or detail,
-            (),
-            activity["percent"],
         )
     return _step("archive", "Mac archive", "ok", "Up to date" if local else "Empty", detail)
 
@@ -215,9 +225,7 @@ def _usb_step(
     activity: Optional[Dict[str, Any]], usb_mounted: bool, usb: Optional[int], busy: bool
 ) -> Dict[str, Any]:
     if activity and activity["kind"] == "usb_backup":
-        return _step(
-            "usb", "USB backup", "active", "Backing up", activity["detail"], (), activity["percent"]
-        )
+        return _step("usb", "USB backup", "active", "Backing up", activity["detail"])
     if usb_mounted:
         return _step(
             "usb",
@@ -231,7 +239,7 @@ def _usb_step(
 
 
 def _cloud_step(
-    google: Dict[str, Any], uploaded: int, busy: bool, setup_step: str
+    google: Dict[str, Any], uploaded: int, busy: bool, setup_step: str, in_top_panel: bool
 ) -> Dict[str, Any]:
     state = google["state"]
     if not google["configured"]:
@@ -245,7 +253,8 @@ def _cloud_step(
             "Finishing upload" if upload and upload["finalizing"] else "Uploading",
             f"{upload['transferred']} of {upload['total']}" if upload else "Preparing",
             (),
-            upload["percent"] if upload else None,
+            # The top panel already has this bar, unless an import is using the panel.
+            upload["percent"] if upload and not in_top_panel else None,
         )
     if state == "interrupted":
         return _step(
@@ -290,7 +299,13 @@ def pipeline(
         _card_step(card, activity, busy, can_reimport),
         _archive_step(activity, counts["local"] if counts else None),
         _usb_step(activity, usb_mounted, counts["usb"] if counts else None, busy),
-        _cloud_step(google, counts["uploaded"] if counts else 0, busy, setup_step),
+        _cloud_step(
+            google,
+            counts["uploaded"] if counts else 0,
+            busy,
+            setup_step,
+            activity is None,  # only an import's activity comes here; otherwise it shows the upload
+        ),
     ]
 
 

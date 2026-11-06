@@ -133,16 +133,30 @@ class TestFixedPanel(PageTestCase):
 
 
 class TestSlots(PageTestCase):
-    def test_only_the_import_counts_files_as_checked(self):
-        self.show("checking")
-        self.assertEqual(self.slots()["Files"], "1,214 of 2,378 checked")
+    def test_an_import_counts_new_files_against_the_estimate(self):
+        for fields, expected in (
+            ({"new_files": 737, "new_files_expected": 1278}, "737 of 1,278 new"),
+            (
+                {"new_files": 14, "new_files_expected": 12},
+                "14 of 14 new",
+            ),  # never past its own total
+            ({"new_files": 0, "new_files_expected": 0}, "Nothing new"),
+            ({"new_files": 737, "new_files_expected": None}, "737 new"),
+            ({"new_files": 0, "new_files_expected": None}, "0 new"),
+        ):
+            with self.subTest(**fields):
+                self.show("idle")
+                text = self.page.evaluate("v => newFilesText(v)", fields)
+                self.assertEqual(text, expected)
+
+    def test_only_the_import_counts_new_files(self):
         self.show("usb_backup")
         self.assertEqual(self.slots()["Files"], "1,214 of 2,378")
         self.show("uploading")
-        self.assertNotIn("checked", self.slots()["Files"])
+        self.assertNotIn("new", self.slots()["Files"])
 
-    def test_all_five_slots_are_there_while_anything_runs(self):
-        for state in TRANSFER_STATES:
+    def test_no_card_repeats_the_progress_bar_above_it(self):
+        for state in ("copying", "usb_backup", "uploading"):
             with self.subTest(state=state):
                 self.show(state)
                 self.assertEqual(list(self.slots()), SLOT_NAMES)
@@ -168,7 +182,7 @@ class TestSlots(PageTestCase):
             {
                 "Progress": "43% · 34.0 of 80.0 GB",
                 "Speed": "153.1 MB/s",
-                "Files": "1,214 of 2,378 checked · 47 new",
+                "Files": "47 new",
                 "Elapsed": "1m 59s",
                 "Remaining": "4m 00s",
             },
@@ -516,26 +530,23 @@ class TestReadmeScreenshot(PageTestCase):
         self.show("readme_import")
         status = json.loads(self.sandbox.paths.status_file.read_text())
         history = self.sandbox.core.state()["activity"]["speed_history"]
-        done, total, copied = (
-            status["bytes_done"],
-            status["bytes_total"],
-            status["bytes_transferred"],
-        )
+        copied, expected = status["bytes_transferred"], status["expected_new_bytes"]
         self.assertAlmostEqual(
             sum(history) / copied, 1, places=2, msg="the graph adds up to the copies"
         )
         self.assertAlmostEqual(copied / status["new_files"] / MB, 25, delta=0.5)
-        self.assertAlmostEqual(done / status["files_done"] / MB, 25, delta=0.5)
-        self.assertAlmostEqual(total / status["files_total"] / MB, 25, delta=0.5)
-        self.assertGreater(
-            status["files_done"], status["new_files"], "some files were already saved"
+        self.assertAlmostEqual(expected / status["expected_new_files"] / MB, 25, delta=0.5)
+        self.assertEqual(
+            self.slots(),
+            {
+                "Progress": "58% · 18.0 of 31.2 GB",
+                "Speed": "155.3 MB/s",
+                "Files": "737 of 1,278 new",
+                "Elapsed": "2m 06s",
+                "Remaining": "1m 27s",
+            },
         )
-        self.assertGreaterEqual(status["elapsed_seconds"], len(history))
-        self.assertLess(status["elapsed_seconds"], len(history) + 15, "plus a short scan")
-        # The importer works out the time left this way (progress.update_status).
-        self.assertAlmostEqual(
-            status["eta_seconds"], (total - done) / (done / status["elapsed_seconds"]), delta=1
-        )
+        self.assertIn("1,278 new files of 2,478", self.page.locator("#pipeline").inner_text())
 
     def test_its_card_could_follow_the_imports_listed_below_it(self):
         self.show("readme_import")
@@ -543,9 +554,7 @@ class TestReadmeScreenshot(PageTestCase):
         rows = catalog.list_import_history(limit=3)  # newest first
         for newer, older in zip(rows, rows[1:]):
             self.assertEqual(newer["files"], older["files"] + newer["copied"])
-        unseen = status["files_total"] - rows[0]["files"]
-        self.assertLessEqual(status["new_files"], unseen)
-        self.assertLessEqual(status["files_done"] - status["new_files"], rows[0]["files"])
+        self.assertEqual(status["files_total"] - rows[0]["files"], status["expected_new_files"])
 
     def test_it_shows_a_believable_install(self):
         self.show("readme_import")

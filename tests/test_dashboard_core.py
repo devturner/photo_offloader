@@ -380,6 +380,110 @@ class TestActivity(Fixture):
         self.assertEqual(len(activity["speed_history"]), 180)
         self.assertAlmostEqual(activity["speed_bps"], 5 * 1024**2, delta=1024)
 
+    def test_the_google_box_has_its_own_bar_only_while_an_import_uses_the_top_panel(self):
+        google = {
+            "configured": True,
+            "state": "running",
+            "progress": {
+                "percent": 40.0,
+                "finalizing": False,
+                "transferred": "4 MiB",
+                "total": "10 MiB",
+            },
+        }
+        for import_running, percent in ((True, 40.0), (False, None)):
+            with self.subTest(import_running=import_running):
+                activity = (
+                    {
+                        "kind": "import",
+                        "stage": "copy",
+                        "detail": "",
+                        "percent": 10.0,
+                        "files_total": 2,
+                        "new_files_expected": None,
+                    }
+                    if import_running
+                    else None
+                )
+                steps = display.pipeline(None, activity, None, False, google, True, False, "")
+                self.assertEqual(steps[-1]["percent"], percent)
+
+    def test_the_card_box_says_how_many_files_are_new(self):
+        for total, expected, text in (
+            (2478, 1278, "1,278 new files of 2,478"),
+            (2478, 1, "1 new file of 2,478"),
+            (2478, 0, "No new files of 2,478"),
+            (2478, None, "2,478 files"),
+            (1, None, "1 file"),
+        ):
+            with self.subTest(expected=expected):
+                self.assertEqual(display.card_contents(total, expected), text)
+
+    def test_a_known_number_of_new_files_is_what_progress_measures(self):
+        self.copying(
+            bytes_done=600 * 1024**2,
+            bytes_total=2000 * 1024**2,
+            bytes_transferred=100 * 1024**2,
+            expected_new_files=16,
+            expected_new_bytes=400 * 1024**2,
+            eta_seconds=999,
+        )
+        self.core.state()
+        self.advance(1)
+        self.copying(
+            bytes_done=650 * 1024**2,
+            bytes_total=2000 * 1024**2,
+            bytes_transferred=150 * 1024**2,
+            expected_new_files=16,
+            expected_new_bytes=400 * 1024**2,
+            eta_seconds=999,
+        )
+        activity = self.core.state()["activity"]
+        self.assertAlmostEqual(activity["percent"], 37.5)
+        self.assertEqual(activity["bytes_done"], 150 * 1024**2)
+        self.assertEqual(activity["bytes_total"], 400 * 1024**2)
+        self.assertAlmostEqual(activity["eta_seconds"], 5, places=3)  # 250 MB left at 50 MB/s
+        self.assertEqual(activity["new_files_expected"], 16)
+
+    def test_more_copied_than_expected_stops_at_full(self):
+        self.copying(bytes_transferred=500 * 1024**2, expected_new_bytes=400 * 1024**2)
+        activity = self.core.state()["activity"]
+        self.assertEqual(activity["percent"], 100)
+        self.assertIsNone(activity["eta_seconds"])
+
+    def test_no_time_left_is_guessed_while_nothing_has_moved(self):
+        self.copying(
+            bytes_transferred=0,
+            transfer_speed_bps=0,
+            expected_new_bytes=400 * 1024**2,
+            eta_seconds=999,
+        )
+        self.assertIsNone(self.core.state()["activity"]["eta_seconds"])
+
+    def test_without_an_estimate_progress_measures_the_whole_card(self):
+        for expected in (
+            {},
+            {"expected_new_files": None, "expected_new_bytes": None},
+            {"expected_new_files": 0, "expected_new_bytes": 0},
+        ):
+            with self.subTest(expected=expected):
+                self.copying(**expected)
+                activity = self.core.state()["activity"]
+                self.assertAlmostEqual(activity["percent"], 25.0)
+                self.assertEqual(activity["bytes_total"], 400 * 1024**2)
+
+    def test_a_usb_backup_never_uses_the_card_estimate(self):
+        self.copying(
+            phase="USB backup", stage="usb", expected_new_files=16, expected_new_bytes=1024**2
+        )
+        activity = self.core.state()["activity"]
+        self.assertEqual(activity["bytes_total"], 400 * 1024**2)
+        self.assertIsNone(activity["new_files_expected"])
+
+    def test_camera_index_files_stay_out_of_the_new_file_count(self):
+        self.copying(new_files=14, new_media_files=12, expected_new_files=12)
+        self.assertEqual(self.core.state()["activity"]["new_files"], 12)
+
     def test_speed_history_resets_when_the_transfer_ends(self):
         self.copying()
         self.core.state()

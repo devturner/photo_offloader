@@ -365,6 +365,9 @@ def _scan_card(args: argparse.Namespace) -> Tuple[Path, Path, Dict[str, List[Pat
         files_total=0,
         files_done=0,
         new_files=0,
+        new_media_files=0,
+        expected_new_files=None,
+        expected_new_bytes=None,
         new_by_category={},
         new_bytes=0,
         usb_planned=False,
@@ -399,6 +402,12 @@ def _scan_card(args: argparse.Namespace) -> Tuple[Path, Path, Dict[str, List[Pat
     # manifest is diagnostic/cache data only; copy decisions still verify destinations.
     reconciliation = card.reconcile_card_manifest(dcim_folder, files)
     logger.info("Card manifest reconciliation: %s", reconciliation)
+    expected_new = card.expected_new_files(dcim_folder, files)
+    logger.info("Files expected to be new (files, bytes): %s", expected_new)
+    if expected_new:
+        progress.update_status(
+            expected_new_files=expected_new[0], expected_new_bytes=expected_new[1]
+        )
     # Record discovery immediately, but do not advance successful timestamps
     # until destination copies have been verified.
     card.update_card_scan_history(dcim_folder, files, "scanning", 0, total_found)
