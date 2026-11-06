@@ -235,15 +235,12 @@ def expected_new_files(
 
     Only for showing progress: each file is still checked when it is reached. A file counts as
     saved only with a verified hash, because reconciling lists every file before any copying,
-    so after an interrupted import being listed proves nothing. Camera index files are left out:
-    the camera rewrites them, so they would be "new" on every import without being new photos.
+    so after an interrupted import being listed proves nothing.
     """
     manifest = load_card_manifest(dcim_folder)
     new_files = new_bytes = verified = 0
     for category_paths in discovered.values():
         for source in category_paths:
-            if fileops.is_camera_index_file(source):
-                continue
             if card_manifest_entry(manifest, source, dcim_folder):
                 verified += 1
                 continue
@@ -424,7 +421,7 @@ def find_media_files(
     files: Dict[str, List[Path]] = {category: [] for category in MEDIA_CATEGORIES}
     for root in [dcim_folder, *_optional_card_folders(dcim_folder.parent, problems)]:
         for path in _walk_card_files(root, problems):
-            if path.name.lower() in IGNORED_CARD_FILENAMES:
+            if path.name.lower() in IGNORED_CARD_FILENAMES or fileops.is_camera_index_file(path):
                 continue
             files[MEDIA_EXTENSIONS.get(path.suffix.lower(), "OTHER")].append(path)
     for category in files:

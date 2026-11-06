@@ -160,7 +160,6 @@ def _copy_and_verify(
     final_path: Path,
     manifest: Dict[str, dict],
     before: fileops.FileFingerprint,
-    replace_existing: bool,
 ) -> DestinationResult:
     """Copy through a temporary file and install it only once its hash has been verified."""
     temp_path: Optional[Path] = None
@@ -180,7 +179,7 @@ def _copy_and_verify(
         # from the card (cache-bypassing read where the OS supports it).
         if fileops.sha256_file(temp_path, nocache=True) != source_hash:
             raise IOError(f"Verification failed for temporary copy: {source}")
-        if not fileops.install_file(temp_path, final_path, replace=replace_existing):
+        if not fileops.install_file(temp_path, final_path):
             if fileops.files_match(source, final_path, force_sha256=True):
                 return DestinationResult(
                     destination_base,
@@ -242,7 +241,6 @@ def copy_one_to_destination(
     )
     final_path = media_info.build_destination_path(source, dcim_folder, destination_base)
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    replace_existing = False
 
     if final_path.exists() and final_path.is_file():
         skipped = _skip_if_already_copied(
@@ -250,20 +248,16 @@ def copy_one_to_destination(
         )
         if skipped:
             return skipped
-        if fileops.is_camera_index_file(source):
-            replace_existing = True
-            logger.info("Camera index file changed; replacing the previous copy: %s", final_path)
-        else:
-            # This file may be a conflict copy from an earlier import. Without this check, every
-            # re-insert of the card would add another copy, and send it to USB and Google Photos.
-            for copy in _existing_conflict_copies(final_path):
-                skipped = _skip_if_already_copied(
-                    source, dcim_folder, destination_base, copy, manifest, before.size
-                )
-                if skipped:
-                    return skipped
-            final_path = conflict_free_path(final_path)
-            logger.warning("Filename conflict for %s; using %s", source, final_path.name)
+        # This file may be a conflict copy from an earlier import. Without this check, every
+        # re-insert of the card would add another copy, and send it to USB and Google Photos.
+        for copy in _existing_conflict_copies(final_path):
+            skipped = _skip_if_already_copied(
+                source, dcim_folder, destination_base, copy, manifest, before.size
+            )
+            if skipped:
+                return skipped
+        final_path = conflict_free_path(final_path)
+        logger.warning("Filename conflict for %s; using %s", source, final_path.name)
 
     progress.update_status(
         state="copying",
@@ -272,9 +266,7 @@ def copy_one_to_destination(
         current_path=str(source),
         message=f"Copying {source.name}",
     )
-    return _copy_and_verify(
-        source, dcim_folder, destination_base, final_path, manifest, before, replace_existing
-    )
+    return _copy_and_verify(source, dcim_folder, destination_base, final_path, manifest, before)
 
 
 def _count_session_file(category: str, source: Path, copied: bool) -> None:
@@ -282,10 +274,9 @@ def _count_session_file(category: str, source: Path, copied: bool) -> None:
     progress._PROGRESS["files_done"] = int(progress._PROGRESS.get("files_done", 0) or 0) + 1
     if copied:
         progress._PROGRESS["new_files"] = int(progress._PROGRESS.get("new_files", 0) or 0) + 1
-        if not fileops.is_camera_index_file(source):
-            progress._PROGRESS["new_media_files"] = (
-                int(progress._PROGRESS.get("new_media_files", 0) or 0) + 1
-            )
+        progress._PROGRESS["new_media_files"] = (
+            int(progress._PROGRESS.get("new_media_files", 0) or 0) + 1
+        )
         by_category = dict(progress._PROGRESS.get("new_by_category") or {})
         by_category[category] = int(by_category.get(category, 0)) + 1
         progress._PROGRESS["new_by_category"] = by_category

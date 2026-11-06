@@ -251,15 +251,14 @@ class TestCard(support.CardFixtureTestCase):
             card.expected_new_files(self.dcim, {"JPG": [saved], "RAW": [changed]})[0], 1
         )
 
-    def test_camera_index_files_are_not_new_photos(self):
-        media = self.media()
-        saved = media["JPG"]
-        index = saved.parent / "NC_FLLST.DAT"
-        index.write_bytes(b"rewritten by the camera")
-        card.save_card_manifest(self.dcim, {"100NIKON/photo.jpg": self._verified_entry(saved)}, {})
-        self.assertEqual(
-            card.expected_new_files(self.dcim, {"JPG": [saved], "OTHER": [index]}), (0, 0)
-        )
+    def test_camera_index_files_are_left_out_of_the_scan(self):
+        # A card has one per folder, all filed under one archive path, so each overwrote the last.
+        folder = self.media()["JPG"].parent
+        for name in ("NC_FLLST.DAT", "nc_fllst.dat", "MEDIAPRO.XML"):
+            (folder / name).write_bytes(b"camera index")
+        (folder / "NOTES.DAT").write_bytes(b"not an index")
+        found = card.find_media_files(self.dcim)
+        self.assertEqual([path.name for path in found["OTHER"]], ["NOTES.DAT"])
 
     def test_no_estimate_without_a_verified_file_to_trust(self):
         media = self.media()

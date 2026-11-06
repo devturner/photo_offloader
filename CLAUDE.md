@@ -49,8 +49,8 @@ Two consequences:
 
 ## Safety invariants
 - Never delete from a card and never overwrite a destination file. A differing file with the
-  same name becomes `name__conflict-N`. The exceptions are index files the camera rewrites
-  (`NC_FLLST.DAT`, `MEDIAPRO.XML`).
+  same name becomes `name__conflict-N`. The one exception is the USB copy of an index file the
+  camera rewrites (`NC_FLLST.DAT`, `MEDIAPRO.XML`); imports leave those files out.
 - The catalog and the card manifests are caches. The filesystem is the source of truth, and a
   missing or stale cache must fall back to hashing. Both outlive a format, so a cached hash only
   skips a file after `fileops.ends_match` agrees with the saved copy.

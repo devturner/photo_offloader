@@ -29,9 +29,10 @@ When a file with the same name already exists, the size and SHA-256 are compared
 - **Different:** the new file is kept next to the old one, as `DSC_1234__conflict-1.NEF`. It's also
   compared with any conflict copies already there, so importing a card again doesn't add another.
 
-The one exception is the index files that cameras rewrite on every shoot (`NC_FLLST.DAT`,
-`MEDIAPRO.XML`). The newest version replaces the old one, on the Mac and on USB. They aren't photos,
-and keeping every version would create a new conflict copy on every import.
+Index files that cameras keep for themselves (`NC_FLLST.DAT`, `MEDIAPRO.XML`) aren't imported. A card
+has one per folder and they aren't photos. Copies left in the archive by older versions stay there,
+and if a USB copy differs from the Mac's, the Mac's replaces it: that's the one exception to the rule
+above.
 
 ## Archive layout
 

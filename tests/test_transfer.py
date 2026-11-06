@@ -7,7 +7,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import card, catalog, config, fileops, media_info, progress, transfer, volumes
+from photo_offloader import (
+    card,
+    catalog,
+    config,
+    fileops,
+    logs,
+    media_info,
+    progress,
+    transfer,
+    volumes,
+)
 from photo_offloader.transfer import DestinationResult, ImportStats
 from photo_offloader.volumes import VolumeIdentity
 from tests import support
@@ -178,26 +188,6 @@ class TestTransfer(support.CardFixtureTestCase):
         self.assertIn("__conflict-1", result.path.name)
         self.assertEqual(destination.read_bytes(), b"xxx")
         self.assertEqual(result.path.read_bytes(), b"raw")
-
-    def camera_index_file(self, content):
-        source = self.dcim / "104NCZ_8" / "NC_FLLST.DAT"
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_bytes(content)
-        return source
-
-    def test_camera_index_file_is_replaced_not_conflict_copied(self):
-        # User log 2026-11-04: Nikon rewrites NC_FLLST.DAT on every shoot, so each
-        # import left another NC_FLLST__conflict-N.DAT in Other.
-        first = transfer.copy_one_to_destination(
-            self.camera_index_file(b"index v1"), self.dcim, self.local
-        )
-        second = transfer.copy_one_to_destination(
-            self.camera_index_file(b"index v2 longer"), self.dcim, self.local
-        )
-        self.assertEqual(second.status, "copied")
-        self.assertEqual(second.path, first.path)
-        self.assertEqual(first.path.read_bytes(), b"index v2 longer")
-        self.assertEqual(sorted(p.name for p in first.path.parent.iterdir()), ["NC_FLLST.DAT"])
 
     def test_conflict_counter_advances(self):
         source = self.media()["RAW"]

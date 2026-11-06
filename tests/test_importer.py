@@ -586,16 +586,18 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
-    def test_a_rewritten_camera_index_file_is_not_a_new_photo(self, notify, launch):
+    def test_camera_index_files_are_not_copied_or_counted(self, notify, launch):
+        # User log 2026-11-06: "Local copies: 2" on every insert, with no new photos.
         media = self.media()
         index = media["JPG"].parent / "NC_FLLST.DAT"
         index.write_bytes(b"first")
         self._last_copy_status()
         index.write_bytes(b"rewritten by the camera")
         status = self._last_copy_status()
-        self.assertEqual(status["new_files"], 1)  # history still records what was copied
+        self.assertEqual(status["new_files"], 0)
         self.assertEqual(status["new_media_files"], 0)
         self.assertEqual(status["expected_new_files"], 0)
+        self.assertNotIn("NC_FLLST.DAT", self.imported_names(self.local))
 
     @patch("photo_offloader.logs.notify")
     def test_failed_import_is_recorded_with_its_reason(self, notify):

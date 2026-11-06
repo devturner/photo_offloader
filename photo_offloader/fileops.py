@@ -131,9 +131,9 @@ def _same_file(first: Path, second: Path) -> bool:
         return False
 
 
-# Index/database files the camera itself rewrites on every shoot. They never match
-# the previous copy, so keeping conflict copies would pile up one per import; the
-# newest version replaces the old one instead (locally and on USB).
+# Index/database files the camera itself rewrites. A card has one per folder, and they would all be
+# filed under one archive path, so a copy would never be a backup: imports leave them out. The USB
+# backup still replaces one that differs, because older imports left them in the archive.
 CAMERA_INDEX_FILE_NAMES = frozenset(
     {
         "NC_FLLST.DAT",  # Nikon file list
