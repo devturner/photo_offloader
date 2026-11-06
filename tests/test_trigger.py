@@ -707,6 +707,29 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.run_trigger()
         self.assertEqual(self.imported_card(), str(self.dcim))
 
+    def test_a_card_back_after_a_real_removal_is_imported_even_with_a_second_card_mounted(self):
+        self.background_mode()
+        self.run_trigger()
+        self.imported_card()
+        (self.state.parent / "state.absent").write_text(str(int(time.time()) - 3600))
+        second = self.second_card()
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(self.dcim))
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(second))
+
+    def test_a_different_card_at_the_handled_path_is_imported_before_a_second_card(self):
+        self.background_mode()
+        (self.card / ".test-volume-uuid").write_text("CARD-A")
+        self.run_trigger()
+        self.imported_card()
+        (self.card / ".test-volume-uuid").write_text("CARD-B")
+        second = self.second_card()
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(self.dcim))
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(second))
+
     def test_a_card_that_failed_is_not_retried_when_a_second_card_arrives(self):
         self.background_mode()
         self.run_trigger()

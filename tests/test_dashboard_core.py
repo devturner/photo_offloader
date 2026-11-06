@@ -169,6 +169,12 @@ class TestHeadline(Fixture):
         }
         self.assertEqual(stages["upload"], "active")
 
+    def test_the_panel_shows_an_upload_starting_after_a_usb_failure(self):
+        google = {"configured": True, "state": "idle", "updated_at": None, "progress": None}
+        run = self.usb_failed_run(local_verified=True)
+        run["source"] = "NIKON Z 8"
+        self.assertIsNotNone(self.core._upload_activity(google, run, 1002.0))
+
     def test_an_import_not_verified_on_the_mac_shows_no_upload(self):
         google = {"configured": True, "state": "running", "updated_at": 1001.0}
         run = self.usb_failed_run()
