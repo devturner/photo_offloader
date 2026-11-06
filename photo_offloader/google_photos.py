@@ -12,7 +12,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, NamedTuple, Optional, Sequence, Tuple
 
 from photo_offloader import catalog, config, logs
 
@@ -39,6 +39,110 @@ INCLUDE_EXTENSIONS = (
     "*.mpg",
     "*.wmv",
 )
+SETUP_GUIDE_URL = "https://github.com/devturner/photo_offloader/blob/main/docs/google-photos.md"
+# Text in rclone's errors (lower case) -> what is wrong and how to fix it. Anything else,
+# such as a network failure, is not a setup problem, so it never gets a setup answer.
+SETUP_PROBLEMS = (
+    (("invalid_grant", "expired or revoked", "empty token"),
+     "The Google sign-in has expired.",
+     "Run: rclone config reconnect {remote}:\n"
+     "If this comes back a week later, the Google Cloud app is still in Testing: set it to In production."),
+    (("invalid_client",),
+     "Google does not accept the client ID and secret.",
+     "Run rclone config, edit '{remote}' and re-enter the client ID and secret, using a Desktop app client."),
+    (("has not been used", "is disabled", "service_disabled"),
+     "The Photos Library API is not enabled.",
+     "Enable the Photos Library API in the Google Cloud project, wait a few minutes and try again."),
+    (("insufficient",),
+     "The sign-in is missing a Google Photos permission.",
+     "Add the three Photos scopes to the consent screen, then run: rclone config reconnect {remote}:\n"
+     "Also check that read_only is not true on the remote."),
+)
+
+
+class SetupStep(NamedTuple):
+    label: str
+    passed: Optional[bool]    # None: not checked, because an earlier step failed
+    note: str = ""
+
+
+def setup_problem(rclone_output: str) -> Optional[Tuple[str, str]]:
+    """(what is wrong, how to fix it) if rclone's output names a known Google setup problem."""
+    text = rclone_output.lower()
+    for needles, problem, fix in SETUP_PROBLEMS:
+        if any(needle in text for needle in needles):
+            return problem, fix.format(remote=REMOTE_NAME)
+    return None
+
+
+def _last_line(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return lines[-1] if lines else "no output"
+
+
+def _rclone_output(command: List[str], timeout: int) -> Tuple[Optional[str], str]:
+    """(stdout, "") on success, (None, what rclone said) on failure."""
+    try:
+        # No stdin: a password-protected rclone config must fail here, not wait for input.
+        result = subprocess.run(command, check=False, capture_output=True, text=True,
+                                timeout=timeout, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, str(exc)
+    return (result.stdout, "") if result.returncode == 0 else (None, result.stderr)
+
+
+def _album_failure_message(rclone_output: str) -> str:
+    """One line for the dashboard: the fix for a known setup problem, otherwise rclone's words."""
+    problem = setup_problem(rclone_output)
+    if problem:
+        return f"{problem[0]} {problem[1].splitlines()[0]}"
+    return f"Could not create/check Google Photos album: {rclone_output.strip()}"
+
+
+def check_setup() -> List[SetupStep]:
+    """Each setup step in order, stopping at the first failure. Only reads; safe during an upload."""
+    labels = ("rclone is installed", f"rclone has a remote named '{REMOTE_NAME}'", "Signed in to Google",
+              f"Album '{ALBUM_NAME}'")
+
+    def stopped_at(index: int, note: str) -> List[SetupStep]:
+        return ([SetupStep(label, True) for label in labels[:index]] + [SetupStep(labels[index], False, note)]
+                + [SetupStep(label, None) for label in labels[index + 1:]])
+
+    rclone = find_rclone()
+    if not rclone:
+        return stopped_at(0, "Install it: brew install rclone")
+
+    remotes, error = _rclone_output([rclone, "listremotes"], timeout=30)
+    if remotes is None:
+        return stopped_at(1, f"Could not read the rclone config: {_last_line(error)}")
+    if f"{REMOTE_NAME}:" not in remotes.splitlines():
+        return stopped_at(1, f"Run rclone config and add a Google Photos remote named '{REMOTE_NAME}'.")
+
+    albums, error = _rclone_output([rclone, "lsf", "--dirs-only", f"{REMOTE_NAME}:album",
+                                    "--retries", "1", "--low-level-retries", "1"], timeout=60)
+    if albums is None:
+        problem = setup_problem(error)
+        return stopped_at(2, f"{problem[0]}\n{problem[1]}" if problem
+                          else f"Could not reach Google Photos: {_last_line(error)}")
+
+    found = f"{ALBUM_NAME}/" in albums.splitlines()
+    return ([SetupStep(label, True) for label in labels[:3]]
+            + [SetupStep(labels[3], True, "" if found else "Not created yet; the first sync creates it.")])
+
+
+def run_setup_check() -> int:
+    steps = check_setup()
+    marks = {True: "✓", False: "✗", None: "-"}
+    print("Google Photos setup check\n")
+    for step in steps:
+        print(f"  {marks[step.passed]} {step.label}" + ("  (not checked)" if step.passed is None else ""))
+        for line in step.note.splitlines():
+            print(f"      {line}")
+    if all(step.passed for step in steps):
+        print("\nAll set. Press Sync now in the dashboard to upload.")
+        return 0
+    print(f"\nSetup guide: {SETUP_GUIDE_URL}")
+    return 1
 
 
 def parse_rclone_stats_line(line: str) -> Optional[dict[str, object]]:
@@ -238,10 +342,7 @@ def _sync() -> int:
         return 1
 
     if album.returncode != 0:
-        publish_status(
-            "failed",
-            f"Could not create/check Google Photos album: {album.stderr.strip()}",
-        )
+        publish_status("failed", _album_failure_message(album.stderr))
         return album.returncode or 1
 
     try:
@@ -317,8 +418,10 @@ def _sync() -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args == ["--check"]:
+        return run_setup_check()
     if args not in ([], ["--sync"]):
-        print("Usage: photo-offloader-google-sync [--sync]", file=sys.stderr)
+        print("Usage: photo-offloader-google-sync [--sync | --check]", file=sys.stderr)
         return 2
     return run_sync(args)
 

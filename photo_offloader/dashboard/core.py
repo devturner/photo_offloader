@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 
-from photo_offloader import catalog, config, logs
+from photo_offloader import catalog, config, google_photos, logs
 from photo_offloader.google_photos import parse_rclone_stats_line
 
 SERVICE_LABEL = "com.user.photooffloader"
@@ -532,6 +532,11 @@ class DashboardCore:
                 return False
         return self._cached("rclone", 30.0, probe)
 
+    def _google_setup_step(self) -> str:
+        """The first thing missing, from local checks only: the page polls, so no network here."""
+        installed = self._cached("rclone_installed", 30.0, lambda: bool(google_photos.find_rclone()))
+        return f"Add an rclone remote named {google_remote_name()}" if installed else "Install rclone to set this up"
+
     def _upload_state_after(self, row: Dict[str, Any], google: Dict[str, Any], now: float) -> str:
         """Where the Google Photos step stands for the import in ``row``."""
         if not google["configured"] or row["outcome"] != "complete":
@@ -862,7 +867,7 @@ class DashboardCore:
 
         gstate = google["state"]
         if not google["configured"]:
-            cloud_step = step("cloud", "Google Photos", "off", "Not set up", "Configure an rclone remote named gphotos")
+            cloud_step = step("cloud", "Google Photos", "off", "Not set up", self._google_setup_step())
         elif gstate == "running":
             progress = google["progress"]
             cloud_step = step("cloud", "Google Photos", "active",

@@ -5,7 +5,12 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Added
+- **`photo-offloader-google-sync --check`** reports each Google Photos setup step in order (rclone installed, remote present, signed in, album) and prints the exact next step for the first one missing. It only reads: it creates no album and leaves the dashboard's status alone. A sync that fails because the sign-in expired, or because of another known Google setup problem, now says how to fix it instead of showing rclone's error.
 - **Browser tests for the dashboard page** (`tests/browser/`, Playwright, a development-only dependency that is never installed with the app). They run the real server and core against a temp sandbox and check every dashboard state: the fixed panel, the five slots, the step strip, truncation, the menu, the theme, the step buttons and that text from a card is never treated as HTML. CI runs them in a separate job and keeps screenshots in light and dark as artifacts.
+
+### Changed
+- **The documentation is rewritten.** `README.md` is now one screen, with the detail in `docs/` (`using.md`, `google-photos.md`, `how-it-works.md`, `configuration.md`, `development.md`). `docs/google-photos.md` is a step-by-step setup guide, including the *In production* step that stops Google sign-ins expiring after 7 days. `index.html` (GitHub Pages) is now a short landing page instead of a second copy of the text. The docs also correct some outdated claims: the archive is filed by camera model, auto-eject is off by default, and uploads go to one album per archive folder, not a single album.
+- The dashboard's *Not set up* line on the Google Photos card now names the first missing step (install rclone, or add the remote) and honors a custom remote name.
 
 ### Fixed
 - **Step labels and values are no longer cut off in a narrow window.** Below 560 px wide, step labels wrap onto two lines and Progress and Files share the first row of the transfer panel, which is 10 px taller there to fit.
