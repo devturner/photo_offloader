@@ -87,8 +87,9 @@ Two consequences:
   Use `tests/support.isolate_config(self, tmp)`; it refuses to run if `config` gains a
   path it doesn't cover.
   - After changing fixtures, check: `touch m; run tests;
-    find ~/Library/Application\ Support/PhotoOffloader* -newer m`.
-    (The running dashboard touches the catalog's `-wal`/`-shm` files; that is expected.)
+    find ~/Library/Application\ Support/PhotoOffloader* -type f -newer m ! -name '*-wal' ! -name '*-shm'`.
+    Empty output means no real file changed. The running service changes folder timestamps and
+    the catalog's `-wal`/`-shm` files, so the check leaves those out.
 - **Never run `install.sh` or `uninstall.sh` yourself.** They re-register the user's real
   LaunchAgents. To check the installed layout, copy `bin scripts photo_offloader VERSION`
   to a temp dir and run the launchers from there.

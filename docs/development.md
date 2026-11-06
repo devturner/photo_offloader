@@ -87,10 +87,12 @@ sync or write the real `status.json`. Use `tests/support.isolate_config(self, tm
 run if `config` gains a path it doesn't cover. After changing fixtures, check nothing real changed:
 
 ```bash
-touch m; .venv/bin/python -m unittest discover; find ~/Library/Application\ Support/PhotoOffloader* -newer m
+touch m; .venv/bin/python -m unittest discover
+find ~/Library/Application\ Support/PhotoOffloader* -type f -newer m ! -name '*-wal' ! -name '*-shm'
 ```
 
-The running dashboard touches the catalog's `-wal` and `-shm` files, which is expected.
+No output means no real file changed. The running service changes folder timestamps and the catalog's
+`-wal` and `-shm` files, so the check leaves those out.
 
 **A source checkout uses the real data.** Only code paths follow the checkout. Archives, the catalog and
 `status.json` always resolve to the real locations, so running `bin/` programs from the repository acts
