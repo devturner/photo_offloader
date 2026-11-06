@@ -2,6 +2,7 @@
 import errno
 import os
 import pathlib
+import sqlite3
 import stat
 import unittest
 from pathlib import Path
@@ -188,6 +189,19 @@ class TestTransfer(support.CardFixtureTestCase):
         self.assertIn("__conflict-1", result.path.name)
         self.assertEqual(destination.read_bytes(), b"xxx")
         self.assertEqual(result.path.read_bytes(), b"raw")
+
+    def test_a_category_opens_the_catalog_once_however_many_files_it_has(self):
+        # Measured on a real 2,722-file card: reopening it for each lookup took about 5 s of 7 s.
+        catalog.catalog_connection().close()
+        files = [self.dcim / "100NIKON" / f"photo{number}.jpg" for number in range(5)]
+        files[0].parent.mkdir(parents=True)
+        for number, path in enumerate(files):
+            path.write_bytes(b"photo %d" % number)
+        real_connect = sqlite3.connect
+        with patch("sqlite3.connect", side_effect=real_connect) as connect:
+            transfer.copy_category(files, self.dcim, [self.local], "JPG", ImportStats())
+        self.assertEqual(connect.call_count, 1)
+        self.assertEqual(len(list(self.local.rglob("photo*.jpg"))), 5)
 
     def test_conflict_counter_advances(self):
         source = self.media()["RAW"]

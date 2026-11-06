@@ -307,7 +307,7 @@ def copy_category(
         message=f"Checking {len(files)} {label} file(s)",
     )
     card_manifest = card.load_card_manifest(dcim_folder)
-    with progress.progress_bar(len(files), label) as bar:
+    with catalog.reuse_connection(), progress.progress_bar(len(files), label) as bar:
         for file_index, source in enumerate(files, start=1):
             progress.update_status(
                 state="scanning",
