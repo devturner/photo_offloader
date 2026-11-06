@@ -80,6 +80,10 @@ def isolate_config(testcase: unittest.TestCase, root: Path, **overrides) -> None
         patcher = patch.object(config, name, value)
         patcher.start()
         testcase.addCleanup(patcher.stop)
+    # A test must never put a notification on the user's screen.
+    patcher = patch.object(logs, "notify")
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
     # The catalog schema is set up once per database path per process.
     patcher = patch.object(catalog, "_CATALOG_INITIALIZED_PATH", None)
     patcher.start()
