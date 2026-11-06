@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import errno
+import os
 import pathlib
 import stat
 import unittest
@@ -546,6 +547,82 @@ class TestUsbBackupFailures(support.CardFixtureTestCase):
         self.assertEqual(stats.failed, 1)
         self.assertIn("disconnected or replaced", stats.errors[0][1])
         self.assertEqual(progress._PROGRESS["state"], "failed")
+
+
+class TestConflictCopies(support.CardFixtureTestCase):
+    def two_photos_with_one_name(self):
+        for folder, body in (("100NIKON", b"first"), ("101NIKON", b"second")):
+            target = self.dcim / folder
+            target.mkdir(parents=True)
+            photo = target / "DSC_0001.JPG"
+            photo.write_bytes(body)
+            os.utime(photo, (1.7e9, 1.7e9))
+        return card.find_media_files(self.dcim)
+
+    def archived(self):
+        return sorted(path.name for path in self.local.rglob("*.JPG"))
+
+    def import_once(self, files):
+        stats = transfer.ImportStats()
+        transfer.copy_category(files["JPG"], self.dcim, [self.local], "JPG", stats)
+        return stats
+
+    def test_importing_a_card_again_does_not_add_another_conflict_copy(self):
+        # Reproduced 2026-11-05: three imports made conflict-1, conflict-2 and conflict-3. Only the
+        # original name was compared, and each copy also went to USB and Google Photos.
+        files = self.two_photos_with_one_name()
+        for _ in range(3):
+            self.import_once(files)
+        self.assertEqual(self.archived(), ["DSC_0001.JPG", "DSC_0001__conflict-1.JPG"])
+
+    def test_a_repeat_import_counts_the_conflict_copy_as_already_saved(self):
+        files = self.two_photos_with_one_name()
+        self.import_once(files)
+        stats = self.import_once(files)
+        self.assertEqual((stats.copied, stats.skipped, stats.failed), (0, 2, 0))
+
+    def test_a_third_different_file_still_gets_its_own_conflict_copy(self):
+        files = self.two_photos_with_one_name()
+        self.import_once(files)
+        third = self.dcim / "102NIKON"
+        third.mkdir()
+        (third / "DSC_0001.JPG").write_bytes(b"third")
+        os.utime(third / "DSC_0001.JPG", (1.7e9, 1.7e9))
+        self.import_once(card.find_media_files(self.dcim))
+        self.assertEqual(
+            self.archived(),
+            ["DSC_0001.JPG", "DSC_0001__conflict-1.JPG", "DSC_0001__conflict-2.JPG"],
+        )
+
+    def test_a_gap_in_the_conflict_numbers_does_not_hide_a_matching_copy(self):
+        files = self.two_photos_with_one_name()
+        self.import_once(files)
+        kept = next(self.local.rglob("DSC_0001__conflict-1.JPG"))
+        kept.rename(kept.with_name("DSC_0001__conflict-2.JPG"))
+        self.import_once(files)
+        self.assertEqual(self.archived(), ["DSC_0001.JPG", "DSC_0001__conflict-2.JPG"])
+
+    def test_a_name_with_glob_characters_finds_its_conflict_copy(self):
+        for folder, body in (("100NIKON", b"first"), ("101NIKON", b"second")):
+            target = self.dcim / folder
+            target.mkdir(parents=True)
+            photo = target / "IMG[1].JPG"
+            photo.write_bytes(body)
+            os.utime(photo, (1.7e9, 1.7e9))
+        files = card.find_media_files(self.dcim)
+        self.import_once(files)
+        self.import_once(files)
+        self.assertEqual(self.archived(), ["IMG[1].JPG", "IMG[1]__conflict-1.JPG"])
+
+    def test_a_similar_name_is_not_taken_for_a_conflict_copy(self):
+        files = self.two_photos_with_one_name()
+        self.import_once(files)
+        folder = next(self.local.rglob("DSC_0001.JPG")).parent
+        kept = folder / "DSC_0001__conflict-1.JPG"
+        (folder / "DSC_0001__conflict-note.JPG").write_bytes(kept.read_bytes())
+        kept.unlink()
+        self.import_once(files)
+        self.assertIn("DSC_0001__conflict-1.JPG", self.archived())
 
 
 if __name__ == "__main__":

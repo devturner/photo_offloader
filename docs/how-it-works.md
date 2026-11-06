@@ -25,7 +25,8 @@ destinations after installing or upgrading, before you format a card.
 When a file with the same name already exists, the size and SHA-256 are compared:
 
 - **Identical:** the file is skipped.
-- **Different:** the new file is kept next to the old one, as `DSC_1234__conflict-1.NEF`.
+- **Different:** the new file is kept next to the old one, as `DSC_1234__conflict-1.NEF`. It's also
+  compared with any conflict copies already there, so importing a card again doesn't add another.
 
 The one exception is the index files that cameras rewrite on every shoot (`NC_FLLST.DAT`,
 `MEDIAPRO.XML`). The newest version replaces the old one, on the Mac and on USB. They aren't photos,
