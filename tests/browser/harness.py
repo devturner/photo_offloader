@@ -149,6 +149,10 @@ class Sandbox:
         self.status(usb_planned=True, **fields)
 
 
+README_CARD_FILES = 2478
+README_MB_PER_FILE = 25
+README_COPY_SECONDS = 120
+
 COPY_PROGRESS = dict(
     bytes_done=34 * GB,
     bytes_total=80 * GB,
@@ -185,6 +189,59 @@ def _copying(s: Sandbox, **fields: Any) -> None:
             }
         )
         s.core.state()
+
+
+def _past_import(s: Sandbox, days_ago: int, seconds: int, new_files: int, card_files: int) -> None:
+    new_bytes = new_files * README_MB_PER_FILE * MB
+    finished = s.now - days_ago * 86400
+    s.record(
+        files=card_files,
+        copied=new_files,
+        skipped=card_files - new_files,
+        bytes=card_files * README_MB_PER_FILE * MB,
+        started_at=finished - seconds,
+        finished_at=finished,
+        details={
+            "new": {"JPG": new_files // 2, "RAW": new_files - new_files // 2},
+            "new_bytes": new_bytes,
+            "usb_copied": new_files,
+        },
+    )
+
+
+def _readme_import(s: Sandbox) -> None:
+    """The README's picture: a fresh card two minutes in, sized like a real one (about 25 MB a
+    file). Every number comes from the speed samples, so the panel's figures agree."""
+    speeds = [_steady_speed_mb(second, 70, 82) * MB for second in range(README_COPY_SECONDS)]
+    moved = sum(speeds)
+    files = moved // (README_MB_PER_FILE * MB)
+    total = README_CARD_FILES * README_MB_PER_FILE * MB
+    _past_import(s, days_ago=12, seconds=58, new_files=342, card_files=1136)
+    _past_import(s, days_ago=5, seconds=41, new_files=251, card_files=1387)
+    _past_import(s, days_ago=1, seconds=83, new_files=506, card_files=1893)
+    with catalog.catalog_db() as db:
+        db.executemany(
+            "INSERT INTO google_photos_uploads (path, size, mtime_ns, inode, uploaded_at, remote,"
+            " album) VALUES (?, 1, 1, 1, ?, 'gphotos', 'Photo Offloader')",
+            [(f"/archive/{number}.jpg", s.now) for number in range(1633)],
+        )
+    s.transfer(
+        state="copying",
+        phase="copy",
+        stage="copy",
+        category="RAW",
+        current_file=f"_DZ8{1000 + files}.NEF",
+        files_done=files,
+        files_total=README_CARD_FILES,
+        new_files=files,
+        bytes_done=moved,
+        bytes_total=total,
+        bytes_transferred=moved,
+        elapsed_seconds=README_COPY_SECONDS + 6,  # the scan came first
+        eta_seconds=(total - moved) / (moved / README_COPY_SECONDS),
+    )
+    s.core.state()  # starts the graph; the clock is frozen, so no poll adds to it afterwards
+    s.core._samples.extend(speeds)
 
 
 def _uploading(s: Sandbox) -> None:
@@ -261,6 +318,7 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
         **COPY_PROGRESS,
     ),
     "copying": _copying,
+    "readme_import": _readme_import,
     # The longest values a slot should have to hold: a big card with thousands of new files.
     "copying_big_card": lambda s: _copying(
         s,

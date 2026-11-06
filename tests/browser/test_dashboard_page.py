@@ -7,13 +7,14 @@ PHOTO_OFFLOADER_TEST_SCREENSHOTS to a folder to also save a picture of every sta
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import unittest
 from pathlib import Path
 from typing import Dict, List
 
-from tests.browser.harness import CARD, ONE_RUN, SCENARIOS, Browser, BrowserTestCase
+from tests.browser.harness import CARD, MB, ONE_RUN, SCENARIOS, Browser, BrowserTestCase
 
 try:
     from playwright.sync_api import expect
@@ -497,6 +498,35 @@ class TestCardTextIsNeverMarkup(PageTestCase):
         expect(self.page.locator("#hero p")).to_have_text(HOSTILE)
         expect(self.page.locator("#history .t")).to_contain_text(HOSTILE)
         expect(self.page.locator("#history .s")).to_contain_text(HOSTILE)
+
+
+class TestReadmeScreenshot(PageTestCase):
+    """The README's picture has to read like a real import, so its numbers must agree."""
+
+    def test_the_numbers_on_the_panel_agree_with_each_other(self):
+        self.show("readme_import")
+        status = json.loads(self.sandbox.paths.status_file.read_text())
+        done, total = status["bytes_done"], status["bytes_total"]
+        history = self.sandbox.core.state()["activity"]["speed_history"]
+        self.assertEqual(status["bytes_transferred"], done)
+        self.assertAlmostEqual(
+            sum(history) / done, 1, places=2, msg="the graph adds up to the bytes"
+        )
+        self.assertEqual(
+            status["new_files"], status["files_done"], "a fresh card: every file is new"
+        )
+        self.assertAlmostEqual(done / status["files_done"] / MB, 25, delta=0.5)
+        copy_seconds = len(history)
+        self.assertAlmostEqual(
+            status["eta_seconds"], (total - done) / (done / copy_seconds), delta=1
+        )
+        self.assertGreaterEqual(status["elapsed_seconds"], copy_seconds)
+        self.assertLess(status["elapsed_seconds"], copy_seconds + 15, "plus a short scan")
+
+    def test_it_shows_a_believable_install(self):
+        self.show("readme_import")
+        self.assertGreaterEqual(self.page.locator("#history > *").count(), 3)
+        self.assertNotIn("Nothing uploaded yet", self.page.locator("#pipeline").inner_text())
 
 
 class TestSpeedGraph(PageTestCase):
