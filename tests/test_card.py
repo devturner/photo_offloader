@@ -1,11 +1,136 @@
 #!/usr/bin/env python3
 import errno
+import json
 import os
 import unittest
 from unittest.mock import MagicMock, patch
 
-from photo_offloader import card, config, fileops
+from photo_offloader import card, config, fileops, volumes
+from photo_offloader.volumes import VolumeIdentity
 from tests import support
+
+REAL_CARD_VOLUME_ID = card.card_volume_id  # isolate_config replaces it during each test
+
+
+class TestManifestOnTheMac(support.CardFixtureTestCase):
+    def saved_manifest(self):
+        source = self.media()["RAW"]
+        manifest = {}
+        card.update_card_manifest_entry(manifest, source, self.dcim, "verified-hash")
+        self.assertTrue(card.save_card_manifest(self.dcim, manifest))
+        return source
+
+    def card_tree(self):
+        return sorted(str(path) for path in self.card.rglob("*"))
+
+    def test_the_manifest_is_kept_on_the_mac_and_nothing_is_written_to_the_card(self):
+        self.media()
+        before = self.card_tree()
+        self.saved_manifest()
+        card.reconcile_card_manifest(self.dcim, {"RAW": [self.media()["RAW"]]})
+        card.update_card_scan_history(self.dcim, {}, "scanning")
+        self.assertEqual(self.card_tree(), before)
+        self.assertTrue((config.CARD_MANIFESTS_DIR / "TEST-CARD-UUID.json").is_file())
+
+    def test_a_cached_hash_survives_a_new_load(self):
+        source = self.saved_manifest()
+        manifest = card.load_card_manifest(self.dcim)
+        self.assertEqual(card.card_manifest_entry(manifest, source, self.dcim), "verified-hash")
+
+    def test_a_different_card_gets_nothing_from_this_cards_manifest(self):
+        self.saved_manifest()
+        with patch.object(card, "card_volume_id", return_value="ANOTHER-CARD-UUID"):
+            self.assertEqual(card.load_card_manifest(self.dcim), {})
+
+    def test_without_a_volume_id_nothing_is_cached_so_every_file_is_hashed(self):
+        self.saved_manifest()
+        with patch.object(card, "card_volume_id", return_value=None):
+            self.assertEqual(card.load_card_manifest(self.dcim), {})
+            self.assertFalse(card.save_card_manifest(self.dcim, {"a.jpg": {"size": 1}}))
+            self.assertIsNone(card.expected_new_files(self.dcim, {"RAW": [self.media()["RAW"]]}))
+        self.assertEqual(len(list(config.CARD_MANIFESTS_DIR.iterdir())), 1)
+
+    def test_a_manifest_left_on_a_card_is_neither_read_nor_changed(self):
+        source = self.media()["RAW"]
+        old = self.card / ".photo-offloader" / "manifest-v1.json"
+        old.parent.mkdir()
+        fingerprint = fileops.file_fingerprint(source)
+        entry = {"size": fingerprint.size, "mtime_ns": fingerprint.mtime_ns, "sha256": "old-hash"}
+        content = json.dumps(
+            {"schema": 1, "files": {card.card_relative_key(source, self.dcim): entry}}
+        )
+        old.write_text(content, encoding="utf-8")
+        self.assertEqual(card.load_card_manifest(self.dcim), {})
+        card.reconcile_card_manifest(self.dcim, {"RAW": [source]})
+        self.assertEqual(old.read_text(encoding="utf-8"), content)
+
+    def test_a_damaged_manifest_on_the_mac_counts_as_empty(self):
+        self.saved_manifest()
+        (config.CARD_MANIFESTS_DIR / "TEST-CARD-UUID.json").write_text("{broken", encoding="utf-8")
+        self.assertEqual(card.load_card_manifest(self.dcim), {})
+
+    def test_a_failed_save_never_stops_an_import(self):
+        self.media()
+        config.CARD_MANIFESTS_DIR.parent.mkdir(parents=True, exist_ok=True)
+        config.CARD_MANIFESTS_DIR.write_text("a file where the folder should be", encoding="utf-8")
+        self.assertFalse(card.save_card_manifest(self.dcim, {}))
+        counts = card.reconcile_card_manifest(self.dcim, {"RAW": [self.media()["RAW"]]})
+        self.assertEqual(counts["new_files"], 1)
+
+    def test_only_the_most_recently_used_manifests_are_kept(self):
+        config.CARD_MANIFESTS_DIR.mkdir(parents=True)
+        for number in range(card.MAX_CARD_MANIFESTS + 3):
+            old = config.CARD_MANIFESTS_DIR / f"OLD-{number:03}.json"
+            old.write_text("{}", encoding="utf-8")
+            os.utime(old, (1000 + number, 1000 + number))
+        card.reconcile_card_manifest(self.dcim, {"RAW": [self.media()["RAW"]]})
+        kept = {path.name for path in config.CARD_MANIFESTS_DIR.iterdir()}
+        self.assertEqual(len(kept), card.MAX_CARD_MANIFESTS)
+        self.assertIn("TEST-CARD-UUID.json", kept)
+        self.assertNotIn("OLD-000.json", kept)
+        self.assertNotIn("OLD-003.json", kept)
+        self.assertIn("OLD-004.json", kept)
+
+
+class TestCardVolumeId(support.CardFixtureTestCase):
+    def setUp(self):
+        super().setUp()
+        REAL_CARD_VOLUME_ID.cache_clear()
+        self.addCleanup(REAL_CARD_VOLUME_ID.cache_clear)
+
+    def volume_id(self, uuid, mounted=True):
+        identity = VolumeIdentity(self.card, "disk9s1", uuid)
+        with (
+            patch("pathlib.Path.is_mount", return_value=mounted),
+            patch.object(volumes, "get_volume_identity", return_value=identity) as lookup,
+        ):
+            return REAL_CARD_VOLUME_ID(self.dcim), lookup
+
+    def test_a_mounted_card_is_known_by_its_volume_uuid(self):
+        uuid = "6FC17F40-396A-3546-97D5-E7766376B2BE"
+        self.assertEqual(self.volume_id(uuid)[0], uuid)
+
+    def test_a_folder_that_is_not_a_volume_has_no_id(self):
+        # Otherwise any folder passed with --source would share the Mac disk's ID.
+        found, lookup = self.volume_id("MAC-DISK-UUID", mounted=False)
+        self.assertIsNone(found)
+        lookup.assert_not_called()
+
+    def test_a_volume_without_a_usable_uuid_has_no_id(self):
+        for uuid in (None, "", "../../escape", "a/b"):
+            REAL_CARD_VOLUME_ID.cache_clear()
+            with self.subTest(uuid=uuid):
+                self.assertIsNone(self.volume_id(uuid)[0])
+
+    def test_the_id_is_read_once_per_run_because_diskutil_is_slow(self):
+        identity = VolumeIdentity(self.card, "disk9s1", "CARD-UUID")
+        with (
+            patch("pathlib.Path.is_mount", return_value=True),
+            patch.object(volumes, "get_volume_identity", return_value=identity) as lookup,
+        ):
+            for _ in range(3):
+                self.assertEqual(REAL_CARD_VOLUME_ID(self.dcim), "CARD-UUID")
+        lookup.assert_called_once()
 
 
 class TestCard(support.CardFixtureTestCase):

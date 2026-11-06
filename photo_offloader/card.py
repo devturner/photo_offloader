@@ -1,18 +1,18 @@
-"""Camera cards: media types, finding and scanning a card, and the card-side manifest."""
+"""Camera cards: media types, finding and scanning a card, and each card's manifest on the Mac."""
 
 from __future__ import annotations
 
+import functools
 import glob
-import json
 import os
+import re
 import stat
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
-from photo_offloader import config, fileops
+from photo_offloader import config, fileops, jsonfile, volumes
 from photo_offloader.logs import logger
 
 CARD_VOLUME_GLOBS = [
@@ -92,10 +92,8 @@ IGNORED_CARD_FILENAMES = {"thumbs.db", "desktop.ini"}
 MEDIA_CATEGORIES = ("JPG", "RAW", "VIDEO", "OTHER")
 
 
-CARD_MANIFEST_DIR = ".photo-offloader"
-
-
-CARD_MANIFEST_NAME = "manifest-v1.json"
+# A format gives a card a new volume ID, so old manifests would otherwise pile up.
+MAX_CARD_MANIFESTS = 50
 
 
 def card_relative_key(source: Path, dcim_folder: Path) -> str:
@@ -103,31 +101,40 @@ def card_relative_key(source: Path, dcim_folder: Path) -> str:
     return Path(os.path.relpath(source.resolve(), dcim_folder.resolve())).as_posix()
 
 
-def card_manifest_path(dcim_folder: Path) -> Path:
-    """Return the optional sidecar manifest location at the card volume root."""
-    return dcim_folder.resolve().parent / CARD_MANIFEST_DIR / CARD_MANIFEST_NAME
+@functools.lru_cache(maxsize=4)
+def card_volume_id(dcim_folder: Path) -> Optional[str]:
+    """The card's volume UUID, read once per run because diskutil takes about 160 ms.
+
+    None means nothing is cached for this card, so its files are hashed. A folder that isn't a
+    volume gets None too, or it would share an ID with whatever disk it's on.
+    """
+    card_root = dcim_folder.resolve().parent
+    identity = volumes.get_volume_identity(card_root) if card_root.is_mount() else None
+    volume_id = identity.volume_uuid if identity else None
+    if volume_id and re.fullmatch(r"[A-Za-z0-9-]+", volume_id):
+        return volume_id
+    logger.info("No volume ID for %s; its files will be hashed", card_root)
+    return None
+
+
+def card_manifest_path(dcim_folder: Path) -> Optional[Path]:
+    """Where this card's manifest is kept on the Mac, or None for a card with no volume ID."""
+    volume_id = card_volume_id(dcim_folder)
+    return config.CARD_MANIFESTS_DIR / f"{volume_id}.json" if volume_id else None
 
 
 def load_card_manifest_payload(dcim_folder: Path) -> Dict[str, object]:
-    """Read the complete card-side manifest, tolerating absent/corrupt/read-only media."""
-    try:
-        payload = json.loads(card_manifest_path(dcim_folder).read_text(encoding="utf-8"))
-        if (
-            isinstance(payload, dict)
-            and payload.get("schema") == 1
-            and isinstance(payload.get("files"), dict)
-        ):
-            return payload
-    except (OSError, ValueError, AttributeError):
-        pass  # the card may be read-only or never imported: start with an empty manifest
+    """Read the card's complete manifest, tolerating one that is absent or damaged."""
+    path = card_manifest_path(dcim_folder)
+    payload = jsonfile.read_object(path) if path else {}
+    if payload.get("schema") == 1 and isinstance(payload.get("files"), dict):
+        return payload
     return {"schema": 1, "files": {}, "history": {}}
 
 
 def load_card_manifest(dcim_folder: Path) -> Dict[str, dict]:
-    """Read per-file fingerprints and hashes from the card-side manifest."""
-    payload = load_card_manifest_payload(dcim_folder)
-    files = payload.get("files", {})
-    return files if isinstance(files, dict) else {}
+    """Read per-file fingerprints and hashes from the card's manifest."""
+    return load_card_manifest_payload(dcim_folder)["files"]
 
 
 def save_card_manifest(
@@ -135,34 +142,38 @@ def save_card_manifest(
     files: Dict[str, dict],
     history: Optional[Dict[str, object]] = None,
 ) -> bool:
-    """Atomically persist card metadata; inability to write never blocks import."""
+    """Atomically save the card's manifest on the Mac; failing to never blocks an import."""
     path = card_manifest_path(dcim_folder)
-    temp_path: Optional[Path] = None
+    if path is None:
+        return False
+    metadata = (
+        history if history is not None else load_card_manifest_payload(dcim_folder)["history"]
+    )
     try:
-        previous = load_card_manifest_payload(dcim_folder)
-        metadata = history if history is not None else previous.get("history", {})
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(prefix=".manifest-", suffix=".tmp", dir=path.parent)
-        temp_path = Path(temp_name)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(
-                {"schema": 1, "files": files, "history": metadata},
-                handle,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, path)
+        jsonfile.write_json(
+            path,
+            {"schema": 1, "files": files, "history": metadata},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
         return True
     except (OSError, TypeError, ValueError) as exc:
-        logger.info("Card-side cache is unavailable; continuing with Mac catalog: %s", exc)
-        if temp_path is not None:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError as cleanup_exc:
-                logger.debug("Could not remove %s: %s", temp_path, cleanup_exc)
+        logger.info("Could not save the card's manifest; continuing with the catalog: %s", exc)
         return False
+
+
+def _forget_old_manifests() -> None:
+    """Keep the most recently used manifests. Losing one only means hashing that card again."""
+    try:
+        manifests = sorted(
+            config.CARD_MANIFESTS_DIR.glob("*.json"),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+        for path in manifests[MAX_CARD_MANIFESTS:]:
+            path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.debug("Could not tidy the card manifests: %s", exc)
 
 
 def reconcile_card_manifest(
@@ -172,9 +183,7 @@ def reconcile_card_manifest(
     """Compare the live card inventory with the prior manifest without trusting it to skip copies."""
     now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat() + "Z"
     payload = load_card_manifest_payload(dcim_folder)
-    manifest = payload.get("files", {})
-    if not isinstance(manifest, dict):
-        manifest = {}
+    manifest = payload["files"]
     prior_paths = set(manifest)
     current_paths = set()
     new_files = changed_files = unchanged_files = 0
@@ -215,6 +224,7 @@ def reconcile_card_manifest(
     history["last_seen"] = now
     # This is an inventory observation, not a completed import.
     save_card_manifest(dcim_folder, manifest, history)
+    _forget_old_manifests()
     return counts
 
 
@@ -285,7 +295,7 @@ def card_manifest_entry(
     source: Path,
     dcim_folder: Path,
 ) -> Optional[str]:
-    """Return a card-cached hash only when relative path, size, and mtime still match."""
+    """Return a cached hash only when relative path, size, and mtime still match."""
     try:
         relative = card_relative_key(source, dcim_folder)
         entry = manifest.get(relative)
