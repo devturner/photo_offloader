@@ -434,6 +434,20 @@ def catalog_rows_under(roots: Sequence[Path]) -> Dict[str, tuple]:
     return {row[0]: tuple(row[1:]) for row in rows}
 
 
+def archive_records(root: Path) -> Dict[str, Tuple[int, int, Optional[str]]]:
+    """Size, modified time and hash of everything catalogued under an archive root, by relative path.
+
+    Unlike catalog_rows_under this raises if the catalog can't be read: to something comparing
+    files with it, an unreadable catalog must not look like an empty one.
+    """
+    with catalog_db() as db:
+        rows = db.execute(
+            "SELECT relative_path, size, mtime_ns, sha256 FROM file_locations WHERE root = ?",
+            (str(root.resolve()),),
+        ).fetchall()
+    return {row[0]: (row[1], row[2], row[3] or None) for row in rows}
+
+
 def _catalog_upsert(
     db: sqlite3.Connection,
     path: Path,

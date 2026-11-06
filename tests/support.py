@@ -53,6 +53,8 @@ def _test_locations(root: Path) -> dict:
         "CATALOG_DB_PATH": data / "catalog.sqlite3",
         "CARD_MANIFESTS_DIR": data / "card-manifests",
         "RUN_REPORTS_DIR": data / "run-reports",
+        "VERIFY_REPORTS_DIR": data / "verify-reports",
+        "VERIFY_LOCK_PATH": root / "verify.lock",
         "LEGACY_CATALOG_DB_PATH": install / "catalog.sqlite3",
         "BUILD_INFO_PATH": root / "build_info.json",
         "VERSION_PATH": root / "VERSION",

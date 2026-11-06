@@ -598,11 +598,13 @@ def describe_run(row: Dict[str, Any]) -> Dict[str, Any]:
         "import": f"Import from {source}" if source else "Import",
         "usb_backup": "USB backup",
         "catalog": "Catalog update",
+        "verify": "Archive check",
     }.get(kind, "Transfer")
     done = {
         "import": f"Imported from {source}" if source else "Import complete",
         "usb_backup": "USB backup complete",
         "catalog": "Catalog updated",
+        "verify": "Archive check passed",
     }.get(kind, "Transfer complete")
     if outcome == "failed":
         title, tone = f"{noun} failed", "error"
@@ -637,7 +639,7 @@ def describe_run(row: Dict[str, Any]) -> Dict[str, Any]:
             parts.append(f"{int(row['skipped']):,} already there")
         if row["failed"]:
             parts.append(f"{int(row['failed'])} failed")
-    if outcome != "complete" and row.get("message"):
+    if (outcome != "complete" or kind == "verify") and row.get("message"):
         parts.append(str(row["message"]))
     return {**row, "title": title, "tone": tone, "summary": " · ".join(parts)}
 

@@ -18,6 +18,9 @@
 - **Only one import runs at a time.** Mounting a card can fire several events, so the trigger
   and the importer each have their own locks.
 
+- **Copies can be rechecked later.** [`photo-offloader-verify`](using.md#checking-the-saved-copies)
+  rereads them from the disk and reports what no longer matches. It runs only when you start it.
+
 Still, treat this as backup infrastructure rather than your only copy. Check your files on both
 destinations after installing or upgrading, before you format a card.
 
@@ -100,7 +103,8 @@ still on the card with the same path, size and time, the card can't have been fo
 comparison is skipped and a re-insert reads no photos. New files are copied and verified as usual. If
 a file is missing or changed, that import does the comparison, and files that have left the card drop
 out of the manifest only once an import completes. This also means a saved copy that changed on disk
-without its size or time changing goes unnoticed here.
+without its size or time changing goes unnoticed here; [`photo-offloader-verify`](using.md#checking-the-saved-copies)
+is what finds that.
 
 **Daylight saving and time zones.** Cameras store file times in local time, so after a clock change
 every file on a card can appear to have moved by exactly an hour. A shift of a whole number of hours,

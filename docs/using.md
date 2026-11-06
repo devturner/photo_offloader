@@ -117,7 +117,7 @@ system, and Photo Offloader can't turn it off.
 
 ### Recent activity
 
-This lists past imports, USB backups and catalog updates, with what each one copied. The history
+This lists past imports, USB backups, catalog updates and [checks of the saved copies](#checking-the-saved-copies), with what each one did. The history
 survives restarts and reinstalls, and the latest 500 runs are kept. **Clear** removes it, after
 you click a second time to confirm. It only deletes the history, not your files.
 
@@ -178,6 +178,29 @@ card even though it has the same name.
 If you take a card out, shoot more, and put it back after more than 20 seconds, a new import
 copies only the new files. Shorter gaps are treated as the card briefly disconnecting. If a card
 stayed mounted and you want to import it again, press **Import now**.
+
+## Checking the saved copies
+
+A copy is verified when it's made, but nothing looks at it again after that. To recheck everything:
+
+```bash
+~/Library/Application\ Support/PhotoOffloader/bin/photo-offloader-verify
+```
+
+It rereads every copy on the Mac and the USB drive from the disk and compares it with the hash saved when the copy was made, and with the other copy. It only reports: nothing is changed or repaired. If the drive isn't connected it checks the Mac and says so. A card inserted during a check still imports, though both will be slower, and you can't eject the drive until the check ends. Press Ctrl-C to stop; what it found so far is kept.
+
+| Problem | What it means |
+| --- | --- |
+| **damaged** | The contents changed, but not the size or date. Nothing should do that, so suspect the disk |
+| **changed** | The contents differ, and the file's date or size changed too, so something may have edited it |
+| **missing** | The catalog knows this file, but it's gone |
+| **unreadable** | The disk returned an error when reading it |
+| **only on the drive** | It's on the USB drive but not the Mac, so it may have been deleted from the Mac |
+| **copies differ** | Each copy looks fine by itself, but they aren't the same. It can't tell which is right |
+
+If there are problems, it exits with code 1 and saves a list to `verify-reports` in the data folder, with whether the other copy of each file is good. Restore from that copy by hand, or from the card if it still has the photo. Clean checks and failed ones both appear in Recent activity.
+
+A file with no saved hash on either side can't be compared, and the summary counts these. It also counts files still waiting for a USB backup, which isn't a problem.
 
 ## Running an import by hand
 
