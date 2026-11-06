@@ -11,8 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import catalog, google_photos
-from photo_offloader.dashboard import core
+from photo_offloader import catalog, config, google_photos
+from photo_offloader.dashboard import core, display
 from tests import support
 
 
@@ -672,7 +672,7 @@ class TestPipeline(Fixture):
             self.assertEqual(core.Paths.default().rclone_config, Path("/tmp/custom-rclone.conf"))
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("RCLONE_CONFIG", None)
-            self.assertEqual(core.Paths.default().rclone_config, core.config.RCLONE_CONFIG_PATH)
+            self.assertEqual(core.Paths.default().rclone_config, config.RCLONE_CONFIG_PATH)
 
     def test_google_photos_upload_shows_live_progress_from_the_rclone_log(self):
         self.google_up = True
@@ -852,11 +852,11 @@ class TestActions(Fixture):
 
 class TestFormatting(unittest.TestCase):
     def test_byte_helpers(self):
-        self.assertEqual(core.parse_display_bytes("1.5 GiB"), 1.5 * 1024**3)
-        self.assertEqual(core.parse_display_bytes("2 KiB"), 2048.0)
-        self.assertEqual(core.parse_display_bytes("unknown"), 0.0)
-        self.assertEqual(core.format_bytes(512), "512 B")
-        self.assertEqual(core.format_bytes(1024), "1.0 KB")
+        self.assertEqual(display.parse_display_bytes("1.5 GiB"), 1.5 * 1024**3)
+        self.assertEqual(display.parse_display_bytes("2 KiB"), 2048.0)
+        self.assertEqual(display.parse_display_bytes("unknown"), 0.0)
+        self.assertEqual(display.format_bytes(512), "512 B")
+        self.assertEqual(display.format_bytes(1024), "1.0 KB")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,8 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Sequence
 
-from photo_offloader.dashboard.core import DashboardCore, Paths
+from photo_offloader.dashboard.core import DashboardCore
+from photo_offloader.dashboard.paths import Paths
 from photo_offloader.dashboard.server import (
     DashboardServer,
     find_running_instance,

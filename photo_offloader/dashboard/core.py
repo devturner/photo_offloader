@@ -13,318 +13,29 @@ import os
 import re
 import sqlite3
 import subprocess
-import sys
 import time
 from collections import deque
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
-from photo_offloader import catalog, config, google_photos, jsonfile, logs
+from photo_offloader import catalog, google_photos, jsonfile, logs
+from photo_offloader.dashboard import display
+from photo_offloader.dashboard.paths import Paths
 from photo_offloader.google_photos import parse_rclone_stats_line
 
 SERVICE_LABEL = "com.user.photooffloader"
 LAST_TRANSFER_TTL_SECONDS = 10 * 60   # completed/canceled results fade after this
 STALE_STATUS_SECONDS = 20             # an "active" status this old, with no importer, is stale
 SPEED_SAMPLES = 60
-
-
-# --------------------------------------------------------------------------- formatting
-def format_bytes(value: float) -> str:
-    amount = max(float(value), 0.0)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if amount < 1024 or unit == "TB":
-            return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
-        amount /= 1024
-    return f"{amount:.1f} TB"
-
-
-def parse_display_bytes(value: str) -> float:
-    """Convert rclone's human-readable byte totals into bytes."""
-    match = re.fullmatch(r"\s*([\d.]+)\s*(B|KB|KiB|MB|MiB|GB|GiB|TB|TiB)\s*", value, re.IGNORECASE)
-    if not match:
-        return 0.0
-    amount = float(match.group(1))
-    unit = match.group(2).upper()
-    exponent = {"B": 0, "KB": 1, "KIB": 1, "MB": 2, "MIB": 2,
-                "GB": 3, "GIB": 3, "TB": 4, "TIB": 4}[unit]
-    return amount * (1024 ** exponent)
-
-
-CATEGORY_LABELS = {"JPG": "JPG", "RAW": "RAW", "VIDEO": "Video", "OTHER": "Other"}
-IMPORT_STAGES = (("scan", "Scan card"), ("metadata", "Read photo info"),
-                 ("copy", "Copy new files"), ("usb", "Back up to USB"),
-                 ("upload", "Upload to Google Photos"))
 UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60   # an upload this soon after an import continues its steps
 UPLOAD_START_GRACE_SECONDS = 30           # importer done, sync process still starting
 FINISHING_GRACE_SECONDS = 30              # status says "complete", history row not written yet
 EVENTS_LOG_MAX_BYTES = 512 * 1024
 THEMES = ("system", "light", "dark")
 SPEED_WINDOW_SAMPLES = 10
-def activity_stage(status: Dict[str, Any]) -> str:
-    """Which step the importer is on; older importers only report phase/state."""
-    stage = str(status.get("stage", "") or "")
-    if stage in ("scan", "metadata", "copy", "usb", "catalog"):
-        return stage
-    phase = str(status.get("phase", "") or "")
-    operation = f"{status.get('operation', '')} {status.get('message', '')}".lower()
-    destination = str(status.get("destination", "") or "").lower()
-    if phase == "catalog-update":
-        return "catalog"
-    if phase.lower() in ("usb-backup", "usb backup") or "usb" in operation or "/volumes/photos" in destination:
-        return "usb"
-    if phase == "copy-decision" or status.get("state") == "copying":
-        return "copy"
-    return "scan"
 
 
-def import_stages(status: Dict[str, Any], stage: str,
-                  upload_planned: bool = False) -> Optional[List[Dict[str, str]]]:
-    """The steps of a card import with done/active/pending/skipped, or None for other runs."""
-    if "usb_planned" not in status or stage not in dict(IMPORT_STAGES):
-        return None
-    order = [step_id for step_id, _ in IMPORT_STAGES]
-    current = order.index(stage)
-    steps = []
-    for index, (step_id, label) in enumerate(IMPORT_STAGES):
-        if (step_id == "usb" and not status.get("usb_planned")) or (step_id == "upload" and not upload_planned):
-            state = "skipped"
-        else:
-            state = "done" if index < current else "active" if index == current else "pending"
-        steps.append({"id": step_id, "label": label, "state": state})
-    return steps
-
-
-def parse_timestamp(value: object) -> Optional[float]:
-    """Epoch seconds from an ISO 8601 timestamp written by the importer or the sync, or None."""
-    try:
-        return datetime.fromisoformat(str(value)).timestamp()
-    except (TypeError, ValueError, OSError):
-        return None
-
-
-def stages_after_import(row: Dict[str, Any], upload_state: str) -> List[Dict[str, str]]:
-    """Import steps for a finished (history) run, with the Google Photos step as given."""
-    outcome, usb, message = row["outcome"], bool(row["usb"]), str(row.get("message") or "")
-    usb_failed = outcome == "failed" and usb and "USB" in message
-    copy_state = "done" if outcome == "complete" or usb_failed else (
-        "error" if outcome == "failed" else "skipped")
-    states = {"scan": "done", "metadata": "done", "copy": copy_state,
-              "usb": "error" if usb_failed else ("done" if usb and outcome == "complete" else "skipped"),
-              "upload": upload_state if outcome == "complete" else "skipped"}
-    return [{"id": step_id, "label": label, "state": states[step_id]} for step_id, label in IMPORT_STAGES]
-
-
-def activity_text(status: Dict[str, Any], stage: str) -> Tuple[str, str]:
-    """The panel's title and detail line for the importer's current step."""
-    state = str(status.get("state", "idle"))
-    done = int(status.get("bytes_done", 0) or 0)
-    total = int(status.get("bytes_total", 0) or 0)
-    current_file = str(status.get("current_file", "") or "")
-    detail = str(status.get("message", "") or "")
-    if stage == "catalog":
-        scanned = int(status.get("catalog_scanned", 0) or 0)
-        step = str(status.get("catalog_stage", "") or "")
-        return "Updating file index", " · ".join(part for part in (step, f"{scanned:,} files scanned") if part)
-    if stage == "usb":
-        title = "Backing up to USB" if state == "copying" else "Comparing with USB backup"
-        return title, current_file or (f"{format_bytes(done)} of {format_bytes(total)}" if total else detail)
-    if stage == "copy":
-        # Every file is first checked, then copied if new: the status flips between the
-        # two per file. Name the step by what the session is doing overall so it holds still.
-        new_files = int(status.get("new_files", 0) or 0)
-        category = CATEGORY_LABELS.get(str(status.get("category", "") or ""), "")
-        title = "Copying new files" if state == "copying" or new_files else "Checking for new files"
-        return title, " · ".join(part for part in (category, current_file) if part) or detail
-    if stage == "metadata":
-        return "Reading photo info", detail
-    return "Scanning card", detail or "Looking for photos and video"
-
-
-def _step(step_id: str, label: str, state: str, headline: str, detail: str,
-          actions: Sequence[Dict[str, str]] = (), percent: Optional[float] = None) -> Dict[str, Any]:
-    return {"id": step_id, "label": label, "state": state, "headline": headline,
-            "detail": detail, "actions": list(actions), "percent": percent}
-
-
-def _action(action_id: str, label: str) -> Dict[str, str]:
-    return {"id": action_id, "label": label}
-
-
-def _card_step(card: Optional[Path], activity: Optional[Dict[str, Any]], busy: bool,
-               can_reimport: bool) -> Dict[str, Any]:
-    if activity and activity["kind"] == "import" and activity.get("stage") in ("scan", "metadata"):
-        return _step("card", "Camera card", "active", card.name if card else "Card", activity["title"])
-    if card:
-        actions = [] if busy else (
-            [_action("import_card", "Import now")] if can_reimport else []) + [_action("eject_card", "Eject")]
-        return _step("card", "Camera card", "ok", card.name, "Already imported" if can_reimport else "Mounted", actions)
-    return _step("card", "Camera card", "off", "No card", "Insert a card to begin")
-
-
-def _archive_step(activity: Optional[Dict[str, Any]], local: Optional[int]) -> Dict[str, Any]:
-    detail = (f"{local:,} files indexed" if local else "Nothing indexed yet") if local is not None \
-        else "Catalog unavailable"
-    if activity and activity["kind"] == "import" and activity.get("stage") == "copy":
-        return _step("archive", "Mac archive", "active", "Copying", activity["detail"] or detail,
-                     (), activity["percent"])
-    return _step("archive", "Mac archive", "ok", "Up to date" if local else "Empty", detail)
-
-
-def _usb_step(activity: Optional[Dict[str, Any]], usb_mounted: bool, usb: Optional[int],
-              busy: bool) -> Dict[str, Any]:
-    if activity and activity["kind"] == "usb_backup":
-        return _step("usb", "USB backup", "active", "Backing up", activity["detail"], (), activity["percent"])
-    if usb_mounted:
-        return _step("usb", "USB backup", "ok", "Connected",
-                     f"{usb:,} files backed up" if usb else "Ready to back up",
-                     [] if busy else [_action("usb_backup", "Back up now"), _action("eject_usb", "Eject")])
-    return _step("usb", "USB backup", "off", "Not connected", "Plug in the backup drive")
-
-
-def _cloud_step(google: Dict[str, Any], uploaded: int, busy: bool, setup_step: str) -> Dict[str, Any]:
-    state = google["state"]
-    if not google["configured"]:
-        return _step("cloud", "Google Photos", "off", "Not set up", setup_step)
-    if state == "running":
-        upload = google["progress"]
-        return _step("cloud", "Google Photos", "active",
-                     "Finishing upload" if upload and upload["finalizing"] else "Uploading",
-                     f"{upload['transferred']} of {upload['total']}" if upload else "Preparing",
-                     (), upload["percent"] if upload else None)
-    if state == "interrupted":
-        return _step("cloud", "Google Photos", "error", "Upload interrupted",
-                     "It stopped before finishing", [_action("google_sync", "Resume")])
-    if state in ("failed", "error"):
-        return _step("cloud", "Google Photos", "error", "Upload failed", google["message"] or "See the log",
-                     [_action("google_sync", "Retry")])
-    return _step("cloud", "Google Photos", "ok", "Up to date",
-                 f"{uploaded:,} files uploaded" if uploaded else "Nothing uploaded yet",
-                 [] if busy else [_action("google_sync", "Sync now")])
-
-
-def pipeline(card: Optional[Path], activity: Optional[Dict[str, Any]], counts: Optional[Dict[str, Any]],
-             usb_mounted: bool, google: Dict[str, Any], busy: bool, can_reimport: bool,
-             setup_step: str) -> List[Dict[str, Any]]:
-    """The four steps a photo moves through (card, Mac, USB, Google) and what each can do now."""
-    return [_card_step(card, activity, busy, can_reimport),
-            _archive_step(activity, counts["local"] if counts else None),
-            _usb_step(activity, usb_mounted, counts["usb"] if counts else None, busy),
-            _cloud_step(google, counts["uploaded"] if counts else 0, busy, setup_step)]
-
-
-def plural(count: int, noun: str) -> str:
-    return f"{count:,} {noun}{'' if count == 1 else 's'}"
-
-
-# --------------------------------------------------------------------------------- paths
-@dataclass(frozen=True)
-class Paths:
-    install_dir: Path
-    data_dir: Path
-    volumes_root: Path
-    usb_volume: Path
-    local_archives: Tuple[Path, ...]
-    usb_archives: Tuple[Path, ...]
-    python: Path
-    launchctl: str = "/bin/launchctl"
-    pgrep: str = "/usr/bin/pgrep"
-    rclone_config: Optional[Path] = None   # where rclone keeps its remotes (not ours to change)
-
-    @classmethod
-    def default(cls) -> "Paths":
-        install = Path(os.environ.get("PHOTO_OFFLOADER_INSTALL_DIR", str(config.INSTALL_DIR)))
-        venv_python = install / "venv" / "bin" / "python3"
-        return cls(
-            install_dir=install,
-            data_dir=config.CATALOG_DB_PATH.parent,
-            volumes_root=Path("/Volumes"),
-            usb_volume=config.USB_DEST_VOLUME,
-            local_archives=(config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT),
-            usb_archives=(config.USB_DEST_ROOT,),
-            python=venv_python if venv_python.exists() else Path(sys.executable),
-            rclone_config=Path(os.environ.get("RCLONE_CONFIG", str(config.RCLONE_CONFIG_PATH))),
-        )
-
-    # files the importer / trigger / service maintain
-    @property
-    def status_file(self) -> Path:
-        return Path(os.environ.get("PHOTO_OFFLOADER_STATUS_FILE", str(self.install_dir / "status.json")))
-
-    @property
-    def pause_file(self) -> Path:
-        return Path(os.environ.get("PHOTO_OFFLOADER_PAUSE_FILE", str(self.install_dir / ".paused")))
-
-    @property
-    def terminal_output_file(self) -> Path:
-        return self.install_dir / ".terminal-output-enabled"
-
-    @property
-    def auto_eject_file(self) -> Path:
-        return self.install_dir / ".auto-eject-enabled"
-
-    @property
-    def handled_state_file(self) -> Path:
-        return self.install_dir / ".last_camera_source"
-
-    @property
-    def google_status_file(self) -> Path:
-        return self.install_dir / "google_photos_status.json"
-
-    @property
-    def import_log_file(self) -> Path:
-        return Path(os.environ.get("PHOTO_OFFLOADER_IMPORT_LOG", str(config.LOG_FILE_PATH)))
-
-    @property
-    def trigger_log_file(self) -> Path:
-        return Path(os.environ.get("PHOTO_OFFLOADER_TRIGGER_LOG",
-                                   str(config.TRIGGER_LOG_PATH)))
-
-    @property
-    def events_log_file(self) -> Path:
-        """What the dashboard showed and why, one line per change (View logs > Dashboard)."""
-        return self.install_dir / "dashboard_events.log"
-
-    @property
-    def google_log_file(self) -> Path:
-        return self.install_dir / "google_photos_sync.log"
-
-    @property
-    def preferences_file(self) -> Path:
-        return self.data_dir / "preferences.json"
-
-    @property
-    def catalog_db(self) -> Path:
-        return self.data_dir / "catalog.sqlite3"
-
-    @property
-    def dashboard_state_file(self) -> Path:
-        # Next to the catalog so it survives reinstalls, like the history it refers to.
-        return self.data_dir / "dashboard_state.json"
-
-    @property
-    def importer_script(self) -> Path:
-        return self.install_dir / config.IMPORTER
-
-    @property
-    def backup_launcher(self) -> Path:
-        return self.install_dir / config.USB_BACKUP
-
-    @property
-    def google_script(self) -> Path:
-        return self.install_dir / config.GOOGLE_SYNC
-
-    @property
-    def service_script(self) -> Path:
-        return self.install_dir / config.SERVICE
-
-    @property
-    def trigger_script(self) -> Path:
-        return self.install_dir / config.TRIGGER
-
-
-# ------------------------------------------------------------------------------- the core
 class DashboardCore:
     def __init__(
         self,
@@ -430,7 +141,7 @@ class DashboardCore:
 
     @staticmethod
     def _status_age(status: Dict[str, Any], now: float) -> Optional[float]:
-        stamp = parse_timestamp(status.get("updated_at"))
+        stamp = display.parse_timestamp(status.get("updated_at"))
         return None if stamp is None else max(now - stamp, 0.0)
 
     def _stale(self, status: Dict[str, Any], now: float) -> bool:
@@ -481,11 +192,11 @@ class DashboardCore:
             self._end_graph("upload")   # an upload running now keeps its own graph
             return None
 
-        stage = activity_stage(status)
+        stage = display.activity_stage(status)
         done = int(status.get("bytes_done", 0) or 0)
         total = int(status.get("bytes_total", 0) or 0)
         kind = {"catalog": "catalog", "usb": "usb_backup"}.get(stage, "import")
-        title, detail = activity_text(status, stage)
+        title, detail = display.activity_text(status, stage)
         # One overall measure for checks and copies alike (skipped files count as done).
         percent = min(100.0, done / total * 100.0) if stage in ("copy", "usb") and total else None
         speed = self._transfer_speed(status, kind, stage, now)
@@ -504,7 +215,7 @@ class DashboardCore:
             "elapsed_seconds": float(status.get("elapsed_seconds", 0) or 0),
             "source": str(status.get("source", "") or ""),
             "speed_history": [round(sample) for sample in self._samples],
-            "stages": import_stages(status, stage, upload_planned),
+            "stages": display.import_stages(status, stage, upload_planned),
         }
 
     # ---- catalog ------------------------------------------------------------------------
@@ -551,7 +262,7 @@ class DashboardCore:
         info: Dict[str, Any] = {
             "configured": configured, "state": state, "message": str(status.get("message", "") or ""),
             "last_success": status.get("last_success"), "progress": None,
-            "updated_at": parse_timestamp(status.get("updated_at")),
+            "updated_at": display.parse_timestamp(status.get("updated_at")),
         }
         if state == "running" and not self.google_running():
             # The sync only writes status on state changes, so age says nothing; a missing
@@ -559,7 +270,7 @@ class DashboardCore:
             info["state"], info["message"] = "interrupted", "The last upload was interrupted."
         elif state == "running":
             info["progress"] = self._upload_progress()
-            info["started_at"] = parse_timestamp(status.get("started_at") or status.get("updated_at"))
+            info["started_at"] = display.parse_timestamp(status.get("started_at") or status.get("updated_at"))
         return info
 
     @staticmethod
@@ -572,15 +283,15 @@ class DashboardCore:
 
     def rclone_remote_configured(self) -> bool:
         """Whether rclone has a [gphotos] remote. Reads section names only, never secrets."""
-        config = self.paths.rclone_config
-        if config is None:
+        rclone_config = self.paths.rclone_config
+        if rclone_config is None:
             return False
 
         remote = google_photos.remote_name()
 
         def probe() -> bool:
             try:
-                with config.open(encoding="utf-8", errors="replace") as handle:
+                with rclone_config.open(encoding="utf-8", errors="replace") as handle:
                     return any(line.strip() == f"[{remote}]" for line in handle)
             except OSError:
                 return False
@@ -615,17 +326,17 @@ class DashboardCore:
         source = str(row.get("source") or "") if follows_import else ""
         files_done, files_total = progress.get("files_done"), progress.get("files_total")
         if files_total:
-            what = f"{files_done:,} of {plural(files_total, 'file')}"
+            what = f"{files_done:,} of {display.plural(files_total, 'file')}"
         else:
             what = "Finishing upload" if progress.get("finalizing") else "Preparing upload"
-        done = int(parse_display_bytes(str(progress.get("transferred") or "")))
-        total = int(parse_display_bytes(str(progress.get("total") or "")))
+        done = int(display.parse_display_bytes(str(progress.get("transferred") or "")))
+        total = int(display.parse_display_bytes(str(progress.get("total") or "")))
         if progress:
             self._sample_speed("upload", done, now)
         started = google.get("started_at")
         recent = list(self._samples)[-SPEED_WINDOW_SAMPLES:]
         speed = (sum(recent) / len(recent) if recent
-                 else parse_display_bytes(str(progress.get("speed") or "").replace("/s", "")))
+                 else display.parse_display_bytes(str(progress.get("speed") or "").replace("/s", "")))
         starting = upload_state == "starting"
         return {"kind": "upload", "stage": "upload",
                 "title": "Starting upload to Google Photos" if starting else "Uploading to Google Photos",
@@ -636,7 +347,7 @@ class DashboardCore:
                 "elapsed_seconds": max(now - started, 0.0) if started and not starting else 0.0,
                 "files_done": files_done or 0, "files_total": files_total or 0, "new_files": 0,
                 "source": "", "speed_history": [round(sample) for sample in self._samples],
-                "stages": stages_after_import(row, "active") if follows_import else None}
+                "stages": display.stages_after_import(row, "active") if follows_import else None}
 
     def _finished(self, last: Optional[Dict[str, Any]], google: Dict[str, Any],
                   now: float) -> Optional[Dict[str, Any]]:
@@ -654,7 +365,7 @@ class DashboardCore:
                 "bytes_done": new_bytes, "bytes_total": new_bytes,
                 "speed_bps": new_bytes / duration if duration > 0 else 0.0,
                 "files_done": new_files, "files_total": int(last["files"]), "elapsed_seconds": duration,
-                "stages": stages_after_import(last, "pending" if upload_state == "starting" else upload_state)}
+                "stages": display.stages_after_import(last, "pending" if upload_state == "starting" else upload_state)}
 
     def _upload_progress(self) -> Optional[Dict[str, Any]]:
         try:
@@ -681,58 +392,9 @@ class DashboardCore:
                 "files_done": files_done, "files_total": files_total}
 
     # ---- last transfer & history --------------------------------------------------------
-    @staticmethod
-    def describe_run(row: Dict[str, Any]) -> Dict[str, Any]:
-        kind, outcome = str(row["kind"]), str(row["outcome"])
-        source = str(row.get("source") or "")
-        noun = {"import": f"Import from {source}" if source else "Import",
-                "usb_backup": "USB backup", "catalog": "Catalog update"}.get(kind, "Transfer")
-        done = {"import": f"Imported from {source}" if source else "Import complete",
-                "usb_backup": "USB backup complete", "catalog": "Catalog updated"}.get(kind, "Transfer complete")
-        if outcome == "failed":
-            title, tone = f"{noun} failed", "error"
-        elif outcome == "canceled":
-            title, tone = f"{noun} canceled", "warning"
-        else:
-            title, tone = done, "success"
-        parts: List[str] = []
-        details = row.get("details") if isinstance(row.get("details"), dict) else {}
-        if kind == "import":
-            new = details.get("new")
-            if isinstance(new, dict):
-                count = sum(int(v) for v in new.values())
-                labels = {"JPG": lambda n: plural(n, "photo"), "RAW": lambda n: f"{n:,} RAW",
-                          "VIDEO": lambda n: plural(n, "video"), "OTHER": lambda n: f"{n:,} other"}
-                if count:
-                    parts.append(f"{count:,} new: " + ", ".join(
-                        labels[key](int(new[key])) for key in ("JPG", "RAW", "VIDEO", "OTHER") if new.get(key)))
-                    if details.get("new_bytes"):
-                        parts.append(format_bytes(int(details["new_bytes"])))
-                else:
-                    parts.append("No new files")
-            else:  # recorded before per-session details existed
-                parts.append(f"{int(row['copied']):,} new" if row["copied"] else "No new files")
-            if row["files"]:
-                safe = outcome == "complete" and not row["failed"]
-                parts.append(f"{int(row['files']):,} on card" + (", all backed up" if safe else ""))
-            if row["failed"]:
-                parts.append(f"{int(row['failed'])} failed")
-            if "usb_copied" in details:
-                parts.append(f"{int(details['usb_copied']):,} copied to USB")
-            elif row["usb"] and outcome == "complete":
-                parts.append("backed up to USB")
-        elif kind == "usb_backup":
-            parts.append(f"{int(row['copied']):,} copied")
-            if row["skipped"]:
-                parts.append(f"{int(row['skipped']):,} already there")
-            if row["failed"]:
-                parts.append(f"{int(row['failed'])} failed")
-        if outcome != "complete" and row.get("message"):
-            parts.append(str(row["message"]))
-        return {**row, "title": title, "tone": tone, "summary": " · ".join(parts)}
 
     def history(self, limit: int = 15) -> List[Dict[str, Any]]:
-        return [self.describe_run(row) for row in catalog.list_import_history(limit=limit)]
+        return [display.describe_run(row) for row in catalog.list_import_history(limit=limit)]
 
     def _last_transfer(self, now: float, row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if row is None:
@@ -742,7 +404,7 @@ class DashboardCore:
         # Failures stay until dismissed; everything else fades after a while.
         if row["outcome"] != "failed" and now - float(row["finished_at"]) > LAST_TRANSFER_TTL_SECONDS:
             return None
-        return self.describe_run(row)
+        return display.describe_run(row)
 
     # ---- the one payload the front end renders -------------------------------------------
     def state(self) -> Dict[str, Any]:
@@ -764,7 +426,7 @@ class DashboardCore:
         activity = import_activity or self._upload_activity(google, latest, now)
 
         handled = self.card_handled(card)
-        headline = self._headline(running, paused, card, activity, interrupted, last, status, google, handled)
+        headline = display.headline(running, paused, card, activity, interrupted, last, status, google, handled)
         payload = {
             "generated_at": now,
             "version": jsonfile.read_object(self.paths.install_dir / "build_info.json").get("version", ""),
@@ -776,7 +438,7 @@ class DashboardCore:
             "interrupted": interrupted,
             "last_transfer": last,
             "finished": None if activity else self._finished(last, google, now),
-            "pipeline": pipeline(card, import_activity, counts, usb_mounted, google, busy,
+            "pipeline": display.pipeline(card, import_activity, counts, usb_mounted, google, busy,
                                  handled and running and not paused,
                                  "" if google["configured"] else self._google_setup_step()),
             "upload": google["progress"],
@@ -820,12 +482,12 @@ class DashboardCore:
 
         Without this the panel fell back to the card headline between copying and the upload.
         """
-        stamp = parse_timestamp(status.get("updated_at"))
+        stamp = display.parse_timestamp(status.get("updated_at"))
         if (status.get("state") != "complete" or "usb_planned" not in status or stamp is None
                 or now - stamp > FINISHING_GRACE_SECONDS
                 or (latest is not None and float(latest["finished_at"]) >= stamp - 1)):
             return None
-        stages = import_stages(status, "upload", google["configured"]) or []
+        stages = display.import_stages(status, "upload", google["configured"]) or []
         if stages and google["configured"]:
             stages[-1]["state"] = "pending"
         source = str(status.get("source", "") or "").rstrip("/").rsplit("/", 1)[-1]
@@ -837,41 +499,6 @@ class DashboardCore:
                 "new_files": int(status.get("new_files", 0) or 0), "speed_bps": 0.0, "eta_seconds": None,
                 "elapsed_seconds": float(status.get("elapsed_seconds", 0) or 0), "source": source,
                 "speed_history": [round(sample) for sample in self._samples], "stages": stages}
-
-    @staticmethod
-    def _headline(running: bool, paused: bool, card: Optional[Path], activity: Optional[Dict[str, Any]],
-                  interrupted: bool, last: Optional[Dict[str, Any]], status: Dict[str, Any],
-                  google: Dict[str, Any], card_handled: bool = False) -> Dict[str, str]:
-        if not running:
-            return {"tone": "stopped", "title": "Photo Offloader is stopped",
-                    "detail": "Camera cards will not be imported until you start it."}
-        if activity:
-            source = activity["source"].rsplit("/", 1)[-1] if activity["source"] else ""
-            if activity["kind"] == "import" and source:
-                detail = " · ".join(part for part in (source, activity["detail"]) if part)
-                return {"tone": "active", "title": activity["title"], "detail": detail}
-            return {"tone": "active", "title": activity["title"], "detail": activity["detail"]}
-        if interrupted:
-            return {"tone": "warning", "title": "The last transfer was interrupted",
-                    "detail": "It stopped before finishing. Insert the card again to continue."}
-        if last and last["outcome"] == "failed":
-            return {"tone": "error", "title": last["title"],
-                    "detail": str(last.get("message") or last["summary"] or "See the log for details.")}
-        if google["state"] in ("failed", "error", "interrupted"):
-            return {"tone": "warning", "title": "Google Photos upload needs attention",
-                    "detail": google["message"] or "Sync again to finish uploading."}
-        if paused:
-            return {"tone": "warning", "title": "Automatic imports are paused",
-                    "detail": "Cards will not be imported until you resume."}
-        if last:
-            return {"tone": "success", "title": last["title"], "detail": last["summary"]}
-        if card and card_handled:
-            return {"tone": "idle", "title": f"{card.name} was already imported",
-                    "detail": "Shot more since? Choose Import now, or eject and re-insert the card."}
-        if card:
-            return {"tone": "idle", "title": f"{card.name} is mounted",
-                    "detail": "The import will start in a moment."}
-        return {"tone": "idle", "title": "Ready", "detail": "Insert a camera card to begin."}
 
     # ---- actions ---------------------------------------------------------------------------
     def _spawn(self, argv: List[str]) -> None:
