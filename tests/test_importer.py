@@ -394,6 +394,12 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         ):
             app._check_local_space(files, self.dcim)
 
+    def test_the_space_check_works_before_the_archive_folders_exist(self):
+        files = self.card_with_sizes()
+        config.LOCAL_RAW_DEST_ROOT.rmdir()
+        app._check_local_space(files, self.dcim)
+        self.assertTrue(config.LOCAL_RAW_DEST_ROOT.is_dir())
+
     def test_a_full_disk_stops_the_import_before_anything_is_copied(self):
         self.card_with_sizes()
         with (

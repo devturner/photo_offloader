@@ -614,6 +614,28 @@ class TestConflictCopies(support.CardFixtureTestCase):
         self.import_once(files)
         self.assertEqual(self.archived(), ["IMG[1].JPG", "IMG[1]__conflict-1.JPG"])
 
+    def test_a_later_conflict_copy_is_found_when_the_first_does_not_match(self):
+        files = self.two_photos_with_one_name()
+        third = self.dcim / "102NIKON"
+        third.mkdir()
+        (third / "DSC_0001.JPG").write_bytes(b"third")
+        os.utime(third / "DSC_0001.JPG", (1.7e9, 1.7e9))
+        files = card.find_media_files(self.dcim)
+        self.import_once(files)
+        self.import_once(files)
+        self.assertEqual(
+            self.archived(),
+            ["DSC_0001.JPG", "DSC_0001__conflict-1.JPG", "DSC_0001__conflict-2.JPG"],
+        )
+
+    def test_a_name_that_only_starts_like_a_conflict_copy_is_not_one(self):
+        files = self.two_photos_with_one_name()
+        self.import_once(files)
+        kept = next(self.local.rglob("DSC_0001__conflict-1.JPG"))
+        kept.rename(kept.with_name("DSC_0001__conflict-1.JPG.bak"))
+        self.import_once(files)
+        self.assertIn("DSC_0001__conflict-1.JPG", self.archived())
+
     def test_a_similar_name_is_not_taken_for_a_conflict_copy(self):
         files = self.two_photos_with_one_name()
         self.import_once(files)
