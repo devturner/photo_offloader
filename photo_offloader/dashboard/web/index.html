@@ -334,34 +334,111 @@ function relTime(epoch, now) {
   const d = new Date(epoch * 1000);
   return s < 86400 * 6 ? Math.round(s / 86400) + " d ago" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
-// One sample per poll. The line starts at the left edge and reaches the right after SPARK_MIN_POINTS,
-// then the time axis stretches to fit the run, up to SPARK_MAX_POINTS (core.SPEED_SAMPLES), and scrolls.
-const SPARK_MIN_POINTS = 10, SPARK_MAX_POINTS = 180;
-// A poll only sees the bytes since the last one, and none move while a copy is being verified,
-// so raw samples jump about even at a steady speed. Averaging neighbours shows the trend. The
-// average widens with the run, because a longer run packs more samples into the same width.
+// One sample per poll, from the first bytes moved. The line rises from zero at the left edge and
+// reaches the right after ten samples (SPARK_MIN_POINTS counts that zero), then the time axis stretches
+// to fit the run, up to SPARK_MAX_POINTS, and scrolls. The server keeps more than that
+// (core.SPEED_SAMPLES) so the smoothing has settled by the left edge.
+const SPARK_MIN_POINTS = 11, SPARK_MAX_POINTS = 90, SPARK_SMOOTHING_SECONDS = 8, POLL_MS = 1000;
+// Once a stall has scrolled the fast part off the graph, what is left of it must not fill the height.
+const SPARK_LOWEST_SCALE = 0.25; // of the run's top speed
+// A poll only sees the bytes since the last one, and none move while a copy is being verified, so raw
+// samples jump about even at a steady speed. An exponential moving average shows the trend. It only
+// looks backwards, so a new sample can't reshape what is already drawn. Dividing by the weight so far
+// stops the first sample from counting too much.
 function smoothedSpeeds(vals) {
-  const reach = Math.max(2, Math.round(vals.length / 30));
-  return vals.map((_, i) => {
-    const near = vals.slice(Math.max(0, i - reach), i + reach + 1);
-    return near.reduce((sum, v) => sum + v, 0) / near.length;
-  });
+  const keep = Math.exp(-1 / SPARK_SMOOTHING_SECONDS);
+  let sum = 0, weight = 0;
+  return vals.map(v => { sum = sum * keep + v; weight = weight * keep + 1; return sum / weight; });
 }
-function sparkPaths(values, w, hgt) {
-  const vals = smoothedSpeeds((values || []).slice(-SPARK_MAX_POINTS));
-  if (vals.length < 2) return null;
-  const max = Math.max(...vals, 1), step = w / (Math.max(vals.length, SPARK_MIN_POINTS) - 1);
-  const pts = vals.map((v, i) => [i * step, hgt - 2 - (v / max) * (hgt - 6)]);
-  const at = (x, y) => x.toFixed(1) + " " + y.toFixed(1);
-  // Curve through the midpoints between samples: it is smooth and can't overshoot them.
-  let line = "M" + at(...pts[0]);
-  for (let i = 1; i < pts.length - 1; i++) {
-    line += ` Q${at(...pts[i])} ${at((pts[i][0] + pts[i + 1][0]) / 2, (pts[i][1] + pts[i + 1][1]) / 2)}`;
+const sparkPoint = (p) => p[0].toFixed(1) + " " + p[1].toFixed(1);
+/* A monotone cubic curve, which can't wobble between samples. Adapted from curveMonotoneX in d3-shape
+   (https://github.com/d3/d3-shape), after Steffen, "A Simple Method for Monotonic Interpolation in One
+   Dimension" (1990).
+
+   Copyright 2010-2026 Mike Bostock
+
+   Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee
+   is hereby granted, provided that the above copyright notice and this permission notice appear in all
+   copies.
+
+   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE
+   INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE
+   FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+   LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+   ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. */
+function monotonePath(pts) {
+  const n = pts.length;
+  if (n < 3) return "M" + pts.map(sparkPoint).join(" L");
+  const sign = (x) => x < 0 ? -1 : 1, slopes = new Array(n);
+  for (let i = 1; i < n - 1; i++) {
+    const h0 = pts[i][0] - pts[i - 1][0], h1 = pts[i + 1][0] - pts[i][0];
+    const s0 = (pts[i][1] - pts[i - 1][1]) / (h0 || h1), s1 = (pts[i + 1][1] - pts[i][1]) / (h1 || h0), p = (s0 * h1 + s1 * h0) / (h0 + h1);
+    slopes[i] = (sign(s0) + sign(s1)) * Math.min(Math.abs(s0), Math.abs(s1), 0.5 * Math.abs(p)) || 0;
   }
-  const last = pts[pts.length - 1];
-  line += " L" + at(...last);
-  return { line, area: line + ` L${last[0].toFixed(1)} ${hgt} L0 ${hgt} Z` };
+  const oneSided = (a, b, t) => { const h = b[0] - a[0]; return h ? (3 * (b[1] - a[1]) / h - t) / 2 : t; };
+  slopes[0] = oneSided(pts[0], pts[1], slopes[1]);
+  slopes[n - 1] = oneSided(pts[n - 2], pts[n - 1], slopes[n - 2]);
+  let d = "M" + sparkPoint(pts[0]);
+  for (let i = 0; i < n - 1; i++) {
+    const dx = (pts[i + 1][0] - pts[i][0]) / 3;
+    d += ` C${sparkPoint([pts[i][0] + dx, pts[i][1] + dx * slopes[i]])} ${sparkPoint([pts[i + 1][0] - dx, pts[i + 1][1] - dx * slopes[i + 1]])} ${sparkPoint(pts[i + 1])}`;
+  }
+  return d;
 }
+const sparkTop = (values) => Math.max(...smoothedSpeeds(values || []).slice(-SPARK_MAX_POINTS), 1);
+// progress runs from 0 to 1 as the tip travels from the previous sample to the newest one.
+function sparkPaths(values, w, hgt, progress = 1, top = sparkTop(values)) {
+  const vals = [0, ...smoothedSpeeds(values || [])].slice(-SPARK_MAX_POINTS), n = vals.length;
+  if (n < 2) return null;
+  const at = n - 2 + progress, from = Math.max(0, at - (SPARK_MAX_POINTS - 2));
+  const step = w / Math.max(at - from, SPARK_MIN_POINTS - 1);
+  const valueAt = (i) => { const low = Math.floor(i), high = Math.min(low + 1, n - 1); return vals[low] + (vals[high] - vals[low]) * (i - low); };
+  const point = (i) => [(i - from) * step, hgt - 2 - (valueAt(i) / top) * (hgt - 6)];
+  const pts = [point(from)];
+  for (let i = Math.floor(from) + 1; i < at; i++) pts.push(point(i));
+  if (at > from) pts.push(point(at));
+  if (pts.length < 2) return null;
+  const line = monotonePath(pts), tip = pts[pts.length - 1];
+  return { line, area: line + ` L${tip[0].toFixed(1)} ${hgt} L0 ${hgt} Z` };
+}
+const calm = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+// One graph for the whole page, kept across refreshes so a glide isn't interrupted. It only animates
+// from a new sample until it has caught up, so it uses nothing while idle or in a hidden window.
+const speedGraph = (() => {
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("class", "spark"); svg.setAttribute("viewBox", "0 0 600 44"); svg.setAttribute("preserveAspectRatio", "none"); svg.setAttribute("aria-hidden", "true");
+  const part = (cls, d) => { const path = document.createElementNS(SVGNS, "path"); path.setAttribute("class", cls); path.setAttribute("vector-effect", "non-scaling-stroke"); if (d) path.setAttribute("d", d); svg.append(path); return path; };
+  part("base", "M0 43 L600 43");
+  const area = part("area"), line = part("line");
+  let values = [], seen = "", arrived = 0, fromTop = 0, top = 0, peak = 0, frame = 0;
+  function draw(progress) {
+    const shownTop = fromTop + (top - fromTop) * progress, paths = sparkPaths(values, 600, 44, progress, shownTop);
+    line.setAttribute("d", paths ? paths.line : "");
+    area.setAttribute("d", paths ? paths.area : "");
+    return shownTop;
+  }
+  function glide(now) {
+    const progress = Math.min(1, (now - arrived) / POLL_MS);
+    draw(progress);
+    frame = progress < 1 ? requestAnimationFrame(glide) : 0;
+  }
+  return {
+    svg,
+    update(history) {
+      const next = JSON.stringify(history || []);
+      if (next === seen) return;
+      const shrank = (history || []).length < values.length, shown = sparkTop(history);
+      peak = Math.max(shrank ? 0 : peak, shown);
+      const nextTop = Math.max(shown, peak * SPARK_LOWEST_SCALE);
+      // Nothing above zero drawn yet: starting from that scale would throw the tip to the top at once.
+      // A glide still under way when the next sample comes carries on from where it had got to.
+      fromTop = shrank || top <= 1 ? nextTop : (frame ? draw(Math.min(1, (performance.now() - arrived) / POLL_MS)) : top);
+      seen = next; values = history || []; top = nextTop; arrived = performance.now();
+      if (calm()) { fromTop = top; draw(1); return; }
+      if (!frame) frame = requestAnimationFrame(glide);
+    },
+  };
+})();
 const fmtCount = (n) => Number(n || 0).toLocaleString();
 // The estimate can come up short (each file is only checked when reached), so the total never trails.
 function newFilesText(v) {
@@ -438,12 +515,8 @@ function renderHero(s) {
         slot("Files", files),
         slot(f ? "Took" : "Elapsed", v.elapsed_seconds > 0 ? fmtDuration(v.elapsed_seconds) : null),
         slot("Remaining", f ? (p === 100 ? "Done" : null) : (v.eta_seconds != null ? fmtDuration(v.eta_seconds) : null)))));
-    const svg = document.createElementNS(SVGNS, "svg");
-    svg.setAttribute("class", "spark"); svg.setAttribute("viewBox", "0 0 600 44"); svg.setAttribute("preserveAspectRatio", "none"); svg.setAttribute("aria-hidden", "true");
-    const sp = sparkPaths(v.speed_history, 600, 44);
-    const paths = [["base", "M0 43 L600 43"]].concat(sp ? [["area", sp.area], ["line", sp.line]] : []);
-    for (const [cls, d] of paths) { const path = document.createElementNS(SVGNS, "path"); path.setAttribute("class", cls); path.setAttribute("d", d); path.setAttribute("vector-effect", "non-scaling-stroke"); svg.append(path); }
-    kids.push(svg);
+    speedGraph.update(v.speed_history);
+    kids.push(speedGraph.svg);
   }
   if (dismissable) kids.push(h("button", { class: "dismiss", "aria-label": "Dismiss", title: "Dismiss", onclick: () => run("dismiss_last", {}, true) }, icon("x")));
   hero.replaceChildren(...kids);

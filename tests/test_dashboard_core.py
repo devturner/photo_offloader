@@ -368,7 +368,29 @@ class TestActivity(Fixture):
         self.assertAlmostEqual(activity["speed_history"][-1], 30 * 1024**2, delta=1024)
         self.assertIsNotNone(activity["eta_seconds"])
 
-    def test_the_graph_keeps_three_minutes_and_the_speed_still_uses_the_last_ten_seconds(self):
+    def test_the_graph_starts_when_bytes_start_moving(self):
+        for _ in range(4):  # checking files before the first copy: nothing has moved
+            self.copying()
+            self.assertEqual(self.core.state()["activity"]["speed_history"], [])
+            self.advance(1)
+        self.copying(bytes_transferred=150 * 1024**2)
+        history = self.core.state()["activity"]["speed_history"]
+        self.assertEqual(history, [50 * 1024**2])
+
+    def test_a_stall_after_the_start_stays_on_the_graph(self):
+        moved = 100 * 1024**2
+        self.copying(bytes_transferred=moved)
+        self.core.state()
+        for speed in (10, 10, 0, 0, 10):
+            self.advance(1)
+            moved += speed * 1024**2
+            self.copying(bytes_transferred=moved)
+            history = self.core.state()["activity"]["speed_history"]
+        self.assertEqual([round(s / 1024**2) for s in history], [10, 10, 0, 0, 10])
+
+    def test_the_graph_keeps_ninety_seconds_to_show_and_the_speed_still_uses_the_last_ten_seconds(
+        self,
+    ):
         moved = 100 * 1024**2
         self.copying(bytes_transferred=moved)
         self.core.state()
@@ -377,7 +399,8 @@ class TestActivity(Fixture):
             moved += (1 if second < 390 else 5) * 1024**2
             self.copying(bytes_transferred=moved)
             activity = self.core.state()["activity"]
-        self.assertEqual(len(activity["speed_history"]), 180)
+        self.assertEqual(len(activity["speed_history"]), core.SPEED_SAMPLES)
+        self.assertGreater(core.SPEED_SAMPLES, 90, "extra samples let the smoothing settle first")
         self.assertAlmostEqual(activity["speed_bps"], 5 * 1024**2, delta=1024)
 
     def test_the_google_box_has_its_own_bar_only_while_an_import_uses_the_top_panel(self):
@@ -970,6 +993,11 @@ class TestPipeline(Fixture):
         self.assertAlmostEqual(activity["speed_bps"], 8.387 * 1024**2, delta=10)
         self.assertFalse(state["busy"], "an upload must not block backups or catalog updates")
 
+    def stats_line(self, stats, seconds_ago=0):
+        """One rclone log line, dated by the test's clock the way the real log is."""
+        stamp = datetime.fromtimestamp(self.now - seconds_ago).strftime("%Y/%m/%d %H:%M:%S")
+        return f"{stamp} INFO  :   {stats}\n"
+
     def start_upload(self, started_seconds_ago=30, line=None):
         self.google_up = True
         started = (
@@ -982,9 +1010,7 @@ class TestPipeline(Fixture):
         )
         (self.install / "google_photos_sync.log").write_text(
             line
-            or (
-                "2026/11/04 18:50:05 INFO  :   175.183 MiB / 267.950 MiB, 65%, 8.800 MiB/s, ETA 10s (xfr#8/18)\n"
-            )
+            or self.stats_line("175.183 MiB / 267.950 MiB, 65%, 8.800 MiB/s, ETA 10s (xfr#8/18)")
         )
 
     def test_upload_reports_files_and_elapsed_time(self):
@@ -997,14 +1023,124 @@ class TestPipeline(Fixture):
     def test_upload_speed_is_graphed(self):
         self.start_upload()
         self.core.state()
-        for line in (
-            "2026/11/04 18:50:10 INFO  :   204.131 MiB / 267.950 MiB, 76%, 8.059 MiB/s, ETA 7s (xfr#12/18)\n",
-            "2026/11/04 18:50:15 INFO  :   237.655 MiB / 267.950 MiB, 89%, 7.590 MiB/s, ETA 3s (xfr#12/18)\n",
+        for stats in (
+            "204.131 MiB / 267.950 MiB, 76%, 8.059 MiB/s, ETA 7s (xfr#12/18)",
+            "237.655 MiB / 267.950 MiB, 89%, 7.590 MiB/s, ETA 3s (xfr#12/18)",
         ):
             self.advance(5)
-            (self.install / "google_photos_sync.log").write_text(line)
+            (self.install / "google_photos_sync.log").write_text(self.stats_line(stats))
             activity = self.core.state()["activity"]
-        self.assertEqual(len(activity["speed_history"]), 2)
+        self.assertEqual(len(activity["speed_history"]), 3)
+
+    def append_to_upload_log(self, stats):
+        with (self.install / "google_photos_sync.log").open("a") as log:
+            log.write(self.stats_line(stats))
+
+    def poll_upload(self, seconds):
+        """One poll a second, as the page does; the activity seen at each."""
+        seen = []
+        for _ in range(seconds):
+            self.advance(1)
+            seen.append(self.core.state()["activity"])
+        return seen
+
+    def start_upload_after_an_earlier_one(self):
+        """The real log of the 21:29:53 upload on 2026-11-05: the last stats line is the earlier
+        run's, and the new run's first line (0 B / 0 B) isn't one the parser can use."""
+        earlier = self.stats_line(
+            "158.592 MiB / 158.592 MiB, 100%, 7.323 MiB/s, ETA 0s", seconds_ago=1500
+        )
+        self.start_upload(started_seconds_ago=0, line=earlier)
+
+    def test_while_rclone_gets_ready_the_last_upload_is_not_shown_as_this_one(self):
+        self.start_upload_after_an_earlier_one()
+        for activity in self.poll_upload(10):
+            self.assertEqual(activity["speed_history"], [])
+            self.assertIsNone(activity["percent"])
+            self.assertTrue(activity["indeterminate"])
+            self.assertEqual(activity["bytes_done"], 0)
+            self.assertEqual(activity["detail"], "Preparing upload")
+        self.append_to_upload_log("0 B / 0 B, -, 0 B/s, ETA -")
+        self.assertEqual(self.poll_upload(5)[-1]["speed_history"], [])
+
+    def test_the_upload_graph_starts_with_the_first_bytes_and_is_not_redrawn_after(self):
+        self.start_upload_after_an_earlier_one()
+        self.poll_upload(16)
+        self.append_to_upload_log("47.688 MiB / 260.254 MiB, 18%, 11.745 MiB/s, ETA 18s (xfr#0/19)")
+        lengths = [len(a["speed_history"]) for a in self.poll_upload(5)]
+        self.append_to_upload_log("80.635 MiB / 260.254 MiB, 31%, 8.879 MiB/s, ETA 20s (xfr#4/19)")
+        lengths += [len(a["speed_history"]) for a in self.poll_upload(5)]
+        self.assertEqual(lengths, list(range(1, 11)))
+
+    def test_polls_between_rclones_reports_are_not_counted_as_a_stop(self):
+        self.start_upload_after_an_earlier_one()
+        self.advance(1)
+        self.append_to_upload_log("50 MiB / 260 MiB, 19%, 10 MiB/s, ETA 21s (xfr#0/19)")
+        self.core.state()
+        self.poll_upload(5)
+        self.append_to_upload_log("80 MiB / 260 MiB, 30%, 8 MiB/s, ETA 22s (xfr#4/19)")
+        history = self.poll_upload(4)[-1]["speed_history"]
+        self.assertEqual(
+            [round(s / 1024**2) for s in history],
+            [10] * 6 + [6] * 4,
+            "each rate holds until rclone's next report: 30 MiB moved in 5 s",
+        )
+
+    def test_a_stalled_upload_falls_to_zero_and_keeps_what_came_before(self):
+        self.start_upload_after_an_earlier_one()
+        self.advance(1)
+        self.append_to_upload_log("50 MiB / 260 MiB, 19%, 10 MiB/s, ETA 21s (xfr#0/19)")
+        self.core.state()
+        for _ in range(4):  # rclone keeps reporting, and the figure doesn't move
+            self.poll_upload(5)
+            self.append_to_upload_log("50 MiB / 260 MiB, 19%, 6 MiB/s, ETA 35s (xfr#0/19)")
+        history = self.poll_upload(1)[-1]["speed_history"]
+        self.assertEqual(history[0], 10 * 1024**2)
+        self.assertEqual(history[-1], 0)
+        self.assertEqual(len(history), 22)
+        self.append_to_upload_log("90 MiB / 260 MiB, 34%, 7 MiB/s, ETA 24s (xfr#4/19)")
+        resumed = self.poll_upload(1)[-1]["speed_history"]
+        self.assertEqual(len(resumed), 23)
+        self.assertGreater(resumed[-1], 0)
+
+    def test_a_late_report_is_not_a_stall(self):
+        self.start_upload_after_an_earlier_one()
+        self.advance(1)
+        self.append_to_upload_log("50 MiB / 260 MiB, 19%, 10 MiB/s, ETA 21s (xfr#0/19)")
+        self.core.state()
+        history = self.poll_upload(5)[-1]["speed_history"]
+        self.assertEqual(history[-1], 10 * 1024**2)
+
+    def test_an_upload_gone_quiet_falls_to_zero(self):
+        self.start_upload_after_an_earlier_one()
+        self.advance(1)
+        self.append_to_upload_log("50 MiB / 260 MiB, 19%, 10 MiB/s, ETA 21s (xfr#0/19)")
+        self.core.state()
+        history = self.poll_upload(15)[-1]["speed_history"]
+        self.assertEqual(history[9], 10 * 1024**2)
+        self.assertEqual(history[-1], 0)
+
+    def test_an_upload_counter_that_goes_back_does_not_wipe_the_graph(self):
+        self.start_upload_after_an_earlier_one()
+        self.advance(1)
+        self.append_to_upload_log("50 MiB / 260 MiB, 19%, 10 MiB/s, ETA 21s (xfr#0/19)")
+        self.core.state()
+        self.poll_upload(5)
+        self.append_to_upload_log("40 MiB / 260 MiB, 15%, 8 MiB/s, ETA 27s (xfr#0/19)")  # a retry
+        history = self.poll_upload(1)[-1]["speed_history"]
+        self.assertEqual((len(history), history[0], history[-1]), (7, 10 * 1024**2, 0))
+
+    def test_a_new_upload_starts_a_new_graph(self):
+        self.start_upload_after_an_earlier_one()
+        self.advance(1)
+        self.append_to_upload_log("50 MiB / 260 MiB, 19%, 10 MiB/s, ETA 21s (xfr#0/19)")
+        self.assertEqual(len(self.poll_upload(3)[-1]["speed_history"]), 3)
+        self.google_up = False
+        (self.install / "google_photos_status.json").write_text(json.dumps({"state": "complete"}))
+        self.poll_upload(1)
+        self.advance(60)
+        self.start_upload_after_an_earlier_one()
+        self.assertEqual(self.poll_upload(2)[-1]["speed_history"], [])
 
     def test_upload_right_after_an_import_continues_the_same_steps(self):
         # User feedback 2026-11-04: the upload should be a step of the import, not a new view.

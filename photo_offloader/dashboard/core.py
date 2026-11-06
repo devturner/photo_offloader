@@ -28,9 +28,11 @@ from photo_offloader.google_photos import parse_rclone_stats_line
 SERVICE_LABEL = "com.user.photooffloader"
 LAST_TRANSFER_TTL_SECONDS = 10 * 60  # completed/canceled results fade after this
 STALE_STATUS_SECONDS = 20  # an "active" status this old, with no importer, is stale
-SPEED_SAMPLES = 180  # three minutes at one poll a second; SPARK_MAX_POINTS in web/index.html
+# The graph shows 90 of these (SPARK_MAX_POINTS in web/index.html); the rest settle its smoothing.
+SPEED_SAMPLES = 130
 UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60  # an upload this soon after an import continues its steps
 UPLOAD_START_GRACE_SECONDS = 30  # importer done, sync process still starting
+UPLOAD_SILENT_SECONDS = 10  # no report from rclone for this long counts as a stall
 FINISHING_GRACE_SECONDS = 30  # status says "complete", history row not written yet
 EVENTS_LOG_MAX_BYTES = 512 * 1024
 THEMES = ("system", "light", "dark")
@@ -54,6 +56,7 @@ class DashboardCore:
         self._samples: Deque[float] = deque(maxlen=SPEED_SAMPLES)
         self._last_sample: Optional[Tuple[float, int, str]] = None
         self._upload_files: Optional[Tuple[int, int]] = None
+        self._upload_report: Optional[Tuple[float, int, float]] = None  # logged at, bytes, speed
         self._last_view: Optional[tuple] = None
 
     # ---- tiny TTL cache so a 1 s poll doesn't fork or hit SQLite every time
@@ -174,17 +177,51 @@ class DashboardCore:
     def _sample_speed(self, run_key: str, transferred: int, now: float) -> None:
         """Add one throughput sample to the graph; a new run (or a counter reset) starts a new graph."""
         last = self._last_sample
-        if last and last[2] == run_key and transferred >= last[1] and now > last[0]:
-            self._samples.append((transferred - last[1]) / (now - last[0]))
-        elif last is None or last[2] != run_key or transferred < last[1]:
+        if last is None or last[2] != run_key or transferred < last[1]:
             self._samples.clear()
+        elif now > last[0]:
+            self._add_sample((transferred - last[1]) / (now - last[0]))
         self._last_sample = (now, transferred, run_key)
+
+    def _add_sample(self, speed: float) -> None:
+        """The graph starts with the first bytes. After that a zero is a stall, and it stays on."""
+        if speed > 0 or self._samples:
+            self._samples.append(speed)
+
+    def _sample_upload(self, progress: Dict[str, Any], transferred: int, now: float) -> None:
+        """Add one sample a poll from rclone's reports, which come about as often as the polls.
+
+        A poll that gets in before the next report says nothing about the speed, so it repeats the
+        speed of the last report. Only a report with no new bytes, or no report for much longer than
+        usual, counts as a stall.
+        """
+        logged_at = float(progress["logged_at"])
+        report = self._upload_report
+        if report is None:
+            # Nothing to compare with, and the page may have opened halfway: rclone's own figure.
+            speed = display.parse_display_bytes(str(progress.get("speed") or "").replace("/s", ""))
+            report = (logged_at, transferred, speed)
+        elif logged_at > report[0]:
+            # A counter that goes back is rclone retrying: nothing got through in that time.
+            moved = max(transferred - report[1], 0)
+            report = (logged_at, transferred, moved / (logged_at - report[0]))
+        self._upload_report = report
+
+        last = self._last_sample
+        starting = last is None or last[2] != "upload"
+        if starting:
+            self._samples.clear()
+        if starting or now > last[0]:
+            silent = now - report[0] > UPLOAD_SILENT_SECONDS
+            self._add_sample(0.0 if silent else report[2])
+        self._last_sample = (now, transferred, "upload")
 
     def _end_graph(self, unless: Optional[str] = None) -> None:
         """Forget the speed graph, except one that belongs to the ``unless`` run."""
         if unless is None or not self._last_sample or self._last_sample[2] != unless:
             self._samples.clear()
             self._last_sample = None
+            self._upload_report = None
 
     def _transfer_speed(self, status: Dict[str, Any], kind: str, stage: str, now: float) -> float:
         """Record this poll on the speed graph and return the speed to show."""
@@ -328,10 +365,10 @@ class DashboardCore:
             # process does: it crashed or was killed mid-upload.
             info["state"], info["message"] = "interrupted", "The last upload was interrupted."
         elif state == "running":
-            info["progress"] = self._upload_progress()
             info["started_at"] = display.parse_timestamp(
                 status.get("started_at") or status.get("updated_at")
             )
+            info["progress"] = self._upload_progress(info["started_at"])
         return info
 
     @staticmethod
@@ -394,6 +431,7 @@ class DashboardCore:
         upload_state = self._upload_state_after(row, google, now) if follows_import else ""
         if google["state"] != "running" and upload_state != "starting":
             self._upload_files = None
+            self._end_graph()
             return None
         progress = google["progress"] or {}
         source = str(row.get("source") or "") if follows_import else ""
@@ -405,7 +443,7 @@ class DashboardCore:
         done = int(display.parse_display_bytes(str(progress.get("transferred") or "")))
         total = int(display.parse_display_bytes(str(progress.get("total") or "")))
         if progress:
-            self._sample_speed("upload", done, now)
+            self._sample_upload(progress, done, now)
         started = google.get("started_at")
         recent = list(self._samples)[-SPEED_WINDOW_SAMPLES:]
         speed = (
@@ -467,7 +505,28 @@ class DashboardCore:
             ),
         }
 
-    def _upload_progress(self) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def _log_time(line: str) -> Optional[float]:
+        """When an rclone log line was written, if it starts with a timestamp."""
+        try:
+            return datetime.strptime(line[:19], "%Y/%m/%d %H:%M:%S").timestamp()
+        except ValueError:
+            return None
+
+    def _latest_stats(
+        self, lines: List[str], started_at: Optional[float]
+    ) -> Optional[Tuple[Dict[str, Any], float]]:
+        """The newest stats line of this run and its time. The log also holds earlier runs."""
+        for line in reversed(lines):
+            logged_at = self._log_time(line)
+            if started_at is not None and logged_at is not None and logged_at < started_at:
+                return None
+            parsed = parse_rclone_stats_line(line)
+            if parsed:
+                return parsed, self._clock() if logged_at is None else logged_at
+        return None
+
+    def _upload_progress(self, started_at: Optional[float]) -> Optional[Dict[str, Any]]:
         try:
             with self.paths.google_log_file.open("rb") as handle:
                 handle.seek(0, os.SEEK_END)
@@ -478,11 +537,10 @@ class DashboardCore:
                 lines = handle.read().decode("utf-8", errors="replace").splitlines()
         except OSError:
             return None
-        parsed = next(
-            (p for p in (parse_rclone_stats_line(line) for line in reversed(lines)) if p), None
-        )
-        if not parsed:
+        latest = self._latest_stats(lines, started_at)
+        if not latest:
             return None
+        parsed, logged_at = latest
         percent = min(100.0, max(0.0, float(parsed["percent"])))
         if parsed.get("files_total"):
             self._upload_files = (int(parsed["files_done"]), int(parsed["files_total"]))
@@ -499,6 +557,7 @@ class DashboardCore:
             "speed": parsed.get("speed"),
             "eta": parsed.get("eta"),
             "finalizing": percent >= 100.0,
+            "logged_at": logged_at,
             "files_done": files_done,
             "files_total": files_total,
         }

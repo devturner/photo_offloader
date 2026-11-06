@@ -569,18 +569,23 @@ class TestSpeedGraph(PageTestCase):
         super().setUp()
         self.show("idle")
 
-    def points(self, values):
+    def points(self, values, progress=1):
         """The (x, y) pairs of the drawn line, control points included."""
-        line = self.page.evaluate("v => sparkPaths(v, 600, 44).line", values)
+        line = self.page.evaluate("([v, p]) => sparkPaths(v, 600, 44, p).line", [values, progress])
         numbers = [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", line)]
         return list(zip(numbers[::2], numbers[1::2]))
 
+    def on_the_line(self, values, progress=1):
+        """Only the points the line passes through: each curve segment has two control points first."""
+        return self.points(values, progress)[::3]
+
     def height(self, values):
-        heights = [y for _, y in self.points(values)]
+        """How tall the line is once it has settled, leaving out its first few seconds."""
+        heights = [y for _, y in self.points(values)[15:]]
         return max(heights) - min(heights)
 
     def test_a_short_run_starts_at_the_left_edge_and_grows_to_the_right(self):
-        points = self.points([100] * 5)
+        points = self.points([100] * 4)
         self.assertEqual(points[0][0], 0)
         self.assertLess(points[-1][0], 300)
 
@@ -589,13 +594,13 @@ class TestSpeedGraph(PageTestCase):
         self.assertEqual(self.points([100] * 10)[-1][0], 600)
 
     def test_a_longer_run_fills_the_whole_width(self):
-        for samples in (10, 30, 120, 180):
+        for samples in (10, 30, 60, 90, 300):
             with self.subTest(samples=samples):
                 points = self.points([100] * samples)
                 self.assertEqual((points[0][0], points[-1][0]), (0, 600))
 
-    def test_a_very_long_run_shows_only_the_latest_three_minutes(self):
-        points = self.points([10**9] * 100 + [100] * 180)
+    def test_a_very_long_run_shows_only_the_latest_ninety_seconds(self):
+        points = self.points([10**9] * 100 + [100] * 300)
         self.assertEqual(
             {y for _, y in points}, {points[0][1]}, "the old spike still sets the scale"
         )
@@ -610,15 +615,213 @@ class TestSpeedGraph(PageTestCase):
 
     def test_a_long_run_is_smoothed_as_much_for_its_width_as_a_short_one(self):
         # Eight-second swings: a fixed five-second average would leave most of this in a full graph.
-        swings = ([100] * 4 + [200] * 4) * 23
+        swings = ([100] * 4 + [200] * 4) * 12
         self.assertLess(self.height(swings), 19 / 2)
 
     def test_a_half_minute_slowdown_still_shows_on_a_full_graph(self):
-        self.assertGreater(self.height([200] * 75 + [20] * 30 + [200] * 75), 25)
+        self.assertGreater(self.height([200] * 30 + [20] * 30 + [200] * 30), 25)
 
     def test_the_curve_stays_inside_the_graph(self):
         for _, y in self.points([0, 500, 0, 900, 10, 700, 0] * 5):
             self.assertTrue(0 <= y <= 44, y)
+
+    def test_a_full_graph_holds_ninety_seconds(self):
+        self.assertEqual(len(self.on_the_line([100] * 300)), 89)  # 88 one-second gaps
+
+    def test_a_new_speed_cannot_reshape_the_line_already_drawn(self):
+        speeds = [100 + (i * 37) % 90 for i in range(60)]
+        before = self.page.evaluate("v => smoothedSpeeds(v)", speeds)
+        after = self.page.evaluate("v => smoothedSpeeds(v)", speeds + [900])
+        self.assertEqual(after[:-1], before)
+
+    def test_the_tip_glides_from_the_last_speed_to_the_newest(self):
+        speeds = [100] * 5 + [200]
+        start, middle, end = (self.on_the_line(speeds, p)[-1] for p in (0, 0.5, 1))
+        self.assertLess(start[0], middle[0])
+        self.assertLess(middle[0], end[0])
+        self.assertGreater(start[1], middle[1], "a higher speed is further up the graph")
+        self.assertGreater(middle[1], end[1])
+
+    def test_a_glide_ends_where_the_next_one_begins(self):
+        speeds = [100 + (i * 37) % 90 for i in range(40)]
+        for label, values in (("stretching", speeds), ("scrolling", speeds * 6)):
+            with self.subTest(label):
+                ended = self.on_the_line(values, 1)
+                # 900 would rescale the graph, so the next speed stays inside the old peak.
+                begun = self.on_the_line(values + [120], 0)
+                for was, now in zip(ended[-20:], begun[-20:]):
+                    self.assertAlmostEqual(was[0], now[0], delta=2.5)
+                    self.assertAlmostEqual(was[1], now[1], delta=0.5)
+
+    def test_while_scrolling_the_line_always_fills_the_width(self):
+        values = [100 + (i * 37) % 90 for i in range(240)]
+        for progress in (0, 0.25, 0.5, 1):
+            with self.subTest(progress=progress):
+                points = self.points(values, progress)
+                self.assertEqual((points[0][0], points[-1][0]), (0, 600))
+
+    def test_a_graph_with_nothing_to_draw_draws_nothing(self):
+        self.assertIsNone(self.page.evaluate("sparkPaths([], 600, 44)"))
+        self.assertIsNone(self.page.evaluate("sparkPaths([100], 600, 44, 0)"))
+
+    def test_the_line_rises_from_the_bottom_at_the_left_edge(self):
+        points = self.points([100])
+        self.assertEqual(points[0], (0, 42), "zero speed")
+        self.assertEqual(points[-1][1], 4, "the first speed is the top of the scale")
+
+    def _tip_heights_while_gliding(self, script):
+        """Run ``script`` on the graph, then how far up the tip is (0 to 1) on each frame, with
+        the fraction of the glide done by that frame."""
+        return self.page.evaluate(
+            """script => new Promise(done => {
+                const line = speedGraph.svg.querySelector('path.line'), seen = [];
+                (0, eval)(script);
+                const began = performance.now();
+                const look = () => {
+                    const at = (performance.now() - began) / POLL_MS;
+                    const y = Number((line.getAttribute('d') || '').trim().split(' ').pop());
+                    if (line.getAttribute('d')) seen.push([(42 - y) / 38, at]);
+                    if (at < 1.2) requestAnimationFrame(look); else done(seen);
+                };
+                requestAnimationFrame(look);
+            })""",
+            script,
+        )
+
+    def assert_rises_with_the_glide(self, script):
+        self.open_page(reduced_motion="no-preference")
+        frames = self._tip_heights_while_gliding(script)
+        self.assertGreater(len(frames), 5)
+        for height, done in frames:
+            self.assertLess(height, done + 0.25, f"jumped ahead of the glide: {frames[:6]}")
+        self.assertAlmostEqual(frames[-1][0], 1, places=1)
+
+    def test_the_first_speed_rises_smoothly_instead_of_jumping(self):
+        self.assert_rises_with_the_glide("speedGraph.update([]); speedGraph.update([150000000])")
+
+    def test_speed_after_nothing_but_zeros_rises_smoothly_too(self):
+        self.assert_rises_with_the_glide(
+            "speedGraph.update([0, 0, 0]); speedGraph.update([0, 0, 0, 150000000])"
+        )
+
+    def _drawn_after(self, *histories):
+        """The heights (0 to 1) of the points on the line once each history has been shown."""
+        self.open_page()  # reduced motion: each update draws at once
+        line = self.page.evaluate(
+            """histories => {
+                histories.forEach(h => speedGraph.update(h));
+                return speedGraph.svg.querySelector('path.line').getAttribute('d');
+            }""",
+            list(histories),
+        )
+        numbers = [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", line)]
+        return [(42 - y) / 38 for y in numbers[1::2][::3]]
+
+    def test_a_long_stall_does_not_blow_up_the_tail_of_the_speed_before_it(self):
+        fast = 150 * MB
+        before = [fast] * 60
+        # The server keeps 130 samples, so the fast part has scrolled off and the tail is all
+        # that is left to scale by.
+        during = [fast] * 20 + [0] * 110
+        heights = self._drawn_after(before, during)
+        self.assertLess(max(heights), 0.5, heights[:5])
+
+    def test_speed_after_a_long_stall_is_back_at_the_same_height(self):
+        fast = 150 * MB
+        heights = self._drawn_after([fast] * 60, [fast] * 20 + [0] * 110, [0] * 90 + [fast] * 40)
+        self.assertGreater(heights[-1], 0.9)
+
+    def test_a_new_graph_does_not_keep_the_old_runs_scale(self):
+        heights = self._drawn_after([500 * MB] * 30, [], [10 * MB] * 5)
+        self.assertGreater(heights[-1], 0.9)
+
+    def _a_new_speed_arrives(self):
+        self.sandbox.advance(1)
+        status = json.loads(self.sandbox.paths.status_file.read_text())
+        status["bytes_transferred"] += 150 * MB
+        self.sandbox.paths.status_file.write_text(json.dumps(status))
+
+    def _animation_frames_asked_for_over(self, milliseconds):
+        return self.page.evaluate(
+            """ms => new Promise(done => {
+                const real = window.requestAnimationFrame;
+                let asked = 0;
+                window.requestAnimationFrame = (f) => { asked++; return real.call(window, f); };
+                setTimeout(() => { window.requestAnimationFrame = real; done(asked); }, ms);
+            })""",
+            milliseconds,
+        )
+
+    def _changes_over(self, milliseconds):
+        return self.page.evaluate(
+            """ms => new Promise(done => {
+                const line = document.querySelector('.spark path.line');
+                let last = line.getAttribute('d'), changes = 0;
+                const end = performance.now() + ms;
+                const look = () => {
+                    const now = line.getAttribute('d');
+                    if (now !== last) { changes++; last = now; }
+                    if (performance.now() < end) requestAnimationFrame(look); else done(changes);
+                };
+                requestAnimationFrame(look);
+            })""",
+            milliseconds,
+        )
+
+    def test_the_line_glides_when_a_new_speed_arrives_then_stops(self):
+        self.load("readme_import")
+        self.open_page(reduced_motion="no-preference")
+        self.page.wait_for_timeout(1200)  # the glide from opening the page has finished
+        self.assertEqual(self._changes_over(300), 0, "nothing new, so nothing should move")
+        self._a_new_speed_arrives()
+        self.refresh()
+        self.assertGreater(self._changes_over(500), 5, "it should move on many frames, not once")
+        self.page.wait_for_timeout(800)
+        self.assertEqual(self._changes_over(300), 0, "it should stop once it has caught up")
+        self.page.wait_for_timeout(50)
+        self.assertEqual(self._animation_frames_asked_for_over(300), 0, "idle should cost nothing")
+
+    def test_a_refresh_with_nothing_new_does_not_start_a_glide(self):
+        self.load("readme_import")
+        self.open_page(reduced_motion="no-preference")
+        self.page.wait_for_timeout(1200)
+        before = self.page.evaluate("document.querySelector('.spark path.line').getAttribute('d')")
+        history = self.sandbox.core.state()["activity"]["speed_history"]
+        asked = self.page.evaluate(
+            """history => new Promise(done => {
+                const real = window.requestAnimationFrame;
+                let asked = 0;
+                window.requestAnimationFrame = (f) => { asked++; return real.call(window, f); };
+                speedGraph.update(history);
+                setTimeout(() => { window.requestAnimationFrame = real; done(asked); }, 100);
+            })""",
+            history,
+        )
+        self.assertEqual(asked, 0)
+        self.assertEqual(
+            self.page.evaluate("document.querySelector('.spark path.line').getAttribute('d')"),
+            before,
+        )
+
+    def test_reduce_motion_draws_a_new_speed_without_gliding(self):
+        self.show("readme_import")  # the harness asks for reduced motion by default
+        self._a_new_speed_arrives()
+        self.page.evaluate(
+            "window.__before = document.querySelector('.spark path.line').getAttribute('d')"
+        )
+        self.refresh()
+        self.page.wait_for_function(
+            "document.querySelector('.spark path.line').getAttribute('d') !== window.__before"
+        )
+        self.assertEqual(self._changes_over(300), 0)
+
+    def test_a_refresh_keeps_the_same_graph_on_the_page(self):
+        self.show("readme_import")
+        self.page.evaluate("document.querySelector('.spark').dataset.mark = 'kept'")
+        self._a_new_speed_arrives()
+        self.refresh()
+        self.page.wait_for_timeout(100)
+        self.assertEqual(self.page.get_attribute(".spark", "data-mark"), "kept")
 
     def test_the_area_closes_under_the_line_it_fills(self):
         area = self.page.evaluate("sparkPaths([100, 100, 100], 600, 44).area")

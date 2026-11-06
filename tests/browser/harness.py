@@ -253,6 +253,23 @@ def _readme_import(s: Sandbox) -> None:
     s.core._samples.extend(speeds)
 
 
+def _stalled_copy(s: Sandbox) -> None:
+    """Twenty seconds without a byte moved, between two stretches at full speed."""
+    speeds = [75 * MB] * 40 + [0] * 20 + [75 * MB] * 30
+    copied = sum(speeds)
+    s.transfer(
+        state="copying",
+        phase="copy",
+        stage="copy",
+        category="RAW",
+        bytes_done=copied,
+        bytes_total=3 * copied,
+        bytes_transferred=copied,
+    )
+    s.core.state()  # starts the graph; the clock is frozen, so no poll adds to it afterwards
+    s.core._samples.extend(speeds)
+
+
 def _uploading(s: Sandbox) -> None:
     s.add_card()
     s.add_usb()
@@ -262,8 +279,9 @@ def _uploading(s: Sandbox) -> None:
     s.google_up = True
     s.google_status("running", ago=75)
     for mb, files in ((55.6, 3), (87.7, 5), (121.8, 8), (175.1, 11), (204.1, 13)):
+        stamp = datetime.fromtimestamp(s.now).strftime("%Y/%m/%d %H:%M:%S")
         s.paths.google_log_file.write_text(
-            f"2026/11/04 18:50:00 INFO  :   {mb} MiB / 267.950 MiB, {int(mb / 2.68)}%, "
+            f"{stamp} INFO  :   {mb} MiB / 267.950 MiB, {int(mb / 2.68)}%, "
             f"8.8 MiB/s, ETA 7s (xfr#{files}/18)\n"
         )
         s.core.state()
@@ -303,6 +321,7 @@ def _failed(s: Sandbox, message: str = "Copy failed: the Mac disk is full") -> N
 SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "idle": lambda s: s.status(state="idle"),
     "card_mounted": lambda s: s.add_card(),
+    "stalled_copy": _stalled_copy,
     "already_imported": _already_imported,
     "scan": lambda s: s.transfer(
         state="scanning",
@@ -458,13 +477,20 @@ class BrowserTestCase(unittest.TestCase):
         self.server.core = self.sandbox.core
         return self.sandbox
 
-    def open_page(self, *, width: int = 960, height: int = 860, color_scheme: str = "light") -> Any:
+    def open_page(
+        self,
+        *,
+        width: int = 960,
+        height: int = 860,
+        color_scheme: str = "light",
+        reduced_motion: str = "reduce",
+    ) -> Any:
         """A new page with empty browser storage, once it has rendered the current state."""
         self._close_page()
         self.context = Browser.chromium.new_context(
             viewport={"width": width, "height": height},
             color_scheme=color_scheme,
-            reduced_motion="reduce",
+            reduced_motion=reduced_motion,
         )
         self.page = self.context.new_page()
         self.page.on("pageerror", lambda error: self.page_errors.append(str(error)))

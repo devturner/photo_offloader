@@ -16,6 +16,9 @@ from typing import List, NamedTuple, Optional, Sequence, Tuple
 
 from photo_offloader import catalog, config, jsonfile, logs
 
+STATS_SECONDS = 1  # how often rclone writes a progress line, the same as the graph samples
+UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60  # an upload this soon after an import is that import's
+
 
 def remote_name() -> str:
     """The rclone remote to use, read when called so a long-running caller sees the environment."""
@@ -392,7 +395,7 @@ def _upload_snapshot(rclone: str, destination: str, pending: List[str]) -> Optio
             "--log-file",
             str(config.GOOGLE_LOG_PATH),
             "--stats",
-            "5s",
+            f"{STATS_SECONDS}s",
             "--stats-one-line",
         ]
         publish_status(
