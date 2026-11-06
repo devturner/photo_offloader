@@ -53,7 +53,8 @@ macOS ships bash 3.2, so write `${arr[@]+"${arr[@]}"}` for an array that may be 
 .venv/bin/python -m coverage report                   # add `html` for a browsable report in htmlcov/
 ```
 
-The Coverage workflow runs the same steps, keeps the HTML report as an artifact, and fails below
+The Coverage workflow runs the same steps, shows the table in the run's summary, keeps the HTML
+report as an artifact, and fails below
 `fail_under` in `.coveragerc`. Raise that number when you add tests. The number measures Python
 only: the shell scripts and the JavaScript in `web/index.html` are tested but not counted, and
 `menubar/app.py` is excluded because no test imports it.

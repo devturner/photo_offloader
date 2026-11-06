@@ -37,5 +37,16 @@ jobs:
           name: coverage-html
           path: htmlcov
 
+      # Before the check, so the summary is there when the check fails.
+      - name: Write the job summary
+        run: |
+          {
+            echo "## Coverage: $(python -m coverage report --format=total --fail-under=0)%"
+            echo
+            echo "Lowest first. The HTML report is in the \`coverage-html\` artifact."
+            echo
+            python -m coverage report --format=markdown --sort=cover --fail-under=0
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check the minimum
         run: python -m coverage report
