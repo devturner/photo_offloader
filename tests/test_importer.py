@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import logging
 import logging.handlers
 import unittest
@@ -369,6 +370,68 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         ):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb"]), 0)
         self.assertEqual(catalog.list_import_history(), [])
+
+    def status(self):
+        return json.loads(config.STATUS_FILE_PATH.read_text())
+
+    def imported_names(self, *roots):
+        return {path.name for root in roots for path in root.rglob("*") if path.is_file()}
+
+    @patch("photo_offloader.logs.notify")
+    def test_a_card_with_no_media_stops_with_a_failed_status(self, notify):
+        with patch("time.sleep"):
+            self.assertEqual(app.main(["--source", str(self.card), "--no-usb"]), 1)
+        self.assertEqual(self.status()["state"], "failed")
+        self.assertIn("No supported media files", self.status()["message"])
+        self.assertEqual(notify.call_args[0][0], "Photo Offloader Stopped")
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    @patch("photo_offloader.volumes.eject_volume", return_value=True)
+    @patch("photo_offloader.volumes.usb_is_mounted", return_value=True)
+    @patch("photo_offloader.volumes.get_volume_identity")
+    def test_an_import_with_the_drive_mounted_backs_up_to_usb(
+        self, identity, mounted, eject, notify, launch
+    ):
+        identity.return_value = VolumeIdentity(self.usb_volume.resolve(), "disk4s1", "uuid-a")
+        self.media()
+        with patch("time.sleep"):
+            self.assertEqual(app.main(["--source", str(self.card)]), 0)
+        self.assertEqual(
+            self.imported_names(self.usb), {"photo.jpg", "photo.nef", "clip.mp4"}, "USB backup"
+        )
+        launch.assert_called_once_with()
+        (run,) = catalog.list_import_history()
+        self.assertTrue(run["usb"])
+        self.assertEqual(run["details"]["usb_copied"], 3)
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    @patch("photo_offloader.volumes.eject_volume", return_value=True)
+    @patch("photo_offloader.volumes.usb_is_mounted", return_value=True)
+    @patch("photo_offloader.volumes.get_volume_identity")
+    @patch("photo_offloader.transfer.copy_local_archive_to_usb", side_effect=OSError("usb died"))
+    def test_a_usb_crash_does_not_invalidate_the_verified_import(
+        self, _backup, identity, mounted, eject, notify, launch
+    ):
+        identity.return_value = VolumeIdentity(self.usb_volume.resolve(), "disk4s1", "uuid-a")
+        self.media()
+        with patch("time.sleep"):
+            self.assertEqual(app.main(["--source", str(self.card)]), 1)
+        self.assertEqual(
+            self.imported_names(self.local, config.LOCAL_RAW_DEST_ROOT),
+            {"photo.jpg", "photo.nef", "clip.mp4"},
+        )
+        eject.assert_called_once_with(self.card.resolve())  # the card is safe to release
+        self.assertEqual(notify.call_args[0][0], "USB Backup Incomplete")
+        self.assertIn("copied to the Mac", notify.call_args[0][1])
+        self.assertIn("Local import succeeded", self.status()["message"])
+        self.assertEqual(
+            card.load_card_manifest_payload(self.dcim)["history"]["last_scan_status"], "complete"
+        )
+        (run,) = catalog.list_import_history()
+        self.assertEqual((run["copied"], run["failed"]), (3, 0))  # counts the local import
+        launch.assert_not_called()
 
 
 if __name__ == "__main__":

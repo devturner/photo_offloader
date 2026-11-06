@@ -53,6 +53,13 @@ class TestFileops(support.CardFixtureTestCase):
             self.assertTrue(fileops.install_without_overwrite(temp, final))
         self.assertEqual(final.read_bytes(), b"data")
 
+    def test_install_never_overwrites_an_existing_file(self):
+        temp, final = self.root / "tmp", self.root / "final"
+        temp.write_bytes(b"new")
+        final.write_bytes(b"old")
+        self.assertFalse(fileops.install_without_overwrite(temp, final))
+        self.assertEqual(final.read_bytes(), b"old")
+
     def test_install_on_a_drive_without_hard_links_never_overwrites_an_existing_file(self):
         # exFAT, the usual format for a USB backup drive, takes the fallback path.
         temp, final = self.root / "tmp", self.root / "final"
@@ -61,6 +68,23 @@ class TestFileops(support.CardFixtureTestCase):
         with patch("os.link", side_effect=OSError(errno.EXDEV, "cross-device")):
             self.assertFalse(fileops.install_without_overwrite(temp, final))
         self.assertEqual(final.read_bytes(), b"old")
+
+    def test_install_raises_an_unexpected_link_error_and_installs_nothing(self):
+        temp, final = self.root / "tmp", self.root / "final"
+        temp.write_bytes(b"new")
+        with (
+            patch("os.link", side_effect=OSError(errno.EIO, "disk error")),
+            self.assertRaisesRegex(OSError, "disk error"),
+        ):
+            fileops.install_without_overwrite(temp, final)
+        self.assertFalse(final.exists())
+
+    def test_files_do_not_match_when_sizes_differ_or_one_is_missing(self):
+        a, b = self.root / "a", self.root / "b"
+        a.write_bytes(b"abc")
+        self.assertFalse(fileops.files_match(a, b))
+        b.write_bytes(b"abcd")
+        self.assertFalse(fileops.files_match(a, b))
 
     def test_camera_index_file_name_match_is_case_insensitive(self):
         self.assertTrue(fileops.is_camera_index_file(Path("nc_fllst.dat")))
