@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 from typing import Dict, List
 
+from photo_offloader import catalog
 from tests.browser.harness import CARD, MB, ONE_RUN, SCENARIOS, Browser, BrowserTestCase
 
 try:
@@ -514,22 +515,37 @@ class TestReadmeScreenshot(PageTestCase):
     def test_the_numbers_on_the_panel_agree_with_each_other(self):
         self.show("readme_import")
         status = json.loads(self.sandbox.paths.status_file.read_text())
-        done, total = status["bytes_done"], status["bytes_total"]
         history = self.sandbox.core.state()["activity"]["speed_history"]
-        self.assertEqual(status["bytes_transferred"], done)
+        done, total, copied = (
+            status["bytes_done"],
+            status["bytes_total"],
+            status["bytes_transferred"],
+        )
         self.assertAlmostEqual(
-            sum(history) / done, 1, places=2, msg="the graph adds up to the bytes"
+            sum(history) / copied, 1, places=2, msg="the graph adds up to the copies"
         )
-        self.assertEqual(
-            status["new_files"], status["files_done"], "a fresh card: every file is new"
-        )
+        self.assertAlmostEqual(copied / status["new_files"] / MB, 25, delta=0.5)
         self.assertAlmostEqual(done / status["files_done"] / MB, 25, delta=0.5)
-        copy_seconds = len(history)
-        self.assertAlmostEqual(
-            status["eta_seconds"], (total - done) / (done / copy_seconds), delta=1
+        self.assertAlmostEqual(total / status["files_total"] / MB, 25, delta=0.5)
+        self.assertGreater(
+            status["files_done"], status["new_files"], "some files were already saved"
         )
-        self.assertGreaterEqual(status["elapsed_seconds"], copy_seconds)
-        self.assertLess(status["elapsed_seconds"], copy_seconds + 15, "plus a short scan")
+        self.assertGreaterEqual(status["elapsed_seconds"], len(history))
+        self.assertLess(status["elapsed_seconds"], len(history) + 15, "plus a short scan")
+        # The importer works out the time left this way (progress.update_status).
+        self.assertAlmostEqual(
+            status["eta_seconds"], (total - done) / (done / status["elapsed_seconds"]), delta=1
+        )
+
+    def test_its_card_could_follow_the_imports_listed_below_it(self):
+        self.show("readme_import")
+        status = json.loads(self.sandbox.paths.status_file.read_text())
+        rows = catalog.list_import_history(limit=3)  # newest first
+        for newer, older in zip(rows, rows[1:]):
+            self.assertEqual(newer["files"], older["files"] + newer["copied"])
+        unseen = status["files_total"] - rows[0]["files"]
+        self.assertLessEqual(status["new_files"], unseen)
+        self.assertLessEqual(status["files_done"] - status["new_files"], rows[0]["files"])
 
     def test_it_shows_a_believable_install(self):
         self.show("readme_import")

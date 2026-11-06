@@ -152,6 +152,7 @@ class Sandbox:
 README_CARD_FILES = 2478
 README_MB_PER_FILE = 25
 README_COPY_SECONDS = 120
+README_ALREADY_SAVED = 477
 
 COPY_PROGRESS = dict(
     bytes_done=34 * GB,
@@ -210,15 +211,20 @@ def _past_import(s: Sandbox, days_ago: int, seconds: int, new_files: int, card_f
 
 
 def _readme_import(s: Sandbox) -> None:
-    """The README's picture: a fresh card two minutes in, sized like a real one (about 25 MB a
-    file). Every number comes from the speed samples, so the panel's figures agree."""
+    """The README's picture: a card part-way through, sized like a real one (about 25 MB a file).
+    Some of its files are already saved. Every number comes from the speed samples and the same
+    sums the importer does, so the panel's figures agree."""
     speeds = [_steady_speed_mb(second, 70, 82) * MB for second in range(README_COPY_SECONDS)]
-    moved = sum(speeds)
-    files = moved // (README_MB_PER_FILE * MB)
-    total = README_CARD_FILES * README_MB_PER_FILE * MB
-    _past_import(s, days_ago=12, seconds=58, new_files=342, card_files=1136)
-    _past_import(s, days_ago=5, seconds=41, new_files=251, card_files=1387)
-    _past_import(s, days_ago=1, seconds=83, new_files=506, card_files=1893)
+    file_bytes = README_MB_PER_FILE * MB
+    copied = sum(speeds)
+    new_files = copied // file_bytes
+    files_done = new_files + README_ALREADY_SAVED
+    done = files_done * file_bytes
+    total = README_CARD_FILES * file_bytes
+    elapsed = README_COPY_SECONDS + 6  # the scan came first
+    _past_import(s, days_ago=12, seconds=58, new_files=342, card_files=443)
+    _past_import(s, days_ago=5, seconds=41, new_files=251, card_files=694)
+    _past_import(s, days_ago=1, seconds=83, new_files=506, card_files=1200)
     with catalog.catalog_db() as db:
         db.executemany(
             "INSERT INTO google_photos_uploads (path, size, mtime_ns, inode, uploaded_at, remote,"
@@ -230,15 +236,15 @@ def _readme_import(s: Sandbox) -> None:
         phase="copy",
         stage="copy",
         category="RAW",
-        current_file=f"_DZ8{1000 + files}.NEF",
-        files_done=files,
+        current_file=f"_DZ8{1000 + files_done}.NEF",
+        files_done=files_done,
         files_total=README_CARD_FILES,
-        new_files=files,
-        bytes_done=moved,
+        new_files=new_files,
+        bytes_done=done,
         bytes_total=total,
-        bytes_transferred=moved,
-        elapsed_seconds=README_COPY_SECONDS + 6,  # the scan came first
-        eta_seconds=(total - moved) / (moved / README_COPY_SECONDS),
+        bytes_transferred=copied,
+        elapsed_seconds=elapsed,
+        eta_seconds=(total - done) / (done / elapsed),
     )
     s.core.state()  # starts the graph; the clock is frozen, so no poll adds to it afterwards
     s.core._samples.extend(speeds)
