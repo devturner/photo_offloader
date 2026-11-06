@@ -28,6 +28,7 @@ class TestServiceControl(unittest.TestCase):
         self.running = self.root / "running-pids.txt"   # lines: "<pid> <pattern>"
         self.killed = self.root / "killed.txt"
         self.teardown_seconds = self.root / "teardown-seconds.txt"
+        self.refuse_bootstrap = self.root / "refuse-bootstrap"
         for folder in (self.install, self.agents, self.loaded):
             folder.mkdir()
         for label in (TRIGGER, MENUBAR):
@@ -51,7 +52,7 @@ case "$1" in
   bootstrap)
     plist="${{@: -1}}"; label="$(basename "$plist" .plist)"
     # Real launchd refuses a label it still has ("Bootstrap failed: 5: Input/output error").
-    if [[ -e "{self.loaded}/$label" ]]; then echo "Bootstrap failed: 5" >&2; exit 5; fi
+    if [[ -e "{self.loaded}/$label" || -f "{self.refuse_bootstrap}" ]]; then echo "Bootstrap failed: 5" >&2; exit 5; fi
     touch "{self.loaded}/$label" ;;
   *) exit 0 ;;
 esac
@@ -198,6 +199,15 @@ grep -F -- "$pattern" "{self.running}" | cut -d' ' -f1 | grep .
         result = self.run_service("start")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("install.sh", result.stdout + result.stderr)
+
+    def test_start_failure_shows_launchctls_own_error(self):
+        # install.sh loads the agents through this script, so this text is all the user sees.
+        (self.loaded / TRIGGER).unlink()
+        self.refuse_bootstrap.touch()
+        result = self.run_service("start")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"Could not load {TRIGGER}", result.stderr)
+        self.assertIn("Bootstrap failed: 5", result.stderr)
 
     def test_start_is_idempotent_when_already_running(self):
         result = self.run_service("start")

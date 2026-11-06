@@ -178,7 +178,7 @@ cmd_stop() {
 }
 
 cmd_start() {
-    local label plist failed=0
+    local label plist output failed=0
     for label in "$LABEL" "$UI_LABEL"; do
         "$LAUNCHCTL" enable "$DOMAIN/$label" >/dev/null 2>&1 || true
         is_loaded "$label" && continue
@@ -188,8 +188,8 @@ cmd_start() {
             failed=1
             continue
         fi
-        if ! "$LAUNCHCTL" bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1; then
-            echo "Could not load $label from $plist" >&2
+        if ! output="$("$LAUNCHCTL" bootstrap "$DOMAIN" "$plist" 2>&1)"; then
+            echo "Could not load $label from $plist: $output" >&2
             failed=1
         fi
     done
