@@ -17,6 +17,41 @@ class TestLogs(support.CardFixtureTestCase):
         REAL_NOTIFY("T", "B")
         self.assertEqual(run.call_count, 2)
 
+    def test_timed_adds_up_sections_and_counts_a_failure_too(self):
+        logs.reset_timings()
+        with patch("time.perf_counter", side_effect=[10.0, 11.5, 20.0, 20.5]):
+            with logs.timed("catalog"):
+                pass
+            with self.assertRaises(ValueError), logs.timed("catalog"):
+                raise ValueError
+        self.assertEqual(logs.timing_summary(5.0), "5.0 s: catalog 2.0 s, other 3.0 s")
+
+    def test_timed_works_as_a_decorator_and_keeps_the_result(self):
+        logs.reset_timings()
+
+        @logs.timed("status")
+        def write(value):
+            return value
+
+        self.assertEqual(write(7), 7)
+        self.assertEqual(write(8), 8)
+        self.assertIn("status ", logs.timing_summary(1.0))
+
+    def test_sections_are_listed_slowest_first_and_other_never_goes_negative(self):
+        logs.reset_timings()
+        with patch("time.perf_counter", side_effect=[0.0, 1.0, 0.0, 3.0]):
+            with logs.timed("small"):
+                pass
+            with logs.timed("big"):
+                pass
+        self.assertEqual(logs.timing_summary(3.5), "3.5 s: big 3.0 s, small 1.0 s, other 0.0 s")
+
+    def test_reset_starts_again(self):
+        with logs.timed("catalog"):
+            pass
+        logs.reset_timings()
+        self.assertEqual(logs.timing_summary(1.0), "1.0 s: other 1.0 s")
+
     def test_rotate_log_file_keeps_bounded_generations(self):
         log = self.root / "sync.log"
         for generation in range(5):

@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from photo_offloader import config, jsonfile
+from photo_offloader import config, jsonfile, logs
 from photo_offloader.logs import logger
 
 try:
@@ -37,6 +37,7 @@ _PROGRESS = {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transfer
 _PROGRESS_STARTED: Optional[float] = None
 
 
+@logs.timed("status")
 def update_status(**updates: object) -> None:
     """Atomically publish importer progress for the menu-bar dashboard."""
     global _PROGRESS_STARTED, _LAST_STATUS_WRITE

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
-from photo_offloader import config, fileops
+from photo_offloader import config, fileops, logs
 from photo_offloader.logs import logger
 
 _CATALOG_INITIALIZED_PATH: Optional[str] = None
@@ -398,6 +398,7 @@ def row_matches(row: Optional[tuple], fingerprint: fileops.FileFingerprint) -> b
     )
 
 
+@logs.timed("catalog")
 def catalog_row(
     path: Path, fingerprint: Optional[fileops.FileFingerprint] = None
 ) -> Optional[tuple]:
@@ -502,6 +503,7 @@ def _catalog_upsert(
     )
 
 
+@logs.timed("catalog")
 def catalog_record(
     path: Path,
     *,
@@ -519,6 +521,7 @@ def catalog_record(
         logger.debug("Could not update file catalog for %s: %s", path, exc)
 
 
+@logs.timed("catalog")
 def catalog_record_many(entries: Sequence[Tuple[Path, Dict[str, Optional[str]]]]) -> int:
     """Record many files in one transaction; files that vanished are skipped."""
     written = 0

@@ -203,6 +203,23 @@ class TestTransfer(support.CardFixtureTestCase):
         self.assertEqual(connect.call_count, 1)
         self.assertEqual(len(list(self.local.rglob("photo*.jpg"))), 5)
 
+    def test_a_category_logs_where_its_time_went(self):
+        source = self.media()["JPG"]
+        with self.assertLogs("camera_offloader", "INFO") as logged:
+            transfer.copy_category([source], self.dcim, [self.local], "JPG", ImportStats())
+        line = next(message for message in logged.output if "Time for JPG" in message)
+        self.assertRegex(line, r"Time for JPG, 1 file\(s\): [\d.]+ s: ")
+        for part in ("catalog ", "status ", "other "):
+            self.assertIn(part, line)
+
+    def test_each_category_times_only_its_own_work(self):
+        source = self.media()["JPG"]
+        with logs.timed("left over from the last category"):
+            pass
+        with self.assertLogs("camera_offloader", "INFO") as logged:
+            transfer.copy_category([source], self.dcim, [self.local], "JPG", ImportStats())
+        self.assertNotIn("left over", "".join(logged.output))
+
     def test_conflict_counter_advances(self):
         source = self.media()["RAW"]
         destination = media_info.build_destination_path(source, self.dcim, self.local)

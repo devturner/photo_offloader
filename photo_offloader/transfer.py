@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-from photo_offloader import card, catalog, config, fileops, media_info, progress, volumes
+from photo_offloader import card, catalog, config, fileops, logs, media_info, progress, volumes
 from photo_offloader.logs import logger
 
 
@@ -307,6 +307,8 @@ def copy_category(
         message=f"Checking {len(files)} {label} file(s)",
     )
     card_manifest = card.load_card_manifest(dcim_folder)
+    logs.reset_timings()
+    started = time.perf_counter()
     with catalog.reuse_connection(), progress.progress_bar(len(files), label) as bar:
         for file_index, source in enumerate(files, start=1):
             progress.update_status(
@@ -351,6 +353,12 @@ def copy_category(
                 message=f"Checked {file_index} of {len(files)} {label} files",
             )
             bar()
+    logger.info(
+        "Time for %s, %d file(s): %s",
+        label,
+        len(files),
+        logs.timing_summary(time.perf_counter() - started),
+    )
     card.save_card_manifest(dcim_folder, card_manifest)
 
 
