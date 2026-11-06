@@ -13,8 +13,8 @@ Camera card  →  Mac (verified)  →  USB drive (optional)  →  Google Photos 
 
 ## Requirements
 
-- macOS with Python 3.9 or newer
-- Optional: a USB drive named `Photos` for the backup
+- macOS (the only supported system for now) with Python 3.9 or newer
+- Optional: a USB drive for the backup, named `Photos` unless you [choose another name](docs/configuration.md#settings-in-the-code)
 - Optional: [ExifTool](https://exiftool.org) (`brew install exiftool`), so videos are filed under their camera
 - Optional: [rclone](https://rclone.org) and a Google Cloud sign-in for Google Photos: see the [setup guide](docs/google-photos.md)
 
@@ -36,6 +36,9 @@ the files in the archive before you format a card.
 
 ## Where things are
 
+The archive folders and the USB drive are defaults that you can
+[change](docs/configuration.md#settings-in-the-code).
+
 | What | Where |
 | --- | --- |
 | Photos, video and other files | `~/Pictures/CameraImports` |
@@ -46,11 +49,14 @@ the files in the archive before you format a card.
 
 ## Documentation
 
+These pages are also on the [project website](https://devturner.github.io/photo_offloader/).
+
 - [Using Photo Offloader](docs/using.md): the dashboard and menu bar, what each step means, pausing and stopping
 - [Google Photos setup](docs/google-photos.md): a step-by-step guide, with a command that checks your setup
 - [How it works](docs/how-it-works.md): the safety model, archive layout, catalog and logs
 - [Configuration](docs/configuration.md): settings and environment variables
 - [Development](docs/development.md): repository layout, tests and project rules
+- [Contributing](CONTRIBUTING.md): reporting a bug and proposing a change
 - [Changelog](CHANGELOG.md)
 
 ## License
