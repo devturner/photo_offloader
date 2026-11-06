@@ -30,6 +30,8 @@ KILL="${PHOTO_OFFLOADER_KILL:-/bin/kill}"
 POLL_SECONDS="${PHOTO_OFFLOADER_STOP_POLL_SECONDS:-2}"
 WAIT_SECONDS="${PHOTO_OFFLOADER_STOP_WAIT_SECONDS:-1800}"
 TERM_GRACE_SECONDS="${PHOTO_OFFLOADER_STOP_TERM_GRACE_SECONDS:-15}"
+# Longer than launchd's default 20 s between SIGTERM and SIGKILL.
+UNLOAD_WAIT_SECONDS="${PHOTO_OFFLOADER_UNLOAD_WAIT_SECONDS:-30}"
 
 LABEL="com.user.photooffloader"
 UI_LABEL="com.user.photooffloader.menubar"
@@ -62,10 +64,22 @@ transfer_running() {
     [[ -n "$(importer_pids)" ]] || is_loaded "$IMPORT_LABEL"
 }
 
+# bootout returns while launchd is still removing a running job, and until it is gone a
+# bootstrap fails ("Bootstrap failed: 5") and is_loaded still says yes. So wait, and let
+# "no longer loaded" decide success rather than bootout's exit status.
 unload() {
-    local label="$1"
+    local label="$1" deadline
     is_loaded "$label" || return 0
     "$LAUNCHCTL" bootout "$DOMAIN/$label" >/dev/null 2>&1
+    deadline=$(( $(date +%s) + UNLOAD_WAIT_SECONDS ))
+    while is_loaded "$label"; do
+        if [[ "$(date +%s)" -ge "$deadline" ]]; then
+            echo "$label is still unloading after ${UNLOAD_WAIT_SECONDS}s." >&2
+            return 1
+        fi
+        sleep 0.1
+    done
+    return 0
 }
 
 close_dashboards() {
@@ -99,7 +113,7 @@ cmd_status() {
 }
 
 cmd_stop() {
-    local mode="" disable=0 keep_ui=0 arg
+    local mode="" disable=0 keep_ui=0 failed=0 arg
     for arg in "$@"; do
         case "$arg" in
             --wait|--force) mode="$arg" ;;
@@ -127,7 +141,7 @@ cmd_stop() {
     fi
 
     # Unload the trigger first so no new import can start while we wind down.
-    unload "$LABEL"
+    unload "$LABEL" || failed=1
 
     if transfer_running; then
         if [[ "$mode" == "--force" ]]; then
@@ -147,12 +161,16 @@ cmd_stop() {
         fi
     fi
 
+    if [[ "$keep_ui" -ne 1 ]]; then
+        close_dashboards
+        # The menu-bar app may be the process that called us, so it goes last.
+        unload "$UI_LABEL" || failed=1
+    fi
+    [[ "$failed" -eq 0 ]] || return 1
+
     if [[ "$keep_ui" -eq 1 ]]; then
         echo "Photo Offloader stopped. Start it again from the dashboard, the menu bar, or 'scripts/service.sh start'."
     else
-        close_dashboards
-        # The menu-bar app may be the process that called us, so it goes last.
-        unload "$UI_LABEL"
         echo "Photo Offloader stopped. Run 'scripts/service.sh start' to bring it back."
     fi
     [[ "$disable" -eq 1 ]] && echo "It will stay off at login until you run 'start'."

@@ -69,6 +69,14 @@ class TestUninstallHardening(unittest.TestCase):
         first_copy = self.install.index('cp -R "$SCRIPT_DIR/$dir" "$INSTALL_DIR/$dir"')
         self.assertLess(shutdown_check, first_copy)
 
+    def test_installer_reloads_agents_through_the_service_script(self):
+        # service.sh waits for launchd to finish unloading. A bare bootout then bootstrap
+        # here failed with "Bootstrap failed: 5" when the trigger was mid-poll.
+        self.assertNotIn("launchctl bootstrap", self.install)
+        restart = self.install.index('"$INSTALL_DIR/scripts/service.sh" restart')
+        self.assertLess(self.install.index('plutil -lint "$UI_PLIST_PATH"'), restart)
+        self.assertLess(restart, self.install.index("LaunchAgents loaded successfully"))
+
     def test_supervisor_removes_submitted_launchd_job_after_terminal_status(self):
         supervisor = (self.root / "scripts" / "import_supervisor.sh").read_text(encoding="utf-8")
         self.assertIn('IMPORT_WORKER_LABEL="${PHOTO_OFFLOADER_IMPORT_WORKER_LABEL:-com.user.photooffloader.import}"', supervisor)

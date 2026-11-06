@@ -211,15 +211,14 @@ for captured_log in "$INSTALL_DIR/dashboard.log" "$INSTALL_DIR/menubar.log" "$IN
   fi
 done
 
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootout "gui/$(id -u)/$UI_LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
-launchctl bootstrap "gui/$(id -u)" "$UI_PLIST_PATH"
+# Pick up the new plists. The result is checked just below.
+"$INSTALL_DIR/scripts/service.sh" restart || true
 
 if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 && launchctl print "gui/$(id -u)/$UI_LABEL" >/dev/null 2>&1; then
   echo "Importer and menu-bar LaunchAgents loaded successfully."
 else
   echo "Error: one or more Photo Offloader LaunchAgents did not load successfully."
+  echo "The files are installed. To try again: \"$INSTALL_DIR/scripts/service.sh\" start"
   exit 1
 fi
 
