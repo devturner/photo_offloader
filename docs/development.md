@@ -28,8 +28,9 @@ photo_offloader/
 scripts/          trigger.sh (launchd), import_supervisor.sh, service.sh (start, stop, status)
 tools/            benchmark and one-off migration scripts
 tests/            the unittest suite; browser/ runs the dashboard page in Chromium
-docs/             these pages
-index.html        the GitHub Pages landing page, which is not the dashboard page
+docs/             these pages, which GitHub Pages also publishes as the project website
+index.html        the website's landing page, which is not the dashboard page
+_config.yml       the website's title and description
 install.sh        installs the same layout into ~/Library/Application Support/PhotoOffloader
 ```
 
@@ -119,11 +120,4 @@ library plus one static page, and it builds the page with `textContent`, so text
 
 ## Contributing changes
 
-- Follow the [code quality guide](../CODE_QUALITY.md).
-- Write the failing test first and check it fails for the right reason. For important fixes, break the code
-  again and confirm the test goes red.
-- Base claims on measurements (logs, timings on real data). Benchmark against a copy of the catalog.
-- Record behaviour changes in `CHANGELOG.md` under `[Unreleased]`, and in these docs.
-- Keep commits reviewable, and explain why in the message. Keep behaviour changes separate from moves and
-  renames.
-- Work on a branch from `main`, open a pull request, and merge with a merge commit.
+See [Contributing](../CONTRIBUTING.md) for how to propose a change.
