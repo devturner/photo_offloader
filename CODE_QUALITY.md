@@ -49,8 +49,6 @@ justifies weakening a safety check.
   missing test around a bug you just found.
 - Put the cleanup in its own commit so the behavior change stays easy to review.
 - A larger problem gets a note in `scratch/todo.md`, not a surprise rewrite inside a bug fix.
-- Don't run `ruff format` across a file inside another change. Most of the repo doesn't match
-  it yet, and the noise would bury the real diff.
 
 ## Maintainability
 
@@ -114,6 +112,7 @@ CI runs these, so don't spend review time on them:
 | Check | Catches |
 | --- | --- |
 | `ruff check .` | Lint errors, import order, complexity over 15 |
+| `ruff format --check .` | Code that isn't formatted; run `ruff format .` to fix it |
 | `unittest discover` | Regressions, on Python 3.9, 3.11, 3.13 and 3.14 |
 | `bash -n` | Shell syntax errors |
 | `compileall` / `py_compile` | Python that doesn't compile, including `bin/` |
@@ -127,4 +126,3 @@ Where the code doesn't meet this guide yet, measured on 2026-11-05. Improve thes
 working nearby. They aren't a reason to copy the pattern.
 
 - `dashboard/core.py` is still the largest module, at 666 lines.
-- `ruff format` would change 49 of 65 Python files, so formatting isn't enforced.

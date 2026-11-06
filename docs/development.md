@@ -38,6 +38,7 @@ install.sh        installs the same layout into ~/Library/Application Support/Ph
 ```bash
 .venv/bin/python -m unittest discover                 # everything
 .venv/bin/python -m unittest tests.test_usb_backup    # one module
+.venv/bin/python -m ruff format .                     # format; CI fails on unformatted code
 .venv/bin/python -m ruff check .                      # lint; maximum complexity is 15
 bash -n install.sh uninstall.sh scripts/*.sh tools/*.sh
 ```

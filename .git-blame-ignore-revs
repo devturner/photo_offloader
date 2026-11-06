@@ -1,0 +1,5 @@
+# Mechanical commits to leave out of git blame. GitHub reads this file automatically.
+# Locally: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Format the code with ruff format
+a1b8e09ad46698832a3acd1c05ff3d797ee8c240

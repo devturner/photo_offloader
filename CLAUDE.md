@@ -15,6 +15,7 @@ first when asked to "continue".
 - Browser tests: `.venv/bin/python -m unittest tests.browser.test_dashboard_page` (about 20 s). They
   are part of `discover` and skip without Playwright's Chromium (`.venv/bin/python -m playwright
   install chromium`). See "How the user likes to work" for screenshots.
+- Format: `.venv/bin/python -m ruff format .` (CI runs it with `--check`).
 - Lint: `.venv/bin/python -m ruff check .`. ruff enforces max complexity 15 (C901), so
   split functions instead of raising the limit.
 - Shell syntax: `bash -n install.sh uninstall.sh scripts/*.sh tools/*.sh`. macOS ships
