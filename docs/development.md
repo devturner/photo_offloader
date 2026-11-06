@@ -30,7 +30,7 @@ tools/            benchmark and one-off migration scripts
 tests/            the unittest suite; browser/ runs the dashboard page in Chromium
 docs/             these pages, which GitHub Pages also publishes as the project website
 index.html        the website's landing page, which is not the dashboard page
-_config.yml       the website's title and description
+_config.yml, _layouts/, assets/    the website's settings, page layout and styles
 install.sh        installs the same layout into ~/Library/Application Support/PhotoOffloader
 ```
 

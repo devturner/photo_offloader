@@ -74,7 +74,9 @@ Two consequences:
 - `bin/` launchers, `scripts/` (trigger, import_supervisor, service), `tools/`, `tests/`.
 - `docs/` holds the user documentation, one topic per page, linked from a short `README.md`.
 - The root `index.html` is the GitHub Pages landing page, not the dashboard page. It links to
-  `docs/` and doesn't repeat it.
+  `docs/` and doesn't repeat it. Pages builds the site from `main` with Jekyll, using
+  `_config.yml`, `_layouts/default.html` and `assets/site.css`. The README is published as
+  `get-started.html`.
 - The installed app (`~/Library/Application Support/PhotoOffloader`) mirrors this layout.
   `install.sh` copies `bin/`, `scripts/` and `photo_offloader/`; new top-level files must
   be added there.

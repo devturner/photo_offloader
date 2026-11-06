@@ -1,3 +1,15 @@
-# GitHub Pages turns the Markdown pages into the project website. This names the site in each page's header.
+# GitHub Pages turns the Markdown pages into the project website, using _layouts/default.html.
 title: Photo Offloader
 description: Safely import camera cards to your Mac and a USB drive, with an optional Google Photos upload.
+
+# Pages only copies these two as raw Markdown unless they are listed here.
+include:
+  - README.md
+  - CONTRIBUTING.md
+
+defaults:
+  - scope:
+      path: README.md
+    values:
+      title: Get started
+      permalink: /get-started.html

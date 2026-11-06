@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="{{ site.description }}">
+  <title>{% if page.title and page.title != site.title %}{{ page.title }} · {% endif %}{{ site.title }}</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='85'%3E📸%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ '/assets/site.css' | relative_url }}">
+</head>
+<body>
+  <main>
+    <header class="site-header"><a href="{{ '/' | relative_url }}">📸 {{ site.title }}</a></header>
+    <article>
+{{ content }}
+    </article>
+    <footer class="site-footer"><a href="https://github.com/devturner/photo_offloader">Source on GitHub</a></footer>
+  </main>
+</body>
+</html>
