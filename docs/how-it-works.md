@@ -87,7 +87,7 @@ the whole card again.
 These are separate programs that share files:
 
 1. **launchd** runs the trigger (`scripts/trigger.sh`) every 30 seconds and whenever `/Volumes` changes.
-   It looks for a volume with `DCIM`.
+   It looks for volumes with `DCIM`. With two cards mounted, they import one after the other.
 2. The trigger starts the **importer** as its own background job. The importer writes its progress to
    `status.json`.
 3. After a successful import, the importer starts the **Google sync** in the background.

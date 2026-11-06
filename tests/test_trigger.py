@@ -624,6 +624,100 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.wait_for_workers()
         self.assertFalse(self.command_capture.exists())
 
+    # ---- two cards mounted together
+    def imported_card(self):
+        """The card the last run started importing, or None. Clears the record for the next run."""
+        self.wait_for_workers()
+        if not self.background_args.exists():
+            return None
+        lines = self.background_args.read_text().splitlines()
+        self.background_args.unlink()
+        return next(line for line in lines if line.endswith("/DCIM"))
+
+    def second_card(self, name="NIKON Z 8 1"):
+        dcim = self.volumes / name / "DCIM"
+        dcim.mkdir(parents=True)
+        return dcim
+
+    def test_a_second_card_is_imported_while_the_first_stays_mounted(self):
+        # Auto-eject is off by default, so the first card stays. The trigger only ever looked at
+        # the first DCIM it found, so the second was never imported.
+        self.background_mode()
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(self.dcim))
+        second = self.second_card()
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(second))
+
+    def test_two_cards_are_each_imported_once_without_taking_turns_for_ever(self):
+        self.background_mode()
+        second = self.second_card()
+        seen = []
+        for _ in range(5):
+            self.run_trigger()
+            seen.append(self.imported_card())
+        self.assertEqual(seen, [str(self.dcim), str(second), None, None, None])
+
+    def test_a_second_card_waits_while_the_first_is_importing(self):
+        self.background_mode()
+        self.run_trigger()
+        self.imported_card()
+        self.second_card()
+        self.pgrep.write_text("#!/bin/bash\nexit 0\n")
+        self.run_trigger()
+        self.assertIsNone(self.imported_card())
+        self.assertEqual(self.state.read_text().strip(), str(self.dcim))
+
+    def test_a_second_card_waits_while_the_import_worker_is_registered(self):
+        self.background_mode()
+        self.run_trigger()
+        self.imported_card()
+        self.second_card()
+        self.run_trigger(PHOTO_OFFLOADER_TEST_WORKER_REGISTERED="1")
+        self.assertIsNone(self.imported_card())
+        self.assertEqual(self.state.read_text().strip(), str(self.dcim))
+
+    def test_a_card_removed_and_brought_back_is_imported_again(self):
+        self.background_mode()
+        second = self.second_card()
+        self.run_trigger()
+        self.imported_card()
+        self.run_trigger()
+        self.imported_card()
+        away = self.root / "first-card-away"
+        self.card.rename(away)
+        self.run_trigger()
+        self.assertIsNone(self.imported_card())
+        away.rename(self.card)
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(self.dcim))
+        self.run_trigger()
+        self.assertIsNone(self.imported_card())
+        self.assertTrue(second.is_dir())
+
+    def test_a_different_card_at_a_set_aside_cards_path_is_a_new_card(self):
+        self.background_mode()
+        (self.card / ".test-volume-uuid").write_text("CARD-A")
+        self.second_card()
+        self.run_trigger()
+        self.imported_card()
+        self.run_trigger()
+        self.imported_card()
+        (self.card / ".test-volume-uuid").write_text("CARD-B")
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(self.dcim))
+
+    def test_a_card_that_failed_is_not_retried_when_a_second_card_arrives(self):
+        self.background_mode()
+        self.run_trigger()
+        self.imported_card()
+        (self.install / ".import-status").write_text(f"failed|{self.dcim}|1\n")
+        second = self.second_card()
+        self.run_trigger()
+        self.assertEqual(self.imported_card(), str(second))
+        self.run_trigger()
+        self.assertIsNone(self.imported_card())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,9 @@ IDENTITY_FILE="${PHOTO_OFFLOADER_TRIGGER_IDENTITY:-$STATE_FILE.identity}"
 # same card is back within REMOUNT_GRACE_SECONDS it was mount churn; after that
 # it was really removed (e.g. to shoot more) and re-inserting starts a new session.
 ABSENT_FILE="${PHOTO_OFFLOADER_TRIGGER_ABSENT:-$STATE_FILE.absent}"
+# Handled cards still mounted while another card is dealt with: one "DCIM path<TAB>identity" per
+# line. STATE_FILE only holds one card, so without this two cards would take turns for ever.
+PARKED_FILE="${PHOTO_OFFLOADER_TRIGGER_PARKED:-$STATE_FILE.parked}"
 REMOUNT_GRACE_SECONDS="${PHOTO_OFFLOADER_REMOUNT_GRACE_SECONDS:-20}"
 PAUSE_FILE="${PHOTO_OFFLOADER_PAUSE_FILE:-$INSTALL_DIR/.paused}"
 LOCK_DIR="${PHOTO_OFFLOADER_TRIGGER_LOCK:-$INSTALL_DIR/.trigger.lock}"
@@ -222,15 +225,70 @@ if [[ -f "$PAUSE_FILE" ]]; then
     exit 0
 fi
 
+# Forget a set-aside card once it's gone or a different card has its path, so it's new next time.
+forget_unmounted_parked_cards() {
+    [[ -f "$PARKED_FILE" ]] || return 0
+    local dcim identity kept=""
+    while IFS=$'\t' read -r dcim identity; do
+        [[ -n "$dcim" && -d "$dcim" ]] || continue
+        if [[ "$(volume_identity "${dcim%/DCIM}")" == "$identity" ]]; then
+            kept+="$dcim"$'\t'"$identity"$'\n'
+        fi
+    done < "$PARKED_FILE"
+    if [[ -n "$kept" ]]; then
+        printf '%s' "$kept" > "$PARKED_FILE"
+    else
+        rm -f "$PARKED_FILE"
+    fi
+}
+
+card_is_parked() {
+    [[ -f "$PARKED_FILE" ]] && cut -f1 "$PARKED_FILE" | grep -Fxq -- "$1"
+}
+
+import_is_active() {
+    "$LAUNCHCTL" print "gui/$(id -u)/$IMPORT_WORKER_LABEL" >/dev/null 2>&1 \
+        || "$PGREP" -f "$IMPORTER" >/dev/null 2>&1
+}
+
+# Whether the handled card should stay the one in focus, even with another card waiting.
+handled_card_stays_current() {
+    local recorded current
+    # It was away, or a different card now has its path: the checks below decide what it needs.
+    [[ -f "$ABSENT_FILE" ]] && return 0
+    recorded="$(cat "$IDENTITY_FILE" 2>/dev/null || true)"
+    current="$(volume_identity "${handled_source%/DCIM}")"
+    [[ -n "$recorded" && -n "$current" && "$recorded" != "$current" ]] && return 0
+    # Only one import runs at a time, so the next card waits for this one.
+    import_is_active
+}
+
+forget_unmounted_parked_cards
+handled_source="$(cat "$STATE_FILE" 2>/dev/null || true)"
+handled_is_mounted=0
 camera_dcim=""
-# Any mounted volume with a top-level DCIM directory is eligible.
+# Any mounted volume with a top-level DCIM directory is eligible, one at a time.
 # Volume names and camera-brand markers are intentionally ignored.
 for volume in "$VOLUMES_ROOT"/*; do
     [[ -d "$volume" && -d "$volume/DCIM" ]] || continue
-    camera_dcim="$volume/DCIM"
-    log "Recognized mounted volume with DCIM directory: $camera_dcim"
-    break
+    card_is_parked "$volume/DCIM" && continue
+    if [[ "$volume/DCIM" == "$handled_source" ]]; then
+        handled_is_mounted=1
+    elif [[ -z "$camera_dcim" ]]; then
+        camera_dcim="$volume/DCIM"
+    fi
 done
+if [[ "$handled_is_mounted" -eq 1 ]]; then
+    if [[ -z "$camera_dcim" ]] || handled_card_stays_current; then
+        camera_dcim="$handled_source"
+    else
+        # Whether it succeeded or failed, it isn't tried again until it's removed.
+        printf '%s\t%s\n' "$handled_source" "$(volume_identity "${handled_source%/DCIM}")" >> "$PARKED_FILE"
+        rm -f "$STATE_FILE" "$EJECT_STATE_FILE" "$IDENTITY_FILE"
+        log "Setting aside the handled card to import another one: $handled_source"
+    fi
+fi
+[[ -z "$camera_dcim" ]] || log "Recognized mounted volume with DCIM directory: $camera_dcim"
 
 camera_identity=""
 if [[ -n "$camera_dcim" ]]; then

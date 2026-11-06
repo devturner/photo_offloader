@@ -205,6 +205,33 @@ class TestHeadline(Fixture):
         )
         self.assertEqual(self.pipeline("card")["actions"], [])
 
+    def set_card_aside(self, name="NIKON Z 8"):
+        (self.install / ".last_camera_source.parked").write_text(
+            f"{self.volumes / name / 'DCIM'}\t\n"
+        )
+
+    def test_a_card_set_aside_for_a_second_card_counts_as_handled(self):
+        self.add_card()
+        self.set_card_aside()
+        self.assertTrue(self.core.card_handled(self.volumes / "NIKON Z 8"))
+
+    def test_a_mounted_card_nobody_has_handled_is_not_handled(self):
+        self.add_card()
+        self.set_card_aside("ANOTHER CARD")
+        self.assertFalse(self.core.card_handled(self.volumes / "NIKON Z 8"))
+
+    def test_import_now_also_forgets_a_card_set_aside(self):
+        self.add_card()
+        self.set_card_aside()
+        self.core.act("import_card")
+        self.assertFalse((self.install / ".last_camera_source.parked").exists())
+
+    def test_resume_also_forgets_a_card_set_aside(self):
+        self.add_card()
+        self.set_card_aside()
+        self.core.act("resume")
+        self.assertFalse((self.install / ".last_camera_source.parked").exists())
+
     def test_import_now_forgets_the_handled_card_and_rechecks(self):
         self.add_card("NIKON Z 8")
         self.mark_card_handled()

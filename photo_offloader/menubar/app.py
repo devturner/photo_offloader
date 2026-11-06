@@ -137,6 +137,7 @@ class PhotoOffloaderMenuBar(rumps.App):
             # Evaluate the current mount state immediately instead of waiting for another event.
             try:
                 (INSTALL_DIR / ".last_camera_source").unlink(missing_ok=True)
+                (INSTALL_DIR / ".last_camera_source.parked").unlink(missing_ok=True)
             except OSError as exc:
                 logger.warning(
                     "Could not reset the last-card record; a mounted card "
