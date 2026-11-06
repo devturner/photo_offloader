@@ -467,12 +467,9 @@ def _scan_card(
         raise RuntimeError(f"No supported media files found under {dcim_folder}")
 
     total_found = sum(len(items) for items in files.values())
-    _RUN.update(
-        files=total_found,
-        bytes=volumes.required_source_bytes(files),
-        # Now, while the card still answers: the sizes of any files it later fails to give up.
-        sizes={str(path): path.stat().st_size for paths in files.values() for path in paths},
-    )
+    # Now, while the card still answers: a report gives the size of any file it later fails to read.
+    sizes = {str(path): path.stat().st_size for paths in files.values() for path in paths}
+    _RUN.update(files=total_found, bytes=sum(sizes.values()), sizes=sizes)
     logger.info(
         "Scan complete: %d files (%d JPG, %d RAW, %d VIDEO, %d other)",
         total_found,

@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 from photo_offloader import config
 from photo_offloader.logs import logger
@@ -73,14 +73,6 @@ def snapshot_destinations(no_usb: bool = False) -> DestinationSnapshot:
         return DestinationSnapshot((config.LOCAL_DEST_ROOT,), False, None)
     identity = get_volume_identity(config.USB_DEST_VOLUME)
     return DestinationSnapshot((config.LOCAL_DEST_ROOT, config.USB_DEST_ROOT), True, identity)
-
-
-def required_source_bytes(files: Dict[str, List[Path]]) -> int:
-    total = 0
-    for items in files.values():
-        for path in items:
-            total += path.stat().st_size
-    return total
 
 
 def available_bytes(path: Path) -> int:

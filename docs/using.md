@@ -68,6 +68,34 @@ Google Photos card names the first missing step: see the [setup guide](google-ph
 A finished import's result fades after 10 minutes. A failed one stays until you dismiss it with
 **×**.
 
+### When an import fails
+
+The panel says what to do, usually `Don't format this card`, and the run opens by itself in Recent
+activity. It shows how many files are safe on the Mac, then a line saying whether any photo lost both its
+RAW and its JPG, matched by name. A RAW or JPG shot alone counts like a movie: it has no second copy.
+
+Below that is one row per file type, with what wasn't saved, what's safe and what's on the card. Click a
+row to see its files, and why they failed. A row with more than 30 files names the first 20 and offers
+**Open these in a list**. If a folder couldn't be read, its contents are unknown, so nothing is counted
+for it. If every file after a point failed to read, the report says so first, because that looks like the
+card or the reader, not the photos.
+
+Until a retry succeeds, the Camera card box says `Don't format: files not saved`, even if you dismiss the
+panel, and **Eject** asks first. The warning returns if that card comes back and isn't imported again, such
+as while imports are paused.
+
+- **Try again** imports the card again. Files already saved are skipped.
+- **Open full list** opens every file on the card in your spreadsheet app, with its result and hash.
+- **Save debug package…** saves a zip to Downloads, for checking a run yourself or sending to someone
+  who can help. It holds a summary, every card file's result, the run's log, the card's `diskutil info`
+  and the end of the card detection and upload logs. It never holds photos, your Google sign-in or the
+  dashboard's access token. File names and paths are included and show your Mac username, so look
+  through it before you share it.
+
+Runs that finish cleanly offer the package too. The files behind these reports are in `run-reports`, in the
+data folder: the latest 20 runs with problems and the latest 20 without, so clean runs can't push out a
+failure's report. Saving one never changes an import's result.
+
 ### Recent activity
 
 This lists past imports, USB backups and catalog updates, with what each one copied. The history

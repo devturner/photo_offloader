@@ -20,6 +20,7 @@ photo_offloader/
     card          media types, card scanning, card manifest
     media_info    EXIF and ExifTool, camera model, archive folder
     transfer      copy decisions, copying a card, USB backup
+    run_report    what a run did with each file: its summary, saved report and debug package
     catalog       SQLite catalog, history, upload records
     catalog_refresh, fileops, jsonfile, volumes, progress, logs
     google_photos, usb_backup

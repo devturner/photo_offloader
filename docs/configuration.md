@@ -69,7 +69,7 @@ after each one. To undo it, run `launchctl unsetenv NAME` and restart the servic
 | What | Where |
 | --- | --- |
 | The app, replaced on each install | `~/Library/Application Support/PhotoOffloader` |
-| Catalog, history and preferences, kept on uninstall | `~/Library/Application Support/PhotoOffloaderData` |
+| Catalog, history, run reports and preferences, kept on uninstall | `~/Library/Application Support/PhotoOffloaderData` |
 | Background agents | `~/Library/LaunchAgents/com.user.photooffloader.plist` and `com.user.photooffloader.menubar.plist` |
 
 Uninstalling removes the app, its agents and its logs. Your photos and

@@ -100,7 +100,9 @@ class TestCardWarning(ReportFixture):
     def test_a_usb_backup_since_does_not_clear_it(self):
         self.add_card()
         self.failed_run()
-        self.record(kind="usb_backup", source="", outcome="complete")
+        self.record(
+            kind="usb_backup", outcome="complete"
+        )  # the same source, to prove it's the kind
         self.assertEqual(self.card_step()["state"], "error")
 
     def test_another_card_is_not_warned_about(self):
@@ -186,8 +188,9 @@ class TestReportActions(ReportFixture):
         self.assertIn("no longer", result["message"])
 
     def test_a_report_name_cannot_lead_out_of_the_reports_folder(self):
+        config.RUN_REPORTS_DIR.mkdir(parents=True)  # otherwise ../ fails for the wrong reason
         secret = config.RUN_REPORTS_DIR.parent / "elsewhere"
-        secret.mkdir(parents=True)
+        secret.mkdir()
         (secret / "files.csv").write_text("secret")
         self.record(outcome="failed", details={"report": "../elsewhere"})
         result = self.core.act("open_file_list", {"run_id": self.latest_id()})
