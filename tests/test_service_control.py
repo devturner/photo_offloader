@@ -27,6 +27,8 @@ class TestServiceControl(unittest.TestCase):
         self.calls = self.root / "launchctl-calls.txt"
         self.running = self.root / "running-pids.txt"   # lines: "<pid> <pattern>"
         self.killed = self.root / "killed.txt"
+        self.teardown_seconds = self.root / "teardown-seconds.txt"
+        self.refuse_bootstrap = self.root / "refuse-bootstrap"
         for folder in (self.install, self.agents, self.loaded):
             folder.mkdir()
         for label in (TRIGGER, MENUBAR):
@@ -39,8 +41,19 @@ echo "$@" >> "{self.calls}"
 label="${{@: -1}}"; label="${{label##*/}}"
 case "$1" in
   print)     [[ -e "{self.loaded}/$label" ]] ;;
-  bootout)   [[ -e "{self.loaded}/$label" ]] && rm -f "{self.loaded}/$label" ;;
-  bootstrap) plist="${{@: -1}}"; touch "{self.loaded}/$(basename "$plist" .plist)" ;;
+  bootout)
+    [[ -e "{self.loaded}/$label" ]] || exit 3
+    # Real launchd returns from bootout before a running job has been removed.
+    if [[ -f "{self.teardown_seconds}" ]]; then
+      (sleep "$(cat "{self.teardown_seconds}")"; rm -f "{self.loaded}/$label") >/dev/null 2>&1 &
+    else
+      rm -f "{self.loaded}/$label"
+    fi ;;
+  bootstrap)
+    plist="${{@: -1}}"; label="$(basename "$plist" .plist)"
+    # Real launchd refuses a label it still has ("Bootstrap failed: 5: Input/output error").
+    if [[ -e "{self.loaded}/$label" || -f "{self.refuse_bootstrap}" ]]; then echo "Bootstrap failed: 5" >&2; exit 5; fi
+    touch "{self.loaded}/$label" ;;
   *) exit 0 ;;
 esac
 """)
@@ -187,6 +200,15 @@ grep -F -- "$pattern" "{self.running}" | cut -d' ' -f1 | grep .
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("install.sh", result.stdout + result.stderr)
 
+    def test_start_failure_shows_launchctls_own_error(self):
+        # install.sh loads the agents through this script, so this text is all the user sees.
+        (self.loaded / TRIGGER).unlink()
+        self.refuse_bootstrap.touch()
+        result = self.run_service("start")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"Could not load {TRIGGER}", result.stderr)
+        self.assertIn("Bootstrap failed: 5", result.stderr)
+
     def test_start_is_idempotent_when_already_running(self):
         result = self.run_service("start")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -252,6 +274,23 @@ grep -F -- "$pattern" "{self.running}" | cut -d' ' -f1 | grep .
         again = self.run_service("stop", "--keep-ui")
         self.assertEqual(again.returncode, 0)
         self.assertIn("already stopped", again.stdout.lower())
+
+    # -------------------------------------------------------------- restart
+    def test_restart_waits_for_launchd_to_finish_unloading(self):
+        # launchctl bootout returns while launchd is still removing a running job. An
+        # upgrade lost that race by 27 ms and left both agents unloaded.
+        self.teardown_seconds.write_text("0.4")
+        result = self.run_service("restart")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("Could not load", result.stderr)
+        self.assertEqual(len([c for c in self.launchctl_calls() if c.startswith("bootstrap")]), 2)
+
+    def test_restart_reports_an_agent_that_never_unloads(self):
+        self.teardown_seconds.write_text("5")
+        result = self.run_service("restart", PHOTO_OFFLOADER_UNLOAD_WAIT_SECONDS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("still unloading", result.stderr)
+        self.assertNotIn("started", result.stdout)
 
     # ---------------------------------------------------------------- usage
     def test_unknown_command_prints_usage(self):
