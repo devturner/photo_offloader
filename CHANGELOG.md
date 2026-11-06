@@ -51,6 +51,7 @@ All notable changes to Photo Offloader are documented here.
 - **The Mac archive box now says *Checking* while an import is checking for new files.** It said *Copying* for that whole step, even when the panel above said *Checking for new files* and nothing was being copied.
 - **Camera index files are no longer imported, so a card with no new photos now reports no copies.** `NC_FLLST.DAT` and `MEDIAPRO.XML` were copied on every insert and reported as *Local copies: 2*. A card has one per folder, all filed under one archive path, so each overwrote the last and the archive only ever held one: it was never a backup. Copies already in the archive and on USB are left alone.
 - **Checking a card for new files is faster.** The catalog was reopened for every lookup, three times per file; each file type now keeps one connection open. Each save is still committed straight away.
+- **Checking a card no longer rewrites the status file for every file.** It wrote about 4 times per file, which took 8.8 s of a 25.7 s check on a 2,722-file card. It now writes at most 4 times a second, and the dashboard reads about once a second.
 - **The import log now shows where the time went**, with one line per file type, such as `Time for JPG, 1361 file(s): 7.5 s: end checks 3.9 s, status 1.3 s, catalog 1.0 s, other 1.3 s`.
 
 ### Changed (2.5)

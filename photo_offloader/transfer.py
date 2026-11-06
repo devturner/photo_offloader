@@ -139,7 +139,7 @@ def _skip_if_already_copied(
         if source_hash == destination_hash:
             progress.add_progress_bytes(size)
             card.update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
-            progress.update_status(
+            progress.note_status(
                 state="copying", phase="copy", message="Existing file verified; continuing"
             )
             return DestinationResult(
@@ -230,7 +230,7 @@ def copy_one_to_destination(
 ) -> DestinationResult:
     before = fileops.file_fingerprint(source)
     manifest = card_manifest if card_manifest is not None else card.load_card_manifest(dcim_folder)
-    progress.update_status(
+    progress.note_status(
         state="scanning",
         phase="copy-decision",
         current_file=source.name,
@@ -311,7 +311,7 @@ def copy_category(
     started = time.perf_counter()
     with catalog.reuse_connection(), progress.progress_bar(len(files), label) as bar:
         for file_index, source in enumerate(files, start=1):
-            progress.update_status(
+            progress.note_status(
                 state="scanning",
                 phase="copy-decision",
                 current_file=source.name,
@@ -345,7 +345,7 @@ def copy_category(
             if len(results) != len(destinations):
                 logger.error("One or more destinations failed for %s", source)
             _count_session_file(label, source, any(r.status == "copied" for r in results))
-            progress.update_status(
+            progress.note_status(
                 state="scanning",
                 phase="copy-decision",
                 decision_files_checked=file_index,
@@ -353,6 +353,7 @@ def copy_category(
                 message=f"Checked {file_index} of {len(files)} {label} files",
             )
             bar()
+    progress.update_status()
     logger.info(
         "Time for %s, %d file(s): %s",
         label,

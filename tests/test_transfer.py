@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import errno
+import json
 import os
 import pathlib
 import sqlite3
@@ -211,6 +212,24 @@ class TestTransfer(support.CardFixtureTestCase):
         self.assertRegex(line, r"Time for JPG, 1 file\(s\): [\d.]+ s: ")
         for part in ("catalog ", "status ", "other "):
             self.assertIn(part, line)
+
+    def test_checking_saved_files_does_not_rewrite_the_status_for_each_file(self):
+        # Measured on a real 2,722-file card: 4 writes per file took 8.8 s of a 25.7 s check.
+        files = [self.dcim / "100NIKON" / f"photo{number}.jpg" for number in range(20)]
+        files[0].parent.mkdir(parents=True)
+        for number, path in enumerate(files):
+            path.write_bytes(b"photo %d" % number)
+        transfer.copy_category(files, self.dcim, [self.local], "JPG", ImportStats())
+        real_write = progress.jsonfile.write_json
+        with (
+            patch.object(progress.jsonfile, "write_json", side_effect=real_write) as write,
+            patch.object(progress.time, "monotonic", return_value=progress.time.monotonic()),
+        ):
+            transfer.copy_category(files, self.dcim, [self.local], "JPG", ImportStats())
+        status_writes = [c for c in write.call_args_list if c.args[0] == config.STATUS_FILE_PATH]
+        self.assertEqual(len(status_writes), 2)  # as it starts and as it ends
+        status = json.loads(config.STATUS_FILE_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(status["decision_files_checked"], 20)
 
     def test_each_category_times_only_its_own_work(self):
         source = self.media()["JPG"]

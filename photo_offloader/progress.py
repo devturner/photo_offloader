@@ -68,14 +68,23 @@ def update_status(**updates: object) -> None:
         logger.debug("Could not publish dashboard status: %s", exc)
 
 
+def note_status(**updates: object) -> None:
+    """Record progress at once, but rewrite the status file only a few times a second.
+
+    For updates made per file or per chunk: the dashboard reads the file about once a second, and
+    the writes took a third of the time on a card with nothing new. Whoever calls this in a loop
+    calls update_status() afterwards, so the last values reach the file.
+    """
+    _PROGRESS.update(updates)
+    if time.monotonic() - _LAST_STATUS_WRITE >= STATUS_MIN_INTERVAL_SECONDS:
+        update_status()
+
+
 def add_progress_bytes(amount: int, transferred: bool = False) -> None:
     _PROGRESS["bytes_done"] = int(_PROGRESS.get("bytes_done", 0)) + amount
     if transferred:
         _PROGRESS["bytes_transferred"] = int(_PROGRESS.get("bytes_transferred", 0)) + amount
-    # Counters stay exact on every chunk; the on-disk status file (read by the
-    # dashboard about once a second) is rewritten at most a few times a second.
-    if time.monotonic() - _LAST_STATUS_WRITE >= STATUS_MIN_INTERVAL_SECONDS:
-        update_status()
+    note_status()
 
 
 STATUS_MIN_INTERVAL_SECONDS = 0.25
