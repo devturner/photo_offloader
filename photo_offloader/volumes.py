@@ -1,4 +1,5 @@
 """Mounted volumes: USB identity, free space and ejecting the card."""
+
 from __future__ import annotations
 
 import plistlib
@@ -34,17 +35,22 @@ def get_volume_identity(volume_path: Path) -> Optional[VolumeIdentity]:
     if not volume_path.is_dir():
         return None
     try:
-        result = subprocess.run(["diskutil", "info", "-plist", str(volume_path)],
-                                check=False, capture_output=True)
+        result = subprocess.run(
+            ["diskutil", "info", "-plist", str(volume_path)], check=False, capture_output=True
+        )
         if result.returncode != 0:
             return None
         info = plistlib.loads(result.stdout)
-        return VolumeIdentity(volume_path.resolve(), info.get("DeviceIdentifier"), info.get("VolumeUUID"))
+        return VolumeIdentity(
+            volume_path.resolve(), info.get("DeviceIdentifier"), info.get("VolumeUUID")
+        )
     except (OSError, plistlib.InvalidFileException, ValueError):
         return None
 
 
-def volume_identity_matches(expected: Optional[VolumeIdentity], current: Optional[VolumeIdentity]) -> bool:
+def volume_identity_matches(
+    expected: Optional[VolumeIdentity], current: Optional[VolumeIdentity]
+) -> bool:
     if expected is None:
         return True
     if current is None or expected.mount_point != current.mount_point:
@@ -98,12 +104,15 @@ def eject_volume(volume_path: Path) -> bool:
         logger.info("Skipping eject: %s is not mounted.", volume_path)
         return False
     try:
-        result = subprocess.run(["diskutil", "eject", str(volume_path)], check=False,
-                                capture_output=True, text=True)
+        result = subprocess.run(
+            ["diskutil", "eject", str(volume_path)], check=False, capture_output=True, text=True
+        )
         if result.returncode == 0:
             logger.info("Ejected: %s", volume_path)
             return True
-        logger.error("Could not eject %s: %s", volume_path, result.stderr.strip() or result.stdout.strip())
+        logger.error(
+            "Could not eject %s: %s", volume_path, result.stderr.strip() or result.stdout.strip()
+        )
         return False
     except OSError as exc:
         logger.error("Could not eject %s: %s", volume_path, exc)

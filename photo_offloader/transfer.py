@@ -1,4 +1,5 @@
 """Copying: per-file copy decisions, a card category, and the USB backup."""
+
 from __future__ import annotations
 
 import os
@@ -24,16 +25,20 @@ class ImportStats:
     errors: List[Tuple[str, str]] = field(default_factory=list)
 
     @property
-    def copied(self) -> int: return self.destination_copies
+    def copied(self) -> int:
+        return self.destination_copies
 
     @property
-    def skipped(self) -> int: return self.destination_skips
+    def skipped(self) -> int:
+        return self.destination_skips
 
     @property
-    def verified(self) -> int: return self.verified_copies
+    def verified(self) -> int:
+        return self.verified_copies
 
     @property
-    def successful(self) -> bool: return self.failed == 0 and not self.errors
+    def successful(self) -> bool:
+        return self.failed == 0 and not self.errors
 
 
 @dataclass
@@ -45,7 +50,10 @@ class DestinationResult:
 
 
 def hash_for_copy_decision(
-    source: Path, destination: Path, dcim_folder: Path, manifest: Dict[str, dict],
+    source: Path,
+    destination: Path,
+    dcim_folder: Path,
+    manifest: Dict[str, dict],
 ) -> Tuple[str, str]:
     """Reuse trustworthy cached hashes and avoid database writes on cache hits."""
     # The card manifest is the cheapest source of truth. Only query SQLite when
@@ -62,11 +70,7 @@ def hash_for_copy_decision(
     # Destination hashes are reusable only when its indexed fingerprint still
     # matches the current file. A missing/stale row requires a content hash.
     destination_row = catalog.catalog_row(destination)
-    destination_hash = (
-        str(destination_row[3])
-        if destination_row and destination_row[3]
-        else None
-    )
+    destination_hash = str(destination_row[3]) if destination_row and destination_row[3] else None
     if source_hash is None:
         source_hash = fileops.sha256_file(source)
     if destination_hash is None:
@@ -93,8 +97,12 @@ def conflict_free_path(path: Path) -> Path:
 
 
 def _skip_if_already_copied(
-    source: Path, dcim_folder: Path, destination_base: Path, final_path: Path,
-    manifest: Dict[str, dict], size: int,
+    source: Path,
+    dcim_folder: Path,
+    destination_base: Path,
+    final_path: Path,
+    manifest: Dict[str, dict],
+    size: int,
 ) -> Optional[DestinationResult]:
     """The "skipped" result when ``final_path`` holds the same bytes as ``source``, otherwise None."""
     try:
@@ -104,22 +112,35 @@ def _skip_if_already_copied(
         if source_hash == destination_hash:
             progress.add_progress_bytes(size)
             card.update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
-            progress.update_status(state="copying", phase="copy", message="Existing file verified; continuing")
-            return DestinationResult(destination_base, "skipped", final_path,
-                                     "already exists and matches cached/verified hash")
+            progress.update_status(
+                state="copying", phase="copy", message="Existing file verified; continuing"
+            )
+            return DestinationResult(
+                destination_base,
+                "skipped",
+                final_path,
+                "already exists and matches cached/verified hash",
+            )
     except OSError as exc:
         logger.warning("Could not verify existing file %s: %s", final_path, exc)
     return None
 
 
 def _copy_and_verify(
-    source: Path, dcim_folder: Path, destination_base: Path, final_path: Path,
-    manifest: Dict[str, dict], before: fileops.FileFingerprint, replace_existing: bool,
+    source: Path,
+    dcim_folder: Path,
+    destination_base: Path,
+    final_path: Path,
+    manifest: Dict[str, dict],
+    before: fileops.FileFingerprint,
+    replace_existing: bool,
 ) -> DestinationResult:
     """Copy through a temporary file and install it only once its hash has been verified."""
     temp_path: Optional[Path] = None
     try:
-        fd, temp_name = tempfile.mkstemp(prefix=".photo-copy-", suffix=".tmp", dir=final_path.parent)
+        fd, temp_name = tempfile.mkstemp(
+            prefix=".photo-copy-", suffix=".tmp", dir=final_path.parent
+        )
         os.close(fd)
         temp_path = Path(temp_name)
         source_hash = fileops.copy_file_with_progress(source, temp_path)
@@ -134,10 +155,19 @@ def _copy_and_verify(
             raise IOError(f"Verification failed for temporary copy: {source}")
         if not fileops.install_file(temp_path, final_path, replace=replace_existing):
             if fileops.files_match(source, final_path, force_sha256=True):
-                return DestinationResult(destination_base, "skipped", final_path,
-                                         "another process created a matching file")
-            raise FileExistsError(f"Destination appeared during copy and does not match source: {final_path}")
-        if not fileops._same_file(temp_path, final_path) and fileops.sha256_file(final_path, nocache=True) != source_hash:
+                return DestinationResult(
+                    destination_base,
+                    "skipped",
+                    final_path,
+                    "another process created a matching file",
+                )
+            raise FileExistsError(
+                f"Destination appeared during copy and does not match source: {final_path}"
+            )
+        if (
+            not fileops._same_file(temp_path, final_path)
+            and fileops.sha256_file(final_path, nocache=True) != source_hash
+        ):
             # Hard-linked installs share the verified inode; only a fallback
             # copy (e.g. exFAT) is a fresh write that needs its own check.
             try:
@@ -167,21 +197,30 @@ def _copy_and_verify(
 
 
 def copy_one_to_destination(
-    source: Path, dcim_folder: Path, destination_base: Path,
+    source: Path,
+    dcim_folder: Path,
+    destination_base: Path,
     card_manifest: Optional[Dict[str, dict]] = None,
 ) -> DestinationResult:
     before = fileops.file_fingerprint(source)
     manifest = card_manifest if card_manifest is not None else card.load_card_manifest(dcim_folder)
-    progress.update_status(state="scanning", phase="copy-decision", current_file=source.name,
-                  current_path=str(source), message=f"Checking existing file: {source.name}",
-                  decision_files_checked=int(progress._PROGRESS.get("decision_files_checked", 0)),
-                  decision_files_total=int(progress._PROGRESS.get("decision_files_total", 0)))
+    progress.update_status(
+        state="scanning",
+        phase="copy-decision",
+        current_file=source.name,
+        current_path=str(source),
+        message=f"Checking existing file: {source.name}",
+        decision_files_checked=int(progress._PROGRESS.get("decision_files_checked", 0)),
+        decision_files_total=int(progress._PROGRESS.get("decision_files_total", 0)),
+    )
     final_path = media_info.build_destination_path(source, dcim_folder, destination_base)
     final_path.parent.mkdir(parents=True, exist_ok=True)
     replace_existing = False
 
     if final_path.exists() and final_path.is_file():
-        skipped = _skip_if_already_copied(source, dcim_folder, destination_base, final_path, manifest, before.size)
+        skipped = _skip_if_already_copied(
+            source, dcim_folder, destination_base, final_path, manifest, before.size
+        )
         if skipped:
             return skipped
         if fileops.is_camera_index_file(source):
@@ -191,9 +230,16 @@ def copy_one_to_destination(
             final_path = conflict_free_path(final_path)
             logger.warning("Filename conflict for %s; using %s", source, final_path.name)
 
-    progress.update_status(state="copying", phase="copy", current_file=source.name,
-                  current_path=str(source), message=f"Copying {source.name}")
-    return _copy_and_verify(source, dcim_folder, destination_base, final_path, manifest, before, replace_existing)
+    progress.update_status(
+        state="copying",
+        phase="copy",
+        current_file=source.name,
+        current_path=str(source),
+        message=f"Copying {source.name}",
+    )
+    return _copy_and_verify(
+        source, dcim_folder, destination_base, final_path, manifest, before, replace_existing
+    )
 
 
 def _count_session_file(category: str, source: Path, copied: bool) -> None:
@@ -205,31 +251,50 @@ def _count_session_file(category: str, source: Path, copied: bool) -> None:
         by_category[category] = int(by_category.get(category, 0)) + 1
         progress._PROGRESS["new_by_category"] = by_category
         try:
-            progress._PROGRESS["new_bytes"] = int(progress._PROGRESS.get("new_bytes", 0) or 0) + source.stat().st_size
+            progress._PROGRESS["new_bytes"] = (
+                int(progress._PROGRESS.get("new_bytes", 0) or 0) + source.stat().st_size
+            )
         except OSError:
-            pass   # only a display counter: the copy itself has already been verified
+            pass  # only a display counter: the copy itself has already been verified
 
 
-def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequence[Path],
-                  label: str, stats: ImportStats) -> None:
+def copy_category(
+    files: Sequence[Path],
+    dcim_folder: Path,
+    destinations: Sequence[Path],
+    label: str,
+    stats: ImportStats,
+) -> None:
     if not files:
         return
     logger.info("%s: processing %d file(s)", label, len(files))
-    progress.update_status(state="scanning", phase="copy-decision", category=label,
-                  decision_files_checked=0, decision_files_total=len(files),
-                  message=f"Checking {len(files)} {label} file(s)")
+    progress.update_status(
+        state="scanning",
+        phase="copy-decision",
+        category=label,
+        decision_files_checked=0,
+        decision_files_total=len(files),
+        message=f"Checking {len(files)} {label} file(s)",
+    )
     card_manifest = card.load_card_manifest(dcim_folder)
     with progress.progress_bar(len(files), label) as bar:
         for file_index, source in enumerate(files, start=1):
-            progress.update_status(state="scanning", phase="copy-decision", current_file=source.name,
-                          current_path=str(source), category=label,
-                          decision_files_checked=file_index - 1,
-                          decision_files_total=len(files),
-                          message=f"Checking existing files ({file_index}/{len(files)}): {source.name}")
+            progress.update_status(
+                state="scanning",
+                phase="copy-decision",
+                current_file=source.name,
+                current_path=str(source),
+                category=label,
+                decision_files_checked=file_index - 1,
+                decision_files_total=len(files),
+                message=f"Checking existing files ({file_index}/{len(files)}): {source.name}",
+            )
             results: List[DestinationResult] = []
             for destination in destinations:
                 try:
-                    result = copy_one_to_destination(source, dcim_folder, destination, card_manifest)
+                    result = copy_one_to_destination(
+                        source, dcim_folder, destination, card_manifest
+                    )
                     results.append(result)
                     if result.status == "copied":
                         stats.destination_copies += 1
@@ -248,10 +313,13 @@ def copy_category(files: Sequence[Path], dcim_folder: Path, destinations: Sequen
             if len(results) != len(destinations):
                 logger.error("One or more destinations failed for %s", source)
             _count_session_file(label, source, any(r.status == "copied" for r in results))
-            progress.update_status(state="scanning", phase="copy-decision",
-                          decision_files_checked=file_index,
-                          decision_files_total=len(files),
-                          message=f"Checked {file_index} of {len(files)} {label} files")
+            progress.update_status(
+                state="scanning",
+                phase="copy-decision",
+                decision_files_checked=file_index,
+                decision_files_total=len(files),
+                message=f"Checked {file_index} of {len(files)} {label} files",
+            )
             bar()
     card.save_card_manifest(dcim_folder, card_manifest)
 
@@ -261,12 +329,19 @@ def _local_archive_files(source_roots: Sequence[Path]) -> List[Tuple[Path, Path]
     files: List[Tuple[Path, Path]] = []
     for source_root in source_roots:
         if not source_root.is_dir():
-            logger.info("Local archive root is not present; skipping USB backup source: %s", source_root)
+            logger.info(
+                "Local archive root is not present; skipping USB backup source: %s", source_root
+            )
             continue
         for path in source_root.rglob("*"):
             try:
-                if (path.is_file() and not path.is_symlink()
-                        and not any(part.startswith(".") for part in path.relative_to(source_root).parts)):
+                if (
+                    path.is_file()
+                    and not path.is_symlink()
+                    and not any(
+                        part.startswith(".") for part in path.relative_to(source_root).parts
+                    )
+                ):
                     # Both local trees retain the same YYYY-MM/camera/{Photos,Raws,Movies}
                     # structure, so mirror both into the single consolidated USB root.
                     files.append((path, config.USB_DEST_ROOT / path.relative_to(source_root)))
@@ -276,8 +351,11 @@ def _local_archive_files(source_roots: Sequence[Path]) -> List[Tuple[Path, Path]
     return files
 
 
-def _compare_with_usb(files: Sequence[Tuple[Path, Path]], source_roots: Sequence[Path], stats: ImportStats,
-                      ) -> Tuple[List[Tuple[Path, Path, fileops.FileFingerprint]], Set[Path]]:
+def _compare_with_usb(
+    files: Sequence[Tuple[Path, Path]],
+    source_roots: Sequence[Path],
+    stats: ImportStats,
+) -> Tuple[List[Tuple[Path, Path, fileops.FileFingerprint]], Set[Path]]:
     """Decide what the USB backup must copy, reading and writing the catalog once each.
 
     Files already on USB are compared by recorded SHA-256 when both recordings still
@@ -290,7 +368,7 @@ def _compare_with_usb(files: Sequence[Tuple[Path, Path]], source_roots: Sequence
         row = rows.get(str(path.resolve()))
         if catalog.row_matches(row, fingerprint):
             return row[3]
-        updates.append((path, {}))   # new or changed: (re)index it
+        updates.append((path, {}))  # new or changed: (re)index it
         return None
 
     pending: List[Tuple[Path, Path, fileops.FileFingerprint]] = []
@@ -333,7 +411,9 @@ def _compare_with_usb(files: Sequence[Tuple[Path, Path]], source_roots: Sequence
     return pending, replace_on_usb
 
 
-def _copy_one_to_usb(source: Path, destination: Path, before: fileops.FileFingerprint, replace: bool) -> bool:
+def _copy_one_to_usb(
+    source: Path, destination: Path, before: fileops.FileFingerprint, replace: bool
+) -> bool:
     """Copy one archive file to USB through a verified temp file.
 
     Returns True when copied, False when a matching file appeared meanwhile; raises on
@@ -354,11 +434,15 @@ def _copy_one_to_usb(source: Path, destination: Path, before: fileops.FileFinger
             raise IOError(f"SHA-256 verification failed for USB temporary copy: {source}")
         if not fileops.install_file(temp_path, destination, replace=replace):
             if not fileops.files_match(source, destination, force_sha256=True):
-                raise FileExistsError(f"USB destination appeared and differs from source: {destination}")
+                raise FileExistsError(
+                    f"USB destination appeared and differs from source: {destination}"
+                )
             copied = False
         else:
-            if (not fileops._same_file(temp_path, destination)
-                    and fileops.sha256_file(destination, nocache=True) != source_hash):
+            if (
+                not fileops._same_file(temp_path, destination)
+                and fileops.sha256_file(destination, nocache=True) != source_hash
+            ):
                 destination.unlink(missing_ok=True)
                 raise IOError(f"SHA-256 verification failed for USB copy: {destination}")
             os.chmod(destination, stat.S_IRUSR | stat.S_IWUSR)
@@ -373,7 +457,9 @@ def _copy_one_to_usb(source: Path, destination: Path, before: fileops.FileFinger
             logger.warning("Could not remove temporary backup file %s", temp_path)
 
 
-def copy_local_archive_to_usb(expected_identity: Optional[volumes.VolumeIdentity] = None) -> ImportStats:
+def copy_local_archive_to_usb(
+    expected_identity: Optional[volumes.VolumeIdentity] = None,
+) -> ImportStats:
     """Copy only missing local archive files to USB; never overwrite mismatches."""
     if not volumes.usb_is_mounted():
         raise RuntimeError(f"USB backup volume is not mounted at {config.USB_DEST_VOLUME}")
@@ -386,18 +472,31 @@ def copy_local_archive_to_usb(expected_identity: Optional[volumes.VolumeIdentity
     source_roots = (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT)
     files = _local_archive_files(source_roots)
     stats = ImportStats(found=len(files))
-    progress.update_status(state="scanning", phase="USB backup", stage="usb",
-                           source="; ".join(str(root) for root in source_roots),
-                           message="Comparing local archives with USB backup", current_file="")
+    progress.update_status(
+        state="scanning",
+        phase="USB backup",
+        stage="usb",
+        source="; ".join(str(root) for root in source_roots),
+        message="Comparing local archives with USB backup",
+        current_file="",
+    )
     pending, replace_on_usb = _compare_with_usb(files, source_roots, stats)
 
     if pending:
         volumes.validate_destinations([config.USB_DEST_ROOT], sum(item[2].size for item in pending))
     progress._PROGRESS_STARTED = time.monotonic()
-    progress._PROGRESS.update({"state": "copying", "phase": "USB backup", "bytes_done": 0,
-                      "bytes_total": stats.source_bytes, "bytes_transferred": 0,
-                      "current_file": "", "current_path": "",
-                      "message": f"Copying {len(pending)} missing file(s) to USB"})
+    progress._PROGRESS.update(
+        {
+            "state": "copying",
+            "phase": "USB backup",
+            "bytes_done": 0,
+            "bytes_total": stats.source_bytes,
+            "bytes_transferred": 0,
+            "current_file": "",
+            "current_path": "",
+            "message": f"Copying {len(pending)} missing file(s) to USB",
+        }
+    )
     progress.update_status()
     for source, destination, before in pending:
         if not volumes.usb_is_mounted():
@@ -406,10 +505,13 @@ def copy_local_archive_to_usb(expected_identity: Optional[volumes.VolumeIdentity
             stats.errors.append((str(config.USB_DEST_VOLUME), message))
             logger.error(message)
             break
-        progress.update_status(current_file=source.name, current_path=str(source),
-                               message=f"USB backup: {source.name}")
+        progress.update_status(
+            current_file=source.name, current_path=str(source), message=f"USB backup: {source.name}"
+        )
         try:
-            copied = _copy_one_to_usb(source, destination, before, replace=destination in replace_on_usb)
+            copied = _copy_one_to_usb(
+                source, destination, before, replace=destination in replace_on_usb
+            )
             stats.destination_copies += int(copied)
             stats.destination_skips += int(not copied)
             stats.verified_copies += 1
@@ -427,8 +529,12 @@ def copy_local_archive_to_usb(expected_identity: Optional[volumes.VolumeIdentity
             stats.errors.append((str(config.USB_DEST_VOLUME), message))
         logger.error(message)
 
-    progress.update_status(state="complete" if stats.failed == 0 else "failed",
-                  message=f"USB backup complete: {stats.destination_copies} copied, {stats.destination_skips} already matched"
-                  if stats.failed == 0 else f"USB backup incomplete: {stats.failed} failure(s)",
-                  current_file="", current_path="")
+    progress.update_status(
+        state="complete" if stats.failed == 0 else "failed",
+        message=f"USB backup complete: {stats.destination_copies} copied, {stats.destination_skips} already matched"
+        if stats.failed == 0
+        else f"USB backup incomplete: {stats.failed} failure(s)",
+        current_file="",
+        current_path="",
+    )
     return stats

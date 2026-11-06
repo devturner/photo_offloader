@@ -8,6 +8,7 @@ Each entry in ``SCENARIOS`` sets up one dashboard state by writing the same file
 and the Google sync write, so the state comes out of ``DashboardCore`` and not from a canned
 JSON payload. The clock is frozen; ``Sandbox.advance`` moves it.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,8 +36,8 @@ except ImportError:
 WEB_ROOT = support.REPO_ROOT / "photo_offloader" / "dashboard" / "web"
 REQUIRE_BROWSER = "PHOTO_OFFLOADER_REQUIRE_BROWSER"
 CARD = "NIKON Z 8"
-GB = 1024 ** 3
-MB = 1024 ** 2
+GB = 1024**3
+MB = 1024**2
 
 
 class RecordingCore(core.DashboardCore):
@@ -73,10 +74,17 @@ class Sandbox:
         self.ran: List[List[str]] = []
         self.spawned: List[List[str]] = []
         self.paths = core.Paths(
-            install_dir=self.install, data_dir=self.data, volumes_root=self.volumes, usb_volume=self.usb,
+            install_dir=self.install,
+            data_dir=self.data,
+            volumes_root=self.volumes,
+            usb_volume=self.usb,
             local_archives=(root / "CameraImports", root / "CameraImportsRaw"),
-            usb_archives=(self.usb / "CameraImports",), python=Path("/fake/python3"))
-        self.core = RecordingCore(self.paths, clock=lambda: self.now, run=self._run, popen=self._popen)
+            usb_archives=(self.usb / "CameraImports",),
+            python=Path("/fake/python3"),
+        )
+        self.core = RecordingCore(
+            self.paths, clock=lambda: self.now, run=self._run, popen=self._popen
+        )
 
     def _run(self, argv: List[str], **_kwargs: Any) -> subprocess.CompletedProcess:
         self.ran.append(list(argv))
@@ -116,10 +124,19 @@ class Sandbox:
         self.paths.google_status_file.write_text(json.dumps(payload))
 
     def record(self, **fields: Any) -> None:
-        row = {"kind": "import", "source": CARD, "outcome": "complete", "files": 2378, "copied": 18,
-               "skipped": 2360, "bytes": 80 * GB, "usb": True, "started_at": self.now - 102,
-               "finished_at": self.now - 2,
-               "details": {"new": {"JPG": 9, "RAW": 9}, "new_bytes": 412 * MB, "usb_copied": 18}}
+        row = {
+            "kind": "import",
+            "source": CARD,
+            "outcome": "complete",
+            "files": 2378,
+            "copied": 18,
+            "skipped": 2360,
+            "bytes": 80 * GB,
+            "usb": True,
+            "started_at": self.now - 102,
+            "finished_at": self.now - 2,
+            "details": {"new": {"JPG": 9, "RAW": 9}, "new_bytes": 412 * MB, "usb_copied": 18},
+        }
         catalog.record_import_run(**{**row, **fields})
 
     def transfer(self, **fields: Any) -> None:
@@ -131,8 +148,14 @@ class Sandbox:
         self.status(usb_planned=True, **fields)
 
 
-COPY_PROGRESS = dict(bytes_done=34 * GB, bytes_total=80 * GB, files_done=1214, files_total=2378,
-                     eta_seconds=240, elapsed_seconds=119)
+COPY_PROGRESS = dict(
+    bytes_done=34 * GB,
+    bytes_total=80 * GB,
+    files_done=1214,
+    files_total=2378,
+    eta_seconds=240,
+    elapsed_seconds=119,
+)
 
 
 def _copying(s: Sandbox, **fields: Any) -> None:
@@ -140,9 +163,19 @@ def _copying(s: Sandbox, **fields: Any) -> None:
     moved = 0
     for second in range(25):
         moved += (120 + (second % 5) * 30) * MB
-        s.transfer(**{"state": "copying", "phase": "copy", "stage": "copy", "category": "RAW",
-                      "current_file": f"_DZ8{9400 + second}.NEF", "new_files": 3 + second,
-                      "bytes_transferred": moved, **COPY_PROGRESS, **fields})
+        s.transfer(
+            **{
+                "state": "copying",
+                "phase": "copy",
+                "stage": "copy",
+                "category": "RAW",
+                "current_file": f"_DZ8{9400 + second}.NEF",
+                "new_files": 3 + second,
+                "bytes_transferred": moved,
+                **COPY_PROGRESS,
+                **fields,
+            }
+        )
         s.core.state()
         s.advance(1)
 
@@ -158,7 +191,8 @@ def _uploading(s: Sandbox) -> None:
     for mb, files in ((55.6, 3), (87.7, 5), (121.8, 8), (175.1, 11), (204.1, 13)):
         s.paths.google_log_file.write_text(
             f"2026/11/04 18:50:00 INFO  :   {mb} MiB / 267.950 MiB, {int(mb / 2.68)}%, "
-            f"8.8 MiB/s, ETA 7s (xfr#{files}/18)\n")
+            f"8.8 MiB/s, ETA 7s (xfr#{files}/18)\n"
+        )
         s.core.state()
         s.advance(1)
 
@@ -197,21 +231,56 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "idle": lambda s: s.status(state="idle"),
     "card_mounted": lambda s: s.add_card(),
     "already_imported": _already_imported,
-    "scan": lambda s: s.transfer(state="scanning", phase="card-to-ssd", stage="scan",
-                                 message="Scanning camera card", elapsed_seconds=2),
-    "read_photo_info": lambda s: s.transfer(state="scanning", stage="metadata", message="Reading photo info",
-                                            files_total=2378, elapsed_seconds=6),
-    "checking": lambda s: s.transfer(state="scanning", phase="copy-decision", stage="copy", category="RAW",
-                                     current_file="_DZ89400.NEF", **COPY_PROGRESS),
+    "scan": lambda s: s.transfer(
+        state="scanning",
+        phase="card-to-ssd",
+        stage="scan",
+        message="Scanning camera card",
+        elapsed_seconds=2,
+    ),
+    "read_photo_info": lambda s: s.transfer(
+        state="scanning",
+        stage="metadata",
+        message="Reading photo info",
+        files_total=2378,
+        elapsed_seconds=6,
+    ),
+    "checking": lambda s: s.transfer(
+        state="scanning",
+        phase="copy-decision",
+        stage="copy",
+        category="RAW",
+        current_file="_DZ89400.NEF",
+        **COPY_PROGRESS,
+    ),
     "copying": _copying,
     # The longest values a slot should have to hold: a big card with thousands of new files.
-    "copying_big_card": lambda s: _copying(s, bytes_done=1023 * GB, bytes_total=1999 * GB, files_done=12378,
-                                           files_total=23456, new_files=1027, elapsed_seconds=37380,
-                                           eta_seconds=36000),
-    "usb_backup": lambda s: s.transfer(state="copying", phase="usb-backup", stage="usb",
-                                       current_file="_DZ89400.NEF", bytes_transferred=2 * GB, **COPY_PROGRESS),
-    "finishing_import": lambda s: s.transfer(state="complete", files_done=2378, files_total=2378, new_files=18,
-                                             bytes_total=80 * GB, elapsed_seconds=100),
+    "copying_big_card": lambda s: _copying(
+        s,
+        bytes_done=1023 * GB,
+        bytes_total=1999 * GB,
+        files_done=12378,
+        files_total=23456,
+        new_files=1027,
+        elapsed_seconds=37380,
+        eta_seconds=36000,
+    ),
+    "usb_backup": lambda s: s.transfer(
+        state="copying",
+        phase="usb-backup",
+        stage="usb",
+        current_file="_DZ89400.NEF",
+        bytes_transferred=2 * GB,
+        **COPY_PROGRESS,
+    ),
+    "finishing_import": lambda s: s.transfer(
+        state="complete",
+        files_done=2378,
+        files_total=2378,
+        new_files=18,
+        bytes_total=80 * GB,
+        elapsed_seconds=100,
+    ),
     "starting_upload": _starting_upload,
     "uploading": _uploading,
     "finished": _finished,
@@ -222,8 +291,18 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
 }
 
 # Dashboard states in the order one import goes through them.
-ONE_RUN = ("card_mounted", "scan", "read_photo_info", "checking", "copying", "usb_backup",
-           "finishing_import", "starting_upload", "uploading", "finished")
+ONE_RUN = (
+    "card_mounted",
+    "scan",
+    "read_photo_info",
+    "checking",
+    "copying",
+    "usb_backup",
+    "finishing_import",
+    "starting_upload",
+    "uploading",
+    "finished",
+)
 
 
 class Browser:
@@ -237,13 +316,15 @@ class Browser:
         """Called from setUpModule. Skips the module without Playwright or its browser."""
         try:
             if sync_playwright is None:
-                raise RuntimeError("Playwright is not installed (pip install -r requirements-dev.txt)")
+                raise RuntimeError(
+                    "Playwright is not installed (pip install -r requirements-dev.txt)"
+                )
             cls.playwright = sync_playwright().start()
             cls.chromium = cls.playwright.chromium.launch()
         except (RuntimeError, PlaywrightError) as error:
             cls.stop()
             if os.environ.get(REQUIRE_BROWSER):
-                raise   # CI: a browser job that skips everything would look green
+                raise  # CI: a browser job that skips everything would look green
             raise unittest.SkipTest(f"no browser for the dashboard tests: {error}") from error
 
     @classmethod
@@ -268,8 +349,12 @@ class BrowserTestCase(unittest.TestCase):
         env = patch.dict(os.environ)
         env.start()
         self.addCleanup(env.stop)
-        for name in ("PHOTO_OFFLOADER_STATUS_FILE", "PHOTO_OFFLOADER_PAUSE_FILE",
-                     "PHOTO_OFFLOADER_IMPORT_LOG", "PHOTO_OFFLOADER_TRIGGER_LOG"):
+        for name in (
+            "PHOTO_OFFLOADER_STATUS_FILE",
+            "PHOTO_OFFLOADER_PAUSE_FILE",
+            "PHOTO_OFFLOADER_IMPORT_LOG",
+            "PHOTO_OFFLOADER_TRIGGER_LOG",
+        ):
             os.environ.pop(name, None)
         self.context: Any = None
         self.page: Any = None
@@ -303,8 +388,10 @@ class BrowserTestCase(unittest.TestCase):
         """A new page with empty browser storage, once it has rendered the current state."""
         self._close_page()
         self.context = Browser.chromium.new_context(
-            viewport={"width": width, "height": height}, color_scheme=color_scheme,
-            reduced_motion="reduce")
+            viewport={"width": width, "height": height},
+            color_scheme=color_scheme,
+            reduced_motion="reduce",
+        )
         self.page = self.context.new_page()
         self.page.on("pageerror", lambda error: self.page_errors.append(str(error)))
         self.page.on("console", self._note_console)

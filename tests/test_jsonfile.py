@@ -1,4 +1,5 @@
 """Tests for photo_offloader.jsonfile: tolerant reads and atomic writes of the state files."""
+
 import json
 import tempfile
 import unittest
@@ -39,7 +40,9 @@ class TestWriteJson(unittest.TestCase):
 
     def test_passes_formatting_options_to_json(self):
         target = self.root / "state.json"
-        jsonfile.write_json(target, {"b": "é", "a": 1}, indent=2, sort_keys=True, ensure_ascii=False)
+        jsonfile.write_json(
+            target, {"b": "é", "a": 1}, indent=2, sort_keys=True, ensure_ascii=False
+        )
         self.assertEqual(target.read_text(encoding="utf-8"), '{\n  "a": 1,\n  "b": "é"\n}\n')
 
     def test_a_failed_replace_keeps_the_previous_file(self):

@@ -1,4 +1,5 @@
 """The test isolation helper must cover every path in config, including future ones."""
+
 import tempfile
 import unittest
 from pathlib import Path

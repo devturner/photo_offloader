@@ -1,4 +1,5 @@
 """Capture date and camera model (EXIF, ExifTool) and where each file goes in the archive."""
+
 from __future__ import annotations
 
 import json
@@ -25,20 +26,25 @@ def _parse_exif_datetime_value(value: str) -> Optional[datetime]:
     text = value.strip().replace("Z", "+00:00").replace("/", "-")
     normalized = re.sub(
         r"^(\d{4})[-:](\d{2})[-:](\d{2})[ T](\d{2}):(\d{2}):(\d{2})",
-        r"\1-\2-\3 \4:\5:\6", text,
+        r"\1-\2-\3 \4:\5:\6",
+        text,
     )
     for candidate in (text, normalized):
-        for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S",
-                     "%Y-%m-%d %H:%M:%S%z", "%Y-%m-%dT%H:%M:%S",
-                     "%Y-%m-%dT%H:%M:%S%z"):
+        for fmt in (
+            "%Y:%m:%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S%z",
+        ):
             try:
                 return datetime.strptime(candidate, fmt)
             except ValueError:
-                pass   # not this format: try the next
+                pass  # not this format: try the next
         try:
             return datetime.fromisoformat(candidate)
         except ValueError:
-            pass   # the caller handles a date that can't be read
+            pass  # the caller handles a date that can't be read
     return None
 
 
@@ -52,25 +58,38 @@ def get_exiftool_metadata_batch(paths: List[Path], tags: List[str], batch_size: 
     started = time.monotonic()
     logger.info(
         "ExifTool metadata phase started: %d uncached files in %d batches (batch size %d).",
-        len(paths), total_batches, batch_size,
+        len(paths),
+        total_batches,
+        batch_size,
     )
     for offset in range(0, len(paths), batch_size):
-        batch = paths[offset:offset + batch_size]
+        batch = paths[offset : offset + batch_size]
         batch_number = offset // batch_size + 1
         batch_started = time.monotonic()
         logger.info(
             "ExifTool heartbeat: starting batch %d/%d (%d files; %d/%d submitted).",
-            batch_number, total_batches, len(batch), offset, len(paths),
+            batch_number,
+            total_batches,
+            len(batch),
+            offset,
+            len(paths),
         )
         try:
             result = subprocess.run(
                 [exiftool, "-j", "-charset", "filename=UTF8", *tags, *map(str, batch)],
-                check=False, capture_output=True, text=True, timeout=max(15, len(batch) // 2),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=max(15, len(batch) // 2),
             )
             if result.returncode != 0 or not result.stdout.strip():
-                logger.warning("ExifTool batch %d/%d returned no metadata after %.1fs: %s",
-                               batch_number, total_batches, time.monotonic() - batch_started,
-                               result.stderr.strip())
+                logger.warning(
+                    "ExifTool batch %d/%d returned no metadata after %.1fs: %s",
+                    batch_number,
+                    total_batches,
+                    time.monotonic() - batch_started,
+                    result.stderr.strip(),
+                )
                 continue
             records = json.loads(result.stdout)
             batch_results = 0
@@ -82,14 +101,27 @@ def get_exiftool_metadata_batch(paths: List[Path], tags: List[str], batch_size: 
             logger.info(
                 "ExifTool heartbeat: finished batch %d/%d; metadata records %d/%d; "
                 "%.1fs this batch, %.1fs total.",
-                batch_number, total_batches, min(offset + len(batch), len(paths)), len(paths),
-                time.monotonic() - batch_started, time.monotonic() - started,
+                batch_number,
+                total_batches,
+                min(offset + len(batch), len(paths)),
+                len(paths),
+                time.monotonic() - batch_started,
+                time.monotonic() - started,
             )
         except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
-            logger.warning("ExifTool batch %d/%d failed after %.1fs: %s",
-                           batch_number, total_batches, time.monotonic() - batch_started, exc)
-    logger.info("ExifTool metadata phase complete: %d/%d records in %.1fs.",
-                len(results), len(paths), time.monotonic() - started)
+            logger.warning(
+                "ExifTool batch %d/%d failed after %.1fs: %s",
+                batch_number,
+                total_batches,
+                time.monotonic() - batch_started,
+                exc,
+            )
+    logger.info(
+        "ExifTool metadata phase complete: %d/%d records in %.1fs.",
+        len(results),
+        len(paths),
+        time.monotonic() - started,
+    )
     return results
 
 
@@ -118,7 +150,10 @@ def get_exiftool_metadata(path: Path, tags: List[str]) -> dict:
 
 
 def get_exif_datetime(path: Path) -> Optional[datetime]:
-    if path.suffix.lower() in card.VIDEO_EXTENSIONS or path.suffix.lower() not in card.MEDIA_EXTENSIONS:
+    if (
+        path.suffix.lower() in card.VIDEO_EXTENSIONS
+        or path.suffix.lower() not in card.MEDIA_EXTENSIONS
+    ):
         return None
 
     # Pillow often cannot identify proprietary camera RAW formats such as Nikon NEF.
@@ -164,6 +199,7 @@ def get_exif_datetime(path: Path) -> Optional[datetime]:
 
 def normalize_camera_model(make: object, model: object) -> str:
     """Return a stable, filesystem-safe camera identifier from EXIF values."""
+
     def clean(value: object) -> str:
         if isinstance(value, bytes):
             value = value.decode("utf-8", errors="ignore")
@@ -173,7 +209,9 @@ def normalize_camera_model(make: object, model: object) -> str:
 
     make_text = clean(make)
     model_text = clean(model)
-    make_prefix = re.sub(r"\s+(?:corporation|corp\.?|inc\.?|co\.?)$", "", make_text, flags=re.IGNORECASE)
+    make_prefix = re.sub(
+        r"\s+(?:corporation|corp\.?|inc\.?|co\.?)$", "", make_text, flags=re.IGNORECASE
+    )
     if make_text and model_text:
         combined = (
             model_text
@@ -208,7 +246,10 @@ def find_exiftool() -> Optional[str]:
 
 def get_camera_model_from_exiftool(path: Path) -> str:
     """Read camera make/model from video or camera RAW metadata."""
-    if path.suffix.lower() not in card.VIDEO_EXTENSIONS and path.suffix.lower() not in card.RAW_EXTENSIONS:
+    if (
+        path.suffix.lower() not in card.VIDEO_EXTENSIONS
+        and path.suffix.lower() not in card.RAW_EXTENSIONS
+    ):
         return "Unknown-Camera"
     metadata = get_exiftool_metadata(path, ["-Make", "-Model"])
     return normalize_camera_model(metadata.get("Make"), metadata.get("Model"))
@@ -296,9 +337,16 @@ def prefetch_card_metadata(files: Dict[str, List[Path]]) -> int:
                 candidates.append(path)
     if not candidates or not find_exiftool():
         return 0
-    progress.update_status(state="scanning", phase="card-to-ssd", stage="metadata", current_file="",
-                  message=f"Reading photo info for {len(candidates):,} new files")
-    metadata = get_exiftool_metadata_batch(candidates, [f"-{tag}" for tag in EXIF_DATE_TAGS] + ["-Make", "-Model"])
+    progress.update_status(
+        state="scanning",
+        phase="card-to-ssd",
+        stage="metadata",
+        current_file="",
+        message=f"Reading photo info for {len(candidates):,} new files",
+    )
+    metadata = get_exiftool_metadata_batch(
+        candidates, [f"-{tag}" for tag in EXIF_DATE_TAGS] + ["-Make", "-Model"]
+    )
     entries: List[Tuple[Path, Dict[str, Optional[str]]]] = []
     for path in candidates:
         record = metadata.get(str(path.resolve()))

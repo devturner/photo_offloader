@@ -4,6 +4,7 @@ The importer, the sync and the dashboard read each other's files while they are 
 replaced, so a reader must never see half a file. This module imports nothing from the
 project, so any other module can use it.
 """
+
 from __future__ import annotations
 
 import json

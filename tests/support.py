@@ -6,6 +6,7 @@ start a real Google Photos upload. ``isolate_config`` redirects *every* path in
 ``photo_offloader.config`` and refuses to run if a new path was added there
 without a test location here.
 """
+
 from __future__ import annotations
 
 import os
@@ -65,11 +66,16 @@ def _test_locations(root: Path) -> dict:
 def isolate_config(testcase: unittest.TestCase, root: Path, **overrides) -> None:
     """Point every configured path into ``root`` (or ``overrides``) until the test ends."""
     values = {**_test_locations(root), **overrides}
-    real_paths = {name for name, value in vars(config).items()
-                  if name.isupper() and isinstance(value, Path) and name not in CODE_PATHS}
+    real_paths = {
+        name
+        for name, value in vars(config).items()
+        if name.isupper() and isinstance(value, Path) and name not in CODE_PATHS
+    }
     uncovered = real_paths - set(values)
     if uncovered:
-        raise AssertionError(f"tests/support.py has no test location for config {sorted(uncovered)}")
+        raise AssertionError(
+            f"tests/support.py has no test location for config {sorted(uncovered)}"
+        )
     for name, value in values.items():
         patcher = patch.object(config, name, value)
         patcher.start()
@@ -101,19 +107,36 @@ class CardFixtureTestCase(unittest.TestCase):
         self.usb.mkdir()
         self.usb_volume.mkdir()
         isolate_config(
-            self, self.root, LOCAL_DEST_ROOT=self.local, LOCAL_RAW_DEST_ROOT=self.root / "local-raw",
-            USB_DEST_ROOT=self.usb, USB_DEST_VOLUME=self.usb_volume, LOG_FILE_PATH=self.log,
-            SESSION_LOCK_PATH=self.lock, STATUS_FILE_PATH=self.root / "status.json",
+            self,
+            self.root,
+            LOCAL_DEST_ROOT=self.local,
+            LOCAL_RAW_DEST_ROOT=self.root / "local-raw",
+            USB_DEST_ROOT=self.usb,
+            USB_DEST_VOLUME=self.usb_volume,
+            LOG_FILE_PATH=self.log,
+            SESSION_LOCK_PATH=self.lock,
+            STATUS_FILE_PATH=self.root / "status.json",
             CATALOG_DB_PATH=self.root / "persistent-data" / "catalog.sqlite3",
-            LEGACY_CATALOG_DB_PATH=self.root / "legacy-app-dir" / "catalog.sqlite3")
+            LEGACY_CATALOG_DB_PATH=self.root / "legacy-app-dir" / "catalog.sqlite3",
+        )
         config.LOCAL_RAW_DEST_ROOT.mkdir()
-        for name, value in (("VERIFY_WITH_SHA256", False), ("USE_FILE_BIRTH_TIME", False), ("WAIT_SECONDS", 0),
-                            ("EJECT_CARD_AFTER_SUCCESS", True), ("MIN_FREE_SPACE_BUFFER_BYTES", 0)):
+        for name, value in (
+            ("VERIFY_WITH_SHA256", False),
+            ("USE_FILE_BIRTH_TIME", False),
+            ("WAIT_SECONDS", 0),
+            ("EJECT_CARD_AFTER_SUCCESS", True),
+            ("MIN_FREE_SPACE_BUFFER_BYTES", 0),
+        ):
             patcher = patch.object(config, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
-        for name, value in (("_PROGRESS_STARTED", None), ("_PROGRESS", {"state": "idle", "bytes_done": 0,
-                                                                         "bytes_total": 0, "bytes_transferred": 0})):
+        for name, value in (
+            ("_PROGRESS_STARTED", None),
+            (
+                "_PROGRESS",
+                {"state": "idle", "bytes_done": 0, "bytes_total": 0, "bytes_transferred": 0},
+            ),
+        ):
             patcher = patch.object(progress, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -151,11 +174,20 @@ class CardFixtureTestCase(unittest.TestCase):
         def fake_batch(paths, tags):
             if batch_calls is not None:
                 batch_calls.append(len(paths))
-            return {str(p.resolve()): {"Make": "NIKON", "Model": "Z 8", "DateTimeOriginal": "2020:01:02 03:04:05"}
-                    for p in paths}
-        with patch.object(volumes, "usb_is_mounted", return_value=False), \
-                patch.object(media_info, "get_exiftool_metadata_batch", side_effect=fake_batch), \
-                patch.object(logs, "notify"):
+            return {
+                str(p.resolve()): {
+                    "Make": "NIKON",
+                    "Model": "Z 8",
+                    "DateTimeOriginal": "2020:01:02 03:04:05",
+                }
+                for p in paths
+            }
+
+        with (
+            patch.object(volumes, "usb_is_mounted", return_value=False),
+            patch.object(media_info, "get_exiftool_metadata_batch", side_effect=fake_batch),
+            patch.object(logs, "notify"),
+        ):
             return catalog_refresh.update_file_catalog()
 
     def connections_during_refresh(self):
@@ -166,6 +198,7 @@ class CardFixtureTestCase(unittest.TestCase):
         def counting_connect(*args, **kwargs):
             opened.append(args)
             return real_connect(*args, **kwargs)
+
         with patch.object(catalog.sqlite3, "connect", counting_connect):
             self.refresh_catalog()
         return len(opened)
@@ -184,7 +217,8 @@ class CardFixtureTestCase(unittest.TestCase):
             f"open({str(calls)!r}, 'a').write('call\\n')\n"
             "files = [a for a in sys.argv[1:] if not a.startswith('-') and a != 'filename=UTF8']\n"
             "print(json.dumps([{'SourceFile': f, 'Make': 'NIKON CORPORATION', 'Model': 'NIKON Z 8',\n"
-            "                   'DateTimeOriginal': '2026:09:14 10:00:00'} for f in files]))\n")
+            "                   'DateTimeOriginal': '2026:09:14 10:00:00'} for f in files]))\n"
+        )
         script.chmod(0o755)
         patcher = patch.object(media_info, "find_exiftool", return_value=str(script))
         patcher.start()
@@ -213,13 +247,16 @@ class CardFixtureTestCase(unittest.TestCase):
     def connections_during_usb_backup(self):
         opened = []
         real_connect = sqlite3.connect
-        catalog.catalog_connection().close()   # one-time schema setup is not the point here
+        catalog.catalog_connection().close()  # one-time schema setup is not the point here
 
         def counting_connect(*args, **kwargs):
             opened.append(args)
             return real_connect(*args, **kwargs)
-        with patch.object(volumes, "usb_is_mounted", return_value=True), \
-                patch.object(catalog.sqlite3, "connect", counting_connect):
+
+        with (
+            patch.object(volumes, "usb_is_mounted", return_value=True),
+            patch.object(catalog.sqlite3, "connect", counting_connect),
+        ):
             stats = transfer.copy_local_archive_to_usb()
         self.assertEqual(stats.failed, 0, stats.errors)
         return len(opened)

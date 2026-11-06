@@ -15,11 +15,18 @@ class TestFileops(support.CardFixtureTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             temp_path, final_path = Path(tmp) / "temp", Path(tmp) / "final"
             temp_path.write_bytes(b"photo")
-            with patch("photo_offloader.fileops.os.link", side_effect=OSError(errno.EXDEV, "cross-device")), \
-                    patch("photo_offloader.fileops.shutil.copyfileobj", side_effect=OSError("disk full")), \
-                    patch.object(Path, "unlink", side_effect=OSError("still busy")), \
-                    self.assertLogs("camera_offloader", level="WARNING") as captured, \
-                    self.assertRaisesRegex(OSError, "disk full"):
+            with (
+                patch(
+                    "photo_offloader.fileops.os.link",
+                    side_effect=OSError(errno.EXDEV, "cross-device"),
+                ),
+                patch(
+                    "photo_offloader.fileops.shutil.copyfileobj", side_effect=OSError("disk full")
+                ),
+                patch.object(Path, "unlink", side_effect=OSError("still busy")),
+                self.assertLogs("camera_offloader", level="WARNING") as captured,
+                self.assertRaisesRegex(OSError, "disk full"),
+            ):
                 fileops.install_without_overwrite(temp_path, final_path)
         self.assertIn("still busy", captured.output[0])
 
@@ -57,7 +64,9 @@ class TestFileops(support.CardFixtureTestCase):
         target.write_bytes(b"data")
         with patch.object(fileops.fcntl, "fcntl") as fcntl_call:
             fileops.sha256_file(target, nocache=True)
-        self.assertTrue(any(c.args[1] == fileops.fcntl.F_NOCACHE for c in fcntl_call.call_args_list))
+        self.assertTrue(
+            any(c.args[1] == fileops.fcntl.F_NOCACHE for c in fcntl_call.call_args_list)
+        )
 
     def test_file_fingerprint_captures_stat_identity(self):
         source = self.root / "source.jpg"

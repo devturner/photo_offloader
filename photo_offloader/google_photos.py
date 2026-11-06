@@ -1,4 +1,5 @@
 """One-way, filtered uploads from Photo Offloader to Google Photos via rclone."""
+
 from __future__ import annotations
 
 import fcntl
@@ -48,26 +49,34 @@ SETUP_GUIDE_URL = "https://github.com/devturner/photo_offloader/blob/main/docs/g
 # Text in rclone's errors (lower case) -> what is wrong and how to fix it. Anything else,
 # such as a network failure, is not a setup problem, so it never gets a setup answer.
 SETUP_PROBLEMS = (
-    (("invalid_grant", "expired or revoked", "empty token"),
-     "The Google sign-in has expired.",
-     "Run: rclone config reconnect {remote}:\n"
-     "If this comes back a week later, the Google Cloud app is still in Testing: set it to In production."),
-    (("invalid_client",),
-     "Google does not accept the client ID and secret.",
-     "Run rclone config, edit '{remote}' and re-enter the client ID and secret, using a Desktop app client."),
-    (("has not been used", "is disabled", "service_disabled"),
-     "The Photos Library API is not enabled.",
-     "Enable the Photos Library API in the Google Cloud project, wait a few minutes and try again."),
-    (("insufficient",),
-     "The sign-in is missing a Google Photos permission.",
-     "Add the three Photos scopes to the consent screen, then run: rclone config reconnect {remote}:\n"
-     "Also check that read_only is not true on the remote."),
+    (
+        ("invalid_grant", "expired or revoked", "empty token"),
+        "The Google sign-in has expired.",
+        "Run: rclone config reconnect {remote}:\n"
+        "If this comes back a week later, the Google Cloud app is still in Testing: set it to In production.",
+    ),
+    (
+        ("invalid_client",),
+        "Google does not accept the client ID and secret.",
+        "Run rclone config, edit '{remote}' and re-enter the client ID and secret, using a Desktop app client.",
+    ),
+    (
+        ("has not been used", "is disabled", "service_disabled"),
+        "The Photos Library API is not enabled.",
+        "Enable the Photos Library API in the Google Cloud project, wait a few minutes and try again.",
+    ),
+    (
+        ("insufficient",),
+        "The sign-in is missing a Google Photos permission.",
+        "Add the three Photos scopes to the consent screen, then run: rclone config reconnect {remote}:\n"
+        "Also check that read_only is not true on the remote.",
+    ),
 )
 
 
 class SetupStep(NamedTuple):
     label: str
-    passed: Optional[bool]    # None: not checked, because an earlier step failed
+    passed: Optional[bool]  # None: not checked, because an earlier step failed
     note: str = ""
 
 
@@ -89,8 +98,14 @@ def _rclone_output(command: List[str], timeout: int) -> Tuple[Optional[str], str
     """(stdout, "") on success, (None, what rclone said) on failure."""
     try:
         # No stdin: a password-protected rclone config must fail here, not wait for input.
-        result = subprocess.run(command, check=False, capture_output=True, text=True,
-                                timeout=timeout, stdin=subprocess.DEVNULL)
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         return None, str(exc)
     return (result.stdout, "") if result.returncode == 0 else (None, result.stderr)
@@ -106,12 +121,19 @@ def _album_failure_message(rclone_output: str) -> str:
 
 def check_setup() -> List[SetupStep]:
     """Each setup step in order, stopping at the first failure. Only reads; safe during an upload."""
-    labels = ("rclone is installed", f"rclone has a remote named '{REMOTE_NAME}'", "Signed in to Google",
-              f"Album '{ALBUM_NAME}'")
+    labels = (
+        "rclone is installed",
+        f"rclone has a remote named '{REMOTE_NAME}'",
+        "Signed in to Google",
+        f"Album '{ALBUM_NAME}'",
+    )
 
     def stopped_at(index: int, note: str) -> List[SetupStep]:
-        return ([SetupStep(label, True) for label in labels[:index]] + [SetupStep(labels[index], False, note)]
-                + [SetupStep(label, None) for label in labels[index + 1:]])
+        return (
+            [SetupStep(label, True) for label in labels[:index]]
+            + [SetupStep(labels[index], False, note)]
+            + [SetupStep(label, None) for label in labels[index + 1 :]]
+        )
 
     rclone = find_rclone()
     if not rclone:
@@ -121,18 +143,36 @@ def check_setup() -> List[SetupStep]:
     if remotes is None:
         return stopped_at(1, f"Could not read the rclone config: {_last_line(error)}")
     if f"{REMOTE_NAME}:" not in remotes.splitlines():
-        return stopped_at(1, f"Run rclone config and add a Google Photos remote named '{REMOTE_NAME}'.")
+        return stopped_at(
+            1, f"Run rclone config and add a Google Photos remote named '{REMOTE_NAME}'."
+        )
 
-    albums, error = _rclone_output([rclone, "lsf", "--dirs-only", f"{REMOTE_NAME}:album",
-                                    "--retries", "1", "--low-level-retries", "1"], timeout=60)
+    albums, error = _rclone_output(
+        [
+            rclone,
+            "lsf",
+            "--dirs-only",
+            f"{REMOTE_NAME}:album",
+            "--retries",
+            "1",
+            "--low-level-retries",
+            "1",
+        ],
+        timeout=60,
+    )
     if albums is None:
         problem = setup_problem(error)
-        return stopped_at(2, f"{problem[0]}\n{problem[1]}" if problem
-                          else f"Could not reach Google Photos: {_last_line(error)}")
+        return stopped_at(
+            2,
+            f"{problem[0]}\n{problem[1]}"
+            if problem
+            else f"Could not reach Google Photos: {_last_line(error)}",
+        )
 
     found = f"{ALBUM_NAME}/" in albums.splitlines()
-    return ([SetupStep(label, True) for label in labels[:3]]
-            + [SetupStep(labels[3], True, "" if found else "Not created yet; the first sync creates it.")])
+    return [SetupStep(label, True) for label in labels[:3]] + [
+        SetupStep(labels[3], True, "" if found else "Not created yet; the first sync creates it.")
+    ]
 
 
 def run_setup_check() -> int:
@@ -140,7 +180,10 @@ def run_setup_check() -> int:
     marks = {True: "✓", False: "✗", None: "-"}
     print("Google Photos setup check\n")
     for step in steps:
-        print(f"  {marks[step.passed]} {step.label}" + ("  (not checked)" if step.passed is None else ""))
+        print(
+            f"  {marks[step.passed]} {step.label}"
+            + ("  (not checked)" if step.passed is None else "")
+        )
         for line in step.note.splitlines():
             print(f"      {line}")
     if all(step.passed for step in steps):
@@ -187,7 +230,9 @@ def publish_status(state: str, message: str, new_run: bool = False) -> None:
         # One sync publishes "running" more than once; the dashboard times it from the first.
         # ``new_run`` restarts the clock, even over a "running" left behind by a crash.
         continuing = previous.get("state") == "running" and not new_run
-        payload["started_at"] = (previous.get("started_at") if continuing else None) or payload["updated_at"]
+        payload["started_at"] = (previous.get("started_at") if continuing else None) or payload[
+            "updated_at"
+        ]
 
     jsonfile.write_json(config.GOOGLE_STATUS_PATH, payload, indent=2)
 
@@ -213,6 +258,7 @@ def log_sync_event(message: str) -> None:
     except OSError:
         # Logging must never turn an otherwise successful upload into a failure.
         pass
+
 
 def find_rclone() -> Optional[str]:
     found = shutil.which("rclone")
@@ -258,8 +304,12 @@ def list_upload_candidates() -> List[str]:
     for path in sorted(config.LOCAL_DEST_ROOT.rglob("*"), key=lambda item: str(item).lower()):
         try:
             relative = path.relative_to(config.LOCAL_DEST_ROOT)
-            if (path.suffix.lower() not in eligible or not path.is_file() or path.is_symlink()
-                    or any(part.startswith(".") for part in relative.parts)):
+            if (
+                path.suffix.lower() not in eligible
+                or not path.is_file()
+                or path.is_symlink()
+                or any(part.startswith(".") for part in relative.parts)
+            ):
                 continue
             name = relative.as_posix()
             # rclone's --files-from treats leading '#'/';' as comments and trims whitespace.
@@ -323,7 +373,9 @@ def _upload_snapshot(rclone: str, destination: str, pending: List[str]) -> Optio
     Files imported while the upload is running are neither sent nor recorded, so the next
     sync picks them up.
     """
-    list_fd, list_name = tempfile.mkstemp(prefix=".upload-list-", suffix=".txt", dir=config.INSTALL_DIR)
+    list_fd, list_name = tempfile.mkstemp(
+        prefix=".upload-list-", suffix=".txt", dir=config.INSTALL_DIR
+    )
     try:
         with os.fdopen(list_fd, "w", encoding="utf-8") as handle:
             handle.write("\n".join(pending) + "\n")
@@ -405,7 +457,9 @@ def _sync() -> int:
         publish_status("complete", f"Google Photos is up to date for album '{ALBUM_NAME}'.")
         return 0
     # Say so before the slower rclone checks, so the dashboard shows the upload straight away.
-    publish_status("running", f"Preparing to upload {len(pending):,} JPG/video file(s).", new_run=True)
+    publish_status(
+        "running", f"Preparing to upload {len(pending):,} JPG/video file(s).", new_run=True
+    )
 
     destination = f"{REMOTE_NAME}:album/{ALBUM_NAME}"
     problem = _check_remote(rclone)
@@ -426,7 +480,9 @@ def _sync() -> int:
         return 1
     if returncode == 0:
         return _record_upload(pending)
-    publish_status("failed", f"rclone exited with status {returncode}. See {config.GOOGLE_LOG_PATH}")
+    publish_status(
+        "failed", f"rclone exited with status {returncode}. See {config.GOOGLE_LOG_PATH}"
+    )
     return returncode
 
 

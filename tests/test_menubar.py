@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for photo_offloader.menubar.model: what the menu-bar menu offers in each state."""
+
 import unittest
 
 from photo_offloader.menubar import model
@@ -12,12 +13,18 @@ def keys(snapshot):
 
 class TestMenuEntries(unittest.TestCase):
     def test_running_menu_is_short(self):
-        self.assertEqual(keys(Snapshot(running=True)),
-                         ["open_dashboard", "pause", None, "view_log", None, "stop", "quit"])
+        self.assertEqual(
+            keys(Snapshot(running=True)),
+            ["open_dashboard", "pause", None, "view_log", None, "stop", "quit"],
+        )
 
     def test_the_import_log_can_always_be_opened(self):
         # User question 2026-11-04: the old UI had a debug/log view.
-        for snapshot in (Snapshot(running=True), Snapshot(running=False), Snapshot(running=True, transfer=True)):
+        for snapshot in (
+            Snapshot(running=True),
+            Snapshot(running=False),
+            Snapshot(running=True, transfer=True),
+        ):
             entry = next(e for e in model.menu_entries(snapshot) if e.key == "view_log")
             self.assertTrue(entry.enabled)
 
@@ -40,8 +47,10 @@ class TestMenuEntries(unittest.TestCase):
         self.assertTrue(actionable["start"].enabled)
         self.assertTrue(actionable["quit"].enabled)
         self.assertTrue(actionable["open_dashboard"].enabled)
-        self.assertTrue(all(e.enabled for e in actionable.values()),
-                        "nothing selectable may be disabled when the service is stopped")
+        self.assertTrue(
+            all(e.enabled for e in actionable.values()),
+            "nothing selectable may be disabled when the service is stopped",
+        )
 
     def test_a_stopped_menu_explains_itself_and_hides_irrelevant_actions(self):
         entries = model.menu_entries(Snapshot(running=False, usb=True))
@@ -84,7 +93,9 @@ class TestTitleAndParsing(unittest.TestCase):
         self.assertEqual(snap, Snapshot(running=True, paused=True, transfer=True, usb=True))
 
     def test_parse_status_of_a_stopped_service(self):
-        snap = model.parse_status("Service:  stopped\nMenu bar: running\nImports:  active\nTransfer: none\n", 3)
+        snap = model.parse_status(
+            "Service:  stopped\nMenu bar: running\nImports:  active\nTransfer: none\n", 3
+        )
         self.assertEqual(snap, Snapshot(running=False))
 
     def test_unparseable_output_is_treated_as_stopped_not_as_a_crash(self):

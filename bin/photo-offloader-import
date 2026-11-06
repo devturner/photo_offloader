@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Import a camera card (also: --backup-usb, --update-catalog)."""
+
 import sys
 from pathlib import Path
 

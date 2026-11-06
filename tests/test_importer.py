@@ -13,7 +13,9 @@ from tests import support
 
 class TestImporterCommandLine(support.CardFixtureTestCase):
     def test_fixture_never_reaches_the_installed_google_photos_helper(self):
-        with patch.object(app.subprocess, "Popen", side_effect=AssertionError("started a real sync")):
+        with patch.object(
+            app.subprocess, "Popen", side_effect=AssertionError("started a real sync")
+        ):
             app.launch_google_photos_sync()
 
     def test_logging(self):
@@ -36,21 +38,33 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         self.assertTrue(line.startswith("["), f"log line was decorated: {line!r}")
 
     def test_parse_args(self):
-        args = app.parse_args(["--source", str(self.card), "--no-usb", "--no-eject", "--sha256", "--verbose"])
+        args = app.parse_args(
+            ["--source", str(self.card), "--no-usb", "--no-eject", "--sha256", "--verbose"]
+        )
         self.assertEqual(args.source, self.card)
         self.assertTrue(args.no_usb and args.no_eject and args.sha256 and args.verbose)
         self.assertFalse(args.backup_usb)
         self.assertTrue(app.parse_args(["--backup-usb"]).backup_usb)
 
     @patch("photo_offloader.progress.update_status")
-    @patch("photo_offloader.importer.load_build_info", return_value={
-        "version": "2.4", "git_commit": "abc123def456",
-        "git_branch": "feature/test", "git_tag": "v2.4",
-        "git_dirty": "false", "build_time_utc": "2026-10-21T22:00:00Z",
-        "source_path": "/installed/camera_offloader_v2.py",
-    })
-    @patch("photo_offloader.importer.import_session_lock",
-           side_effect=app.SessionBusyError("Another Photo Offloader import session is already running."))
+    @patch(
+        "photo_offloader.importer.load_build_info",
+        return_value={
+            "version": "2.4",
+            "git_commit": "abc123def456",
+            "git_branch": "feature/test",
+            "git_tag": "v2.4",
+            "git_dirty": "false",
+            "build_time_utc": "2026-10-21T22:00:00Z",
+            "source_path": "/installed/camera_offloader_v2.py",
+        },
+    )
+    @patch(
+        "photo_offloader.importer.import_session_lock",
+        side_effect=app.SessionBusyError(
+            "Another Photo Offloader import session is already running."
+        ),
+    )
     def test_duplicate_session_does_not_reset_active_progress(
         self, lock, build_info, update_status
     ):
@@ -64,15 +78,17 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
 
     def test_load_build_info_reads_installed_provenance(self):
         config.BUILD_INFO_PATH.write_text(
-            __import__("json").dumps({
-                "version": "2.4",
-                "git_commit": "abc123def456",
-                "git_branch": "feature/test",
-                "git_tag": "v2.4",
-                "git_dirty": "false",
-                "build_time_utc": "2026-10-21T22:00:00Z",
-                "source_path": "/Applications/PhotoOffloader/camera_offloader_v2.py",
-            }),
+            __import__("json").dumps(
+                {
+                    "version": "2.4",
+                    "git_commit": "abc123def456",
+                    "git_branch": "feature/test",
+                    "git_tag": "v2.4",
+                    "git_dirty": "false",
+                    "build_time_utc": "2026-10-21T22:00:00Z",
+                    "source_path": "/Applications/PhotoOffloader/camera_offloader_v2.py",
+                }
+            ),
             encoding="utf-8",
         )
         info = app.load_build_info()
@@ -138,7 +154,10 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
     @patch("photo_offloader.logs.notify")
     def test_main_no_usb(self, notify, mounted, eject):
         self.media()
-        with patch("photo_offloader.volumes.get_volume_identity", return_value=None), patch("time.sleep"):
+        with (
+            patch("photo_offloader.volumes.get_volume_identity", return_value=None),
+            patch("time.sleep"),
+        ):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb", "--no-eject"]), 0)
         self.assertEqual(list(self.usb.rglob("*")), [])
 
@@ -146,7 +165,9 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
     @patch("photo_offloader.logs.notify")
     @patch("photo_offloader.volumes.usb_is_mounted", return_value=True)
     @patch("photo_offloader.volumes.get_volume_identity")
-    def test_main_ejects_after_local_copy_and_reports_usb_replacement(self, identity, mounted, notify, eject):
+    def test_main_ejects_after_local_copy_and_reports_usb_replacement(
+        self, identity, mounted, notify, eject
+    ):
         self.media()
         identity.side_effect = [
             VolumeIdentity(self.usb_volume.resolve(), "disk4s1", "uuid-a"),
@@ -161,8 +182,9 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
     @patch("photo_offloader.transfer.copy_local_archive_to_usb")
     @patch("photo_offloader.logs.notify")
     def test_standalone_usb_backup_does_not_require_card(self, notify, backup):
-        backup.return_value = ImportStats(destination_copies=2, destination_skips=4,
-                                          verified_copies=6)
+        backup.return_value = ImportStats(
+            destination_copies=2, destination_skips=4, verified_copies=6
+        )
         with patch("builtins.input", side_effect=AssertionError("should not prompt for a card")):
             self.assertEqual(app.main(["--backup-usb"]), 0)
         backup.assert_called_once_with()
@@ -177,7 +199,9 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
     def test_a_usb_failure_is_reported_without_starting_the_upload(self, notify, launch):
-        result = app._report_outcome(ImportStats(found=3), ImportStats(failed=2), True, False, False)
+        result = app._report_outcome(
+            ImportStats(found=3), ImportStats(failed=2), True, False, False
+        )
         self.assertEqual(result, 1)
         launch.assert_not_called()
         self.assertEqual(notify.call_args[0][0], "USB Backup Incomplete")
@@ -228,6 +252,7 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         import subprocess
         import sys
         import textwrap
+
         self.media()
         status_path = self.root / "term-status.json"
         script = textwrap.dedent(f"""
@@ -251,7 +276,9 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
                     patch.object(logs, "notify"):
                 sys.exit(app.main(["--source", {str(self.card)!r}, "--no-usb", "--no-eject"]))
         """)
-        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+        )
         self.assertEqual(result.returncode, 130, result.stdout + result.stderr)
         self.assertEqual(json.loads(status_path.read_text())["state"], "canceled")
 
@@ -262,7 +289,9 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         with patch("time.sleep"):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb", "--no-eject"]), 0)
         (run,) = catalog.list_import_history()
-        self.assertEqual((run["kind"], run["outcome"], run["source"]), ("import", "complete", "card"))
+        self.assertEqual(
+            (run["kind"], run["outcome"], run["source"]), ("import", "complete", "card")
+        )
         self.assertEqual((run["files"], run["copied"], run["failed"]), (3, 3, 0))
         self.assertGreater(run["bytes"], 0)
         self.assertFalse(run["usb"])
@@ -294,19 +323,24 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         def spy(**updates):
             real(**updates)
             seen.append(dict(progress._PROGRESS))
+
         with patch("time.sleep"), patch.object(progress, "update_status", side_effect=spy):
             app.main(["--source", str(self.card), "--no-usb", "--no-eject"])
         stages = [s.get("stage") for s in seen]
         self.assertLess(stages.index("scan"), stages.index("copy"))
         last_copy = [s for s in seen if s.get("stage") == "copy"][-1]
-        self.assertEqual((last_copy["files_done"], last_copy["files_total"], last_copy["new_files"]), (3, 3, 3))
+        self.assertEqual(
+            (last_copy["files_done"], last_copy["files_total"], last_copy["new_files"]), (3, 3, 3)
+        )
         self.assertFalse(last_copy["usb_planned"])
 
     @patch("photo_offloader.logs.notify")
     def test_failed_import_is_recorded_with_its_reason(self, notify):
         self.media()
-        with patch("time.sleep"), \
-                patch.object(fileops, "copy_file_with_progress", side_effect=OSError("copy failure")):
+        with (
+            patch("time.sleep"),
+            patch.object(fileops, "copy_file_with_progress", side_effect=OSError("copy failure")),
+        ):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb", "--no-eject"]), 1)
         (run,) = catalog.list_import_history()
         self.assertEqual(run["outcome"], "failed")
@@ -316,16 +350,23 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
     @patch("photo_offloader.logs.notify")
     def test_canceled_import_is_recorded(self, notify):
         self.media()
-        with patch("time.sleep"), \
-                patch.object(card, "scan_with_retry", side_effect=KeyboardInterrupt):
+        with (
+            patch("time.sleep"),
+            patch.object(card, "scan_with_retry", side_effect=KeyboardInterrupt),
+        ):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb", "--no-eject"]), 130)
         (run,) = catalog.list_import_history()
         self.assertEqual((run["outcome"], run["source"]), ("canceled", "card"))
 
     @patch("photo_offloader.logs.notify")
     def test_duplicate_launch_and_missing_card_do_not_create_history(self, notify):
-        with patch.object(app, "import_session_lock",
-                          side_effect=app.SessionBusyError("Another Photo Offloader import session is already running.")):
+        with patch.object(
+            app,
+            "import_session_lock",
+            side_effect=app.SessionBusyError(
+                "Another Photo Offloader import session is already running."
+            ),
+        ):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb"]), 0)
         self.assertEqual(catalog.list_import_history(), [])
 

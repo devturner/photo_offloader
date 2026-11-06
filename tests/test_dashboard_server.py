@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for photo_offloader.dashboard.server: routes, and the protections that keep other web pages out."""
+
 import http.client
 import json
 import os
@@ -59,8 +60,9 @@ class ServerCase(unittest.TestCase):
 
     def post(self, name, payload=None, **kwargs):
         headers = {"Content-Type": "application/json", **kwargs.pop("headers", {})}
-        return self.api("POST", f"/api/action/{name}", headers=headers,
-                        body=json.dumps(payload or {}), **kwargs)
+        return self.api(
+            "POST", f"/api/action/{name}", headers=headers, body=json.dumps(payload or {}), **kwargs
+        )
 
 
 class TestPage(ServerCase):
@@ -113,7 +115,9 @@ class TestApiAuthentication(ServerCase):
     def test_a_cross_origin_request_is_refused_even_with_the_token(self):
         response, _ = self.api("GET", "/api/state", headers={"Origin": "https://evil.example"})
         self.assertEqual(response.status, 403)
-        response, _ = self.api("GET", "/api/state", headers={"Origin": f"http://127.0.0.1:{self.port}"})
+        response, _ = self.api(
+            "GET", "/api/state", headers={"Origin": f"http://127.0.0.1:{self.port}"}
+        )
         self.assertEqual(response.status, 200)
 
     def test_no_cors_headers_are_ever_granted(self):
@@ -126,8 +130,10 @@ class TestApiAuthentication(ServerCase):
         self.api("GET", "/api/history?limit=99999")
         self.api("GET", "/api/history?limit=abc")
         self.api("GET", "/api/history?limit=0")
-        self.assertEqual([c for c in self.core.calls if c[0] == "history"],
-                         [("history", 100), ("history", 15), ("history", 1)])
+        self.assertEqual(
+            [c for c in self.core.calls if c[0] == "history"],
+            [("history", 100), ("history", 15), ("history", 1)],
+        )
 
     def test_unknown_routes_and_methods(self):
         self.assertEqual(self.api("GET", "/api/nope")[0].status, 404)
@@ -143,14 +149,22 @@ class TestActions(ServerCase):
 
     def test_a_cross_site_form_post_cannot_trigger_anything(self):
         # A plain HTML form cannot set custom headers or application/json.
-        response, _ = self.request("POST", "/api/action/service_stop",
-                                   headers={"Content-Type": "application/x-www-form-urlencoded",
-                                            "Origin": "https://evil.example"}, body="mode=force")
+        response, _ = self.request(
+            "POST",
+            "/api/action/service_stop",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://evil.example",
+            },
+            body="mode=force",
+        )
         self.assertIn(response.status, (401, 403))
         self.assertEqual(self.core.calls, [])
 
     def test_a_correct_token_with_the_wrong_content_type_is_refused(self):
-        response, _ = self.api("POST", "/api/action/pause", headers={"Content-Type": "text/plain"}, body="{}")
+        response, _ = self.api(
+            "POST", "/api/action/pause", headers={"Content-Type": "text/plain"}, body="{}"
+        )
         self.assertEqual(response.status, 415)
         self.assertEqual(self.core.calls, [])
 
@@ -167,7 +181,11 @@ class TestActions(ServerCase):
         self.assertEqual(json.loads(body)["message"], "nope")
 
     def test_needing_a_choice_is_not_an_error(self):
-        self.core.result = {"ok": False, "needs_choice": True, "message": "A transfer is in progress."}
+        self.core.result = {
+            "ok": False,
+            "needs_choice": True,
+            "message": "A transfer is in progress.",
+        }
         response, body = self.post("service_stop")
         self.assertEqual(response.status, 200)
         self.assertTrue(json.loads(body)["needs_choice"])
@@ -183,7 +201,9 @@ class TestActions(ServerCase):
         self.assertEqual(self.core.calls, [])
 
     def test_posting_outside_the_action_namespace_is_404(self):
-        response, _ = self.api("POST", "/api/state", headers={"Content-Type": "application/json"}, body="{}")
+        response, _ = self.api(
+            "POST", "/api/state", headers={"Content-Type": "application/json"}, body="{}"
+        )
         self.assertEqual(response.status, 404)
 
 
@@ -199,13 +219,13 @@ class TestInstanceFile(ServerCase):
 
     def test_a_stale_wrong_or_corrupt_instance_file_is_not_trusted(self):
         record = Path(self.tmp.name) / "dashboard.json"
-        self.assertIsNone(srv.find_running_instance(record))                        # missing
+        self.assertIsNone(srv.find_running_instance(record))  # missing
         record.write_text("not json")
-        self.assertIsNone(srv.find_running_instance(record))                        # corrupt
+        self.assertIsNone(srv.find_running_instance(record))  # corrupt
         record.write_text(json.dumps({"port": self.port, "token": "wrong"}))
-        self.assertIsNone(srv.find_running_instance(record))                        # wrong token
+        self.assertIsNone(srv.find_running_instance(record))  # wrong token
         record.write_text(json.dumps({"port": 1, "token": "secret-token"}))
-        self.assertIsNone(srv.find_running_instance(record))                        # nothing listening
+        self.assertIsNone(srv.find_running_instance(record))  # nothing listening
 
 
 class TestPing(ServerCase):
@@ -243,8 +263,11 @@ class TestIdleShutdown(unittest.TestCase):
             server.start()
             for _ in range(8):
                 connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=2)
-                connection.request("GET", "/api/state", headers={srv.TOKEN_HEADER: "t",
-                                                                  "Host": f"127.0.0.1:{server.port}"})
+                connection.request(
+                    "GET",
+                    "/api/state",
+                    headers={srv.TOKEN_HEADER: "t", "Host": f"127.0.0.1:{server.port}"},
+                )
                 connection.getresponse().read()
                 connection.close()
                 time.sleep(0.15)

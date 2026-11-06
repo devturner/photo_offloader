@@ -18,7 +18,9 @@ class TestMediaInfo(support.CardFixtureTestCase):
         self.assertEqual(media_info.normalize_camera_model("NIKON", "Z 8"), "NIKON-Z-8")
         self.assertEqual(media_info.normalize_camera_model("SONY", "ILCE-7M4"), "SONY-ILCE-7M4")
         self.assertEqual(media_info.normalize_camera_model("NIKON", "NIKON Z 8"), "NIKON-Z-8")
-        self.assertEqual(media_info.normalize_camera_model("NIKON CORPORATION", "NIKON Z 8"), "NIKON-Z-8")
+        self.assertEqual(
+            media_info.normalize_camera_model("NIKON CORPORATION", "NIKON Z 8"), "NIKON-Z-8"
+        )
         self.assertEqual(media_info.normalize_camera_model(None, None), "Unknown-Camera")
 
     @patch("shutil.which", return_value="/opt/homebrew/bin/exiftool")
@@ -30,7 +32,9 @@ class TestMediaInfo(support.CardFixtureTestCase):
     def test_camera_metadata_is_cached_for_unchanged_file(self):
         path = self.root / "cached.NEF"
         path.write_bytes(b"raw image")
-        with patch.object(media_info, "get_camera_model_from_exiftool", return_value="NIKON-Z-8") as read_metadata:
+        with patch.object(
+            media_info, "get_camera_model_from_exiftool", return_value="NIKON-Z-8"
+        ) as read_metadata:
             self.assertEqual(media_info.get_camera_model(path), "NIKON-Z-8")
             self.assertEqual(media_info.get_camera_model(path), "NIKON-Z-8")
         read_metadata.assert_called_once_with(path)
@@ -38,7 +42,9 @@ class TestMediaInfo(support.CardFixtureTestCase):
     def test_catalog_invalidates_cached_metadata_when_file_changes(self):
         path = self.root / "changed.NEF"
         path.write_bytes(b"first")
-        with patch.object(media_info, "get_camera_model_from_exiftool", return_value="NIKON-Z-8") as read_metadata:
+        with patch.object(
+            media_info, "get_camera_model_from_exiftool", return_value="NIKON-Z-8"
+        ) as read_metadata:
             self.assertEqual(media_info.get_camera_model(path), "NIKON-Z-8")
             path.write_bytes(b"second content")
             self.assertEqual(media_info.get_camera_model(path), "NIKON-Z-8")
@@ -48,10 +54,14 @@ class TestMediaInfo(support.CardFixtureTestCase):
         media = self.local / "batch-test.NEF"
         media.write_bytes(b"raw bytes")
         payload = '[{"SourceFile": "' + str(media) + '", "Make": "Nikon", "Model": "Z 8"}]'
-        with patch.object(media_info, "find_exiftool", return_value="/usr/bin/exiftool"), patch.object(
-            media_info.subprocess, "run",
-            return_value=MagicMock(returncode=0, stdout=payload, stderr=""),
-        ) as run:
+        with (
+            patch.object(media_info, "find_exiftool", return_value="/usr/bin/exiftool"),
+            patch.object(
+                media_info.subprocess,
+                "run",
+                return_value=MagicMock(returncode=0, stdout=payload, stderr=""),
+            ) as run,
+        ):
             result = media_info.get_exiftool_metadata_batch([media], ["-Make", "-Model"])
         self.assertEqual(result[str(media.resolve())]["Model"], "Z 8")
         self.assertEqual(run.call_count, 1)
@@ -61,7 +71,9 @@ class TestMediaInfo(support.CardFixtureTestCase):
         source = self.media()["RAW"]
         catalog.catalog_record(source, capture_month="2026-10", camera_model="NIKON-Z-8")
         self.shift_mtime(source, 3600)
-        with patch.object(media_info, "get_exiftool_metadata", side_effect=AssertionError("must reuse metadata")):
+        with patch.object(
+            media_info, "get_exiftool_metadata", side_effect=AssertionError("must reuse metadata")
+        ):
             self.assertEqual(media_info.get_camera_model(source), "NIKON-Z-8")
             self.assertEqual(media_info.get_month_folder(source), "2026-10")
         self.shift_mtime(source, 1)  # not a whole-hour shift: cache must miss
@@ -74,8 +86,12 @@ class TestMediaInfo(support.CardFixtureTestCase):
         files = self.card_files(25)
         media_info.prefetch_card_metadata(files)
         self.assertEqual(exiftool_calls(), 1)
-        destinations = [media_info.build_destination_path(p, self.dcim, self.local) for p in files["RAW"]]
-        self.assertEqual(exiftool_calls(), 1, "per-file ExifTool calls still happened after the prefetch")
+        destinations = [
+            media_info.build_destination_path(p, self.dcim, self.local) for p in files["RAW"]
+        ]
+        self.assertEqual(
+            exiftool_calls(), 1, "per-file ExifTool calls still happened after the prefetch"
+        )
         self.assertEqual(destinations[0].parent, self.local / "2026-09" / "NIKON-Z-8" / "Raws")
 
     def test_prefetch_matches_the_per_file_lookup(self):
@@ -88,7 +104,10 @@ class TestMediaInfo(support.CardFixtureTestCase):
         config.CATALOG_DB_PATH.unlink()
         catalog._CATALOG_INITIALIZED_PATH = None
         media_info.prefetch_card_metadata(files)
-        self.assertEqual([media_info.build_destination_path(p, self.dcim, self.local) for p in everything], per_file)
+        self.assertEqual(
+            [media_info.build_destination_path(p, self.dcim, self.local) for p in everything],
+            per_file,
+        )
 
     def test_prefetch_skips_files_whose_metadata_is_cached(self):
         exiftool_calls = self.fake_exiftool()
@@ -115,9 +134,10 @@ class TestMediaInfo(support.CardFixtureTestCase):
         path = self.root / "photo.NEF"
         self.assertEqual(media_info.get_camera_model(path), "NIKON-Z-8")
         which.assert_called_once_with("exiftool")
-        self.assertEqual(run.call_args.args[0], [
-            "/opt/homebrew/bin/exiftool", "-j", "-Make", "-Model", str(path)
-        ])
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/opt/homebrew/bin/exiftool", "-j", "-Make", "-Model", str(path)],
+        )
 
     @patch("shutil.which", return_value="/opt/homebrew/bin/exiftool")
     @patch("subprocess.run")
@@ -130,10 +150,18 @@ class TestMediaInfo(support.CardFixtureTestCase):
         path = self.root / "photo.NEF"
         self.assertEqual(media_info.get_exif_datetime(path), datetime(2026, 10, 21, 13, 49, 15))
         which.assert_called_once_with("exiftool")
-        self.assertEqual(run.call_args.args[0], [
-            "/opt/homebrew/bin/exiftool", "-j", "-DateTimeOriginal",
-            "-CreateDate", "-DateTimeDigitized", "-ModifyDate", str(path)
-        ])
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/opt/homebrew/bin/exiftool",
+                "-j",
+                "-DateTimeOriginal",
+                "-CreateDate",
+                "-DateTimeDigitized",
+                "-ModifyDate",
+                str(path),
+            ],
+        )
 
     def test_get_camera_model_missing_exif(self):
         fake_image = MagicMock()
@@ -223,7 +251,9 @@ class TestMediaInfo(support.CardFixtureTestCase):
     def test_unrecognized_files_skip_expensive_metadata_lookups(self):
         sidecar = self.dcim / "notes.xml"
         sidecar.write_bytes(b"<xml/>")
-        with patch.object(media_info, "get_exiftool_metadata", side_effect=AssertionError("no exiftool")):
+        with patch.object(
+            media_info, "get_exiftool_metadata", side_effect=AssertionError("no exiftool")
+        ):
             self.assertIsNone(media_info.get_exif_datetime(sidecar))
             self.assertEqual(media_info.get_camera_model(sidecar), "Unknown-Camera")
 

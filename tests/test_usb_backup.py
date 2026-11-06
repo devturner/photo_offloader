@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for the cross-UI USB backup request lock."""
+
 from __future__ import annotations
 
 import fcntl
@@ -21,8 +22,7 @@ class TestBackupLauncher(unittest.TestCase):
             importer = root / "importer.py"
             marker = root / "importer-ran"
             importer.write_text(
-                "from pathlib import Path\n"
-                f"Path({str(marker)!r}).open('a').write('ran\\n')\n",
+                f"from pathlib import Path\nPath({str(marker)!r}).open('a').write('ran\\n')\n",
                 encoding="utf-8",
             )
             env = os.environ.copy()
@@ -49,8 +49,7 @@ class TestBackupLauncher(unittest.TestCase):
             importer = root / "importer.py"
             marker = root / "importer-ran"
             importer.write_text(
-                "from pathlib import Path\n"
-                f"Path({str(marker)!r}).write_text('ran')\n",
+                f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n",
                 encoding="utf-8",
             )
             env = os.environ.copy()

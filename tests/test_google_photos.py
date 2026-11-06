@@ -42,10 +42,12 @@ class TestGooglePhotosSync(unittest.TestCase):
 
     def test_parse_rclone_stats_line_reads_file_counts(self):
         parsed = sync.parse_rclone_stats_line(
-            "2026/11/04 18:50:05 INFO  :   175.183 MiB / 267.950 MiB, 65%, 8.800 MiB/s, ETA 10s (xfr#8/18)")
+            "2026/11/04 18:50:05 INFO  :   175.183 MiB / 267.950 MiB, 65%, 8.800 MiB/s, ETA 10s (xfr#8/18)"
+        )
         self.assertEqual((parsed["files_done"], parsed["files_total"]), (8, 18))
         done = sync.parse_rclone_stats_line(
-            "2026/11/04 18:50:20 INFO  :   267.950 MiB / 267.950 MiB, 100%, 7.107 MiB/s, ETA 0s")
+            "2026/11/04 18:50:20 INFO  :   267.950 MiB / 267.950 MiB, 100%, 7.107 MiB/s, ETA 0s"
+        )
         self.assertEqual((done["files_done"], done["files_total"]), (None, None))
 
     def test_parse_rclone_stats_line_without_eta(self):
@@ -73,7 +75,9 @@ class TestGooglePhotosSync(unittest.TestCase):
                 sync.log_sync_event("Google Photos sync completed successfully.")
 
             contents = log_path.read_text(encoding="utf-8")
-            self.assertIn("INFO  : Photo Offloader: Google Photos sync completed successfully.", contents)
+            self.assertIn(
+                "INFO  : Photo Offloader: Google Photos sync completed successfully.", contents
+            )
             self.assertTrue(contents.endswith("\n"))
 
     def test_status_preserves_last_success_on_failure(self):
@@ -105,11 +109,14 @@ class TestGooglePhotosSync(unittest.TestCase):
             def watching_run(argv, *args, **kwargs):
                 seen.append(json.loads(config.GOOGLE_STATUS_PATH.read_text()))
                 return run(argv, *args, **kwargs)
+
             with patch.object(sync.subprocess, "run", watching_run):
                 self.assertEqual(sync.run_sync(), 0)
             self.assertEqual(seen[0]["state"], "running")
-            self.assertEqual({entry["started_at"] for entry in seen if entry["state"] == "running"},
-                             {seen[0]["started_at"]})
+            self.assertEqual(
+                {entry["started_at"] for entry in seen if entry["state"] == "running"},
+                {seen[0]["started_at"]},
+            )
 
     def test_missing_rclone_reports_not_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -160,8 +167,9 @@ class TestGooglePhotosSync(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, stdout="gphotos:\n", stderr="")
             if verb == "copy" and on_copy is not None:
                 on_copy(command)
-            return subprocess.CompletedProcess(command, copy_returncode if verb == "copy" else 0,
-                                               stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                command, copy_returncode if verb == "copy" else 0, stdout="", stderr=""
+            )
 
         return run, commands
 
@@ -242,8 +250,10 @@ class TestGooglePhotosSync(unittest.TestCase):
                 self.assertEqual(sync.run_sync(), 0)
 
             self.assertIsNotNone(catalog.google_photos_upload_record(before))
-            self.assertIsNone(catalog.google_photos_upload_record(during),
-                              "a file rclone never saw was recorded as uploaded")
+            self.assertIsNone(
+                catalog.google_photos_upload_record(during),
+                "a file rclone never saw was recorded as uploaded",
+            )
             copy = next(c for c in commands if c[1] == "copy")
             self.assertIn("--files-from", copy)
 
@@ -300,7 +310,10 @@ class TestGooglePhotosSync(unittest.TestCase):
             log = root / "google_photos_sync.log"
             log.write_text("old rclone output\n" * 500)
             run, _ = self.fake_rclone()
-            with patch.object(sync, "SYNC_LOG_MAX_BYTES", 1000), patch.object(sync.subprocess, "run", run):
+            with (
+                patch.object(sync, "SYNC_LOG_MAX_BYTES", 1000),
+                patch.object(sync.subprocess, "run", run),
+            ):
                 self.assertEqual(sync.run_sync(), 0)
             self.assertTrue((root / "google_photos_sync.log.1").exists())
             self.assertLess(log.stat().st_size, 1000)
@@ -318,6 +331,7 @@ class TestGooglePhotosSync(unittest.TestCase):
                 if command[1] == "mkdir":
                     return subprocess.CompletedProcess(command, 1, stdout="", stderr=EXPIRED_TOKEN)
                 return run(command, *args, **kwargs)
+
             with patch.object(sync.subprocess, "run", expired):
                 self.assertEqual(sync.run_sync(), 1)
             payload = json.loads(config.GOOGLE_STATUS_PATH.read_text())
@@ -334,17 +348,24 @@ class TestGooglePhotosSync(unittest.TestCase):
 
             def broken(command, *args, **kwargs):
                 if command[1] == "mkdir":
-                    return subprocess.CompletedProcess(command, 1, stdout="", stderr="quota exceeded")
+                    return subprocess.CompletedProcess(
+                        command, 1, stdout="", stderr="quota exceeded"
+                    )
                 return run(command, *args, **kwargs)
+
             with patch.object(sync.subprocess, "run", broken):
                 self.assertEqual(sync.run_sync(), 1)
-            self.assertIn("quota exceeded", json.loads(config.GOOGLE_STATUS_PATH.read_text())["message"])
+            self.assertIn(
+                "quota exceeded", json.loads(config.GOOGLE_STATUS_PATH.read_text())["message"]
+            )
 
 
 # What rclone really prints when Google refuses the saved sign-in.
-EXPIRED_TOKEN = ('2026/11/05 16:00:15 ERROR : error listing: couldn\'t list albums: Get "https://photoslibrary.'
-                 'googleapis.com/v1/albums?pageSize=50": couldn\'t fetch token: invalid_grant: maybe token expired? '
-                 '- try refreshing with "rclone config reconnect gphotos:"\n')
+EXPIRED_TOKEN = (
+    "2026/11/05 16:00:15 ERROR : error listing: couldn't list albums: Get \"https://photoslibrary."
+    "googleapis.com/v1/albums?pageSize=50\": couldn't fetch token: invalid_grant: maybe token expired? "
+    '- try refreshing with "rclone config reconnect gphotos:"\n'
+)
 
 
 class TestSetupCheck(unittest.TestCase):
@@ -357,8 +378,10 @@ class TestSetupCheck(unittest.TestCase):
         self.remotes = "gphotos:\n"
         self.albums = "Holiday/\nPhoto Offloader/\n"
         self.albums_error = ""
-        for item in (patch.object(sync, "find_rclone", return_value="/usr/bin/rclone"),
-                     patch.object(sync.subprocess, "run", self.fake_run)):
+        for item in (
+            patch.object(sync, "find_rclone", return_value="/usr/bin/rclone"),
+            patch.object(sync.subprocess, "run", self.fake_run),
+        ):
             item.start()
             self.addCleanup(item.stop)
 
@@ -413,8 +436,7 @@ class TestSetupCheck(unittest.TestCase):
             "couldn't fetch token: invalid_client: if you're using your own client id/secret": "client ID",
             "empty token found - please reconnect": "rclone config reconnect",
             "Token has been expired or revoked": "rclone config reconnect",
-            "Error 403: Photos Library API has not been used in project 123 before or it is disabled":
-                "Photos Library API",
+            "Error 403: Photos Library API has not been used in project 123 before or it is disabled": "Photos Library API",
             "Error 403: Request had insufficient authentication scopes": "scopes",
         }
         for error, expected in cases.items():
@@ -425,7 +447,9 @@ class TestSetupCheck(unittest.TestCase):
                 self.assertIn(expected, report)
 
     def test_a_network_failure_is_not_reported_as_a_sign_in_problem(self):
-        self.albums_error = 'ERROR : Get "https://photoslibrary.googleapis.com": dial tcp: no such host\n'
+        self.albums_error = (
+            'ERROR : Get "https://photoslibrary.googleapis.com": dial tcp: no such host\n'
+        )
         status, report, _ = self.check()
         self.assertEqual(status, 1)
         self.assertNotIn("reconnect", report)
@@ -458,7 +482,10 @@ class TestSetupCheck(unittest.TestCase):
     def test_custom_remote_and_album_are_honored(self):
         self.remotes = "photos-cloud:\n"
         self.albums = "Trips/\n"
-        with patch.object(sync, "REMOTE_NAME", "photos-cloud"), patch.object(sync, "ALBUM_NAME", "Trips"):
+        with (
+            patch.object(sync, "REMOTE_NAME", "photos-cloud"),
+            patch.object(sync, "ALBUM_NAME", "Trips"),
+        ):
             status, report, _ = self.check()
         self.assertEqual(status, 0)
         self.assertIn("photos-cloud:album", self.commands[-1])

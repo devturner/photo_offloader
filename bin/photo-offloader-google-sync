@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Upload new photos and videos to Google Photos with rclone."""
+
 import sys
 from pathlib import Path
 

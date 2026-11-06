@@ -1,4 +1,5 @@
 """Rebuild the catalog from the Mac archive and USB backup (--update-catalog)."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -9,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 from photo_offloader import card, catalog, config, fileops, logs, media_info, progress, volumes
 from photo_offloader.logs import logger
 
-PROGRESS_EVERY = 100   # files between dashboard updates
+PROGRESS_EVERY = 100  # files between dashboard updates
 
 
 def update_file_catalog() -> Dict[str, int]:
@@ -25,19 +26,32 @@ def update_file_catalog() -> Dict[str, int]:
     if not roots:
         raise RuntimeError("No archive locations are available to update the catalog.")
     totals = {"scanned": 0, "metadata_refreshed": 0, "roots": len(roots)}
-    progress.update_status(state="scanning", phase="catalog-update", stage="catalog",
-                           catalog_stage="Finding files", catalog_scanned=0,
-                           source="; ".join(map(str, roots)), message="Preparing catalog update",
-                           current_file="", current_path="")
+    progress.update_status(
+        state="scanning",
+        phase="catalog-update",
+        stage="catalog",
+        catalog_stage="Finding files",
+        catalog_scanned=0,
+        source="; ".join(map(str, roots)),
+        message="Preparing catalog update",
+        current_file="",
+        current_path="",
+    )
     logger.info("Starting catalog update for %d root(s).", len(roots))
     for root_index, root in enumerate(roots, start=1):
         _refresh_root(root.resolve(), root_index, len(roots), totals)
 
-    progress.update_status(state="complete", phase="catalog-update", current_file="",
-                           message=f"Catalog update complete: {totals['scanned']} files scanned")
+    progress.update_status(
+        state="complete",
+        phase="catalog-update",
+        current_file="",
+        message=f"Catalog update complete: {totals['scanned']} files scanned",
+    )
     logger.info("Catalog update complete: scanned=%d roots=%d", totals["scanned"], totals["roots"])
-    logs.notify("Photo Offloader Catalog Updated",
-                f"Scanned {totals['scanned']} media files across {totals['roots']} location(s).")
+    logs.notify(
+        "Photo Offloader Catalog Updated",
+        f"Scanned {totals['scanned']} media files across {totals['roots']} location(s).",
+    )
     return totals
 
 
@@ -60,9 +74,12 @@ def _media_files(root: Path) -> List[Path]:
     files = []
     for path in root.rglob("*"):
         try:
-            if (path.is_file() and not path.is_symlink()
-                    and not any(part.startswith(".") for part in path.relative_to(root).parts)
-                    and path.suffix.lower() in card.MEDIA_EXTENSIONS):
+            if (
+                path.is_file()
+                and not path.is_symlink()
+                and not any(part.startswith(".") for part in path.relative_to(root).parts)
+                and path.suffix.lower() in card.MEDIA_EXTENSIONS
+            ):
                 files.append(path)
         except OSError as exc:
             logger.warning("Could not inspect catalog candidate %s: %s", path, exc)
@@ -70,8 +87,11 @@ def _media_files(root: Path) -> List[Path]:
 
 
 def _refresh_root(root: Path, root_index: int, roots_total: int, totals: Dict[str, int]) -> None:
-    progress.update_status(catalog_stage="Finding files", catalog_scanned=totals["scanned"],
-                           message=f"Scanning location {root_index} of {roots_total}: {root}")
+    progress.update_status(
+        catalog_stage="Finding files",
+        catalog_scanned=totals["scanned"],
+        message=f"Scanning location {root_index} of {roots_total}: {root}",
+    )
     logger.info("Scanning catalog root %d/%d: %s", root_index, roots_total, root)
     files = _media_files(root)
     rows = catalog.catalog_rows_under([root])
@@ -81,17 +101,34 @@ def _refresh_root(root: Path, root_index: int, roots_total: int, totals: Dict[st
     for path in files:
         try:
             row = rows.get(str(path.resolve()))
-            if not (catalog.row_matches(row, fileops.file_fingerprint(path)) and row[4] and row[5] and row[6]):
+            if not (
+                catalog.row_matches(row, fileops.file_fingerprint(path))
+                and row[4]
+                and row[5]
+                and row[6]
+            ):
                 stale.append(path)
         except OSError as exc:
             logger.warning("Could not inspect catalog candidate %s: %s", path, exc)
 
-    progress.update_status(catalog_stage="Reading photo info", catalog_scanned=totals["scanned"],
-                           message=f"Reading photo info for {len(stale):,} new or changed files")
-    records = media_info.get_exiftool_metadata_batch(
-        stale, [f"-{tag}" for tag in media_info.EXIF_DATE_TAGS] + ["-Make", "-Model"]) if stale else {}
-    logger.info("ExifTool batch metadata available for %d/%d uncached files under %s",
-                len(records), len(stale), root)
+    progress.update_status(
+        catalog_stage="Reading photo info",
+        catalog_scanned=totals["scanned"],
+        message=f"Reading photo info for {len(stale):,} new or changed files",
+    )
+    records = (
+        media_info.get_exiftool_metadata_batch(
+            stale, [f"-{tag}" for tag in media_info.EXIF_DATE_TAGS] + ["-Make", "-Model"]
+        )
+        if stale
+        else {}
+    )
+    logger.info(
+        "ExifTool batch metadata available for %d/%d uncached files under %s",
+        len(records),
+        len(stale),
+        root,
+    )
 
     entries: List[Tuple[Path, Dict[str, Optional[str]]]] = []
     fallback: List[Path] = []
@@ -101,8 +138,16 @@ def _refresh_root(root: Path, root_index: int, roots_total: int, totals: Dict[st
         try:
             if record:
                 month, model = media_info.month_and_model(path, record)
-                entries.append((path, {"capture_month": month, "camera_model": model or "Unknown-Camera",
-                                       "media_folder": folder}))
+                entries.append(
+                    (
+                        path,
+                        {
+                            "capture_month": month,
+                            "camera_model": model or "Unknown-Camera",
+                            "media_folder": folder,
+                        },
+                    )
+                )
             else:
                 entries.append((path, {"media_folder": folder}))
                 fallback.append(path)
@@ -117,12 +162,18 @@ def _refresh_root(root: Path, root_index: int, roots_total: int, totals: Dict[st
         except OSError as exc:
             logger.warning("Could not catalog %s: %s", path, exc)
         if index % PROGRESS_EVERY == 0:
-            progress.update_status(catalog_stage="Indexing files", current_file=path.name,
-                                   catalog_scanned=totals["scanned"] + index)
+            progress.update_status(
+                catalog_stage="Indexing files",
+                current_file=path.name,
+                catalog_scanned=totals["scanned"] + index,
+            )
 
     totals["scanned"] += len(files)
-    progress.update_status(catalog_stage="Indexing files", catalog_scanned=totals["scanned"],
-                           message=f"Indexed {totals['scanned']:,} media files")
+    progress.update_status(
+        catalog_stage="Indexing files",
+        catalog_scanned=totals["scanned"],
+        message=f"Indexed {totals['scanned']:,} media files",
+    )
     _forget_missing_files(root, files)
     _record_refresh(root, len(files))
     logger.info("Catalog root updated: %s (%d media files).", root, len(files))
@@ -134,10 +185,15 @@ def _forget_missing_files(root: Path, files: List[Path]) -> None:
         with catalog.catalog_db() as db:
             db.execute("CREATE TEMP TABLE IF NOT EXISTS catalog_seen_paths (path TEXT PRIMARY KEY)")
             db.execute("DELETE FROM catalog_seen_paths")
-            db.executemany("INSERT OR IGNORE INTO catalog_seen_paths(path) VALUES (?)",
-                           ((str(path.resolve()),) for path in files))
-            db.execute("DELETE FROM file_locations WHERE root = ? AND path NOT IN "
-                       "(SELECT path FROM catalog_seen_paths)", (str(root),))
+            db.executemany(
+                "INSERT OR IGNORE INTO catalog_seen_paths(path) VALUES (?)",
+                ((str(path.resolve()),) for path in files),
+            )
+            db.execute(
+                "DELETE FROM file_locations WHERE root = ? AND path NOT IN "
+                "(SELECT path FROM catalog_seen_paths)",
+                (str(root),),
+            )
             db.execute("DELETE FROM catalog_seen_paths")
     except sqlite3.Error as exc:
         logger.warning("Could not reconcile catalog entries under %s: %s", root, exc)

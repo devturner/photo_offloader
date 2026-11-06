@@ -9,14 +9,24 @@ from tests import support
 class TestCard(support.CardFixtureTestCase):
     def test_card_manifest_records_scan_history_and_preserves_file_hashes(self):
         media = self.media()
-        manifest = {"100NIKON/photo.jpg": {"size": 3, "mtime_ns": media["JPG"].stat().st_mtime_ns,
-                                             "sha256": "verified-hash"}}
+        manifest = {
+            "100NIKON/photo.jpg": {
+                "size": 3,
+                "mtime_ns": media["JPG"].stat().st_mtime_ns,
+                "sha256": "verified-hash",
+            }
+        }
         self.assertTrue(card.save_card_manifest(self.dcim, manifest, {"prior": "kept"}))
 
-        self.assertTrue(card.update_card_scan_history(self.dcim, {"JPG": [media["JPG"]],
-                                                                  "RAW": [media["RAW"]],
-                                                                  "VIDEO": [media["VIDEO"]]},
-                                                     "complete", 3, 0))
+        self.assertTrue(
+            card.update_card_scan_history(
+                self.dcim,
+                {"JPG": [media["JPG"]], "RAW": [media["RAW"]], "VIDEO": [media["VIDEO"]]},
+                "complete",
+                3,
+                0,
+            )
+        )
         payload = card.load_card_manifest_payload(self.dcim)
         self.assertEqual(payload["files"]["100NIKON/photo.jpg"]["sha256"], "verified-hash")
         history = payload["history"]
@@ -32,8 +42,9 @@ class TestCard(support.CardFixtureTestCase):
         media = self.media()
         prior = {"last_scan_completed": "old-scan", "last_successful_import": "old-import"}
         self.assertTrue(card.save_card_manifest(self.dcim, {}, prior))
-        self.assertTrue(card.update_card_scan_history(self.dcim, {"JPG": [media["JPG"]]},
-                                                     "incomplete", 0, 1))
+        self.assertTrue(
+            card.update_card_scan_history(self.dcim, {"JPG": [media["JPG"]]}, "incomplete", 0, 1)
+        )
         history = card.load_card_manifest_payload(self.dcim)["history"]
         self.assertEqual(history["last_scan_completed"], "old-scan")
         self.assertEqual(history["last_successful_import"], "old-import")
@@ -46,20 +57,32 @@ class TestCard(support.CardFixtureTestCase):
         unchanged = media["JPG"]
         changed = media["RAW"]
         manifest = {
-            "100NIKON/photo.jpg": {"size": unchanged.stat().st_size,
-                                   "mtime_ns": unchanged.stat().st_mtime_ns,
-                                   "sha256": "keep-this-hash"},
+            "100NIKON/photo.jpg": {
+                "size": unchanged.stat().st_size,
+                "mtime_ns": unchanged.stat().st_mtime_ns,
+                "sha256": "keep-this-hash",
+            },
             "100NIKON/photo.nef": {"size": 999, "mtime_ns": 1, "sha256": "stale-hash"},
             old_only: {"size": 1, "mtime_ns": 1, "sha256": "old-hash"},
         }
         self.assertTrue(card.save_card_manifest(self.dcim, manifest, {}))
-        counts = card.reconcile_card_manifest(self.dcim, {
-            "JPG": [unchanged], "RAW": [changed], "VIDEO": [media["VIDEO"]],
-        })
-        self.assertEqual(counts, {
-            "new_files": 1, "changed_files": 1,
-            "unchanged_manifest_files": 1, "missing_from_card": 1,
-        })
+        counts = card.reconcile_card_manifest(
+            self.dcim,
+            {
+                "JPG": [unchanged],
+                "RAW": [changed],
+                "VIDEO": [media["VIDEO"]],
+            },
+        )
+        self.assertEqual(
+            counts,
+            {
+                "new_files": 1,
+                "changed_files": 1,
+                "unchanged_manifest_files": 1,
+                "missing_from_card": 1,
+            },
+        )
         payload = card.load_card_manifest_payload(self.dcim)
         self.assertEqual(payload["files"]["100NIKON/photo.jpg"]["sha256"], "keep-this-hash")
         self.assertNotIn("sha256", payload["files"]["100NIKON/photo.nef"])
@@ -68,10 +91,16 @@ class TestCard(support.CardFixtureTestCase):
 
     def test_reconcile_card_manifest_does_not_mark_scan_successful(self):
         media = self.media()
-        self.assertTrue(card.save_card_manifest(self.dcim, {}, {
-            "last_scan_completed": "previous-scan",
-            "last_successful_import": "previous-import",
-        }))
+        self.assertTrue(
+            card.save_card_manifest(
+                self.dcim,
+                {},
+                {
+                    "last_scan_completed": "previous-scan",
+                    "last_successful_import": "previous-import",
+                },
+            )
+        )
         card.reconcile_card_manifest(self.dcim, {"JPG": [media["JPG"]]})
         history = card.load_card_manifest_payload(self.dcim)["history"]
         self.assertEqual(history["last_scan_completed"], "previous-scan")
@@ -127,9 +156,11 @@ class TestCard(support.CardFixtureTestCase):
         media = self.media()
         card.save_card_manifest(self.dcim, {})
         card.reconcile_card_manifest(self.dcim, {"RAW": [media["RAW"]], "JPG": [media["JPG"]]})
-        self.shift_mtime(media["RAW"], -3600)   # DST
-        self.shift_mtime(media["JPG"], 1800)    # a real change
-        counts = card.reconcile_card_manifest(self.dcim, {"RAW": [media["RAW"]], "JPG": [media["JPG"]]})
+        self.shift_mtime(media["RAW"], -3600)  # DST
+        self.shift_mtime(media["JPG"], 1800)  # a real change
+        counts = card.reconcile_card_manifest(
+            self.dcim, {"RAW": [media["RAW"]], "JPG": [media["JPG"]]}
+        )
         self.assertEqual((counts["unchanged_manifest_files"], counts["changed_files"]), (1, 1))
 
     def test_scan_finds_video_stored_outside_dcim(self):

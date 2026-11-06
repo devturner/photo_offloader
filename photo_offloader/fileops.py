@@ -1,4 +1,5 @@
 """File primitives: fingerprints, hashing, verified installs and chunked copies."""
+
 from __future__ import annotations
 
 import errno
@@ -85,10 +86,12 @@ def _same_file(first: Path, second: Path) -> bool:
 # Index/database files the camera itself rewrites on every shoot. They never match
 # the previous copy, so keeping conflict copies would pile up one per import; the
 # newest version replaces the old one instead (locally and on USB).
-CAMERA_INDEX_FILE_NAMES = frozenset({
-    "NC_FLLST.DAT",   # Nikon file list
-    "MEDIAPRO.XML",   # Sony clip index (PRIVATE/M4ROOT)
-})
+CAMERA_INDEX_FILE_NAMES = frozenset(
+    {
+        "NC_FLLST.DAT",  # Nikon file list
+        "MEDIAPRO.XML",  # Sony clip index (PRIVATE/M4ROOT)
+    }
+)
 
 
 def is_camera_index_file(path: Path) -> bool:
@@ -110,8 +113,13 @@ def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
     except FileExistsError:
         return False
     except OSError as exc:
-        unsupported = {errno.EXDEV, errno.EPERM, errno.EACCES,
-                       getattr(errno, "EOPNOTSUPP", -1), getattr(errno, "ENOTSUP", -1)}
+        unsupported = {
+            errno.EXDEV,
+            errno.EPERM,
+            errno.EACCES,
+            getattr(errno, "EOPNOTSUPP", -1),
+            getattr(errno, "ENOTSUP", -1),
+        }
         if exc.errno not in unsupported:
             raise
     fd = os.open(final_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)

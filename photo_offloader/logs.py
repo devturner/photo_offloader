@@ -1,4 +1,5 @@
 """Logging and macOS notifications shared by the importer and its helpers."""
+
 from __future__ import annotations
 
 import logging
@@ -16,7 +17,9 @@ LOG_BACKUP_COUNT = 3
 logger = logging.getLogger("camera_offloader")
 
 
-def rotate_log_file(path: Path, max_bytes: int = LOG_MAX_BYTES, backups: int = LOG_BACKUP_COUNT) -> bool:
+def rotate_log_file(
+    path: Path, max_bytes: int = LOG_MAX_BYTES, backups: int = LOG_BACKUP_COUNT
+) -> bool:
     """Rotate ``path`` to ``path.1`` (shifting older copies) once it exceeds ``max_bytes``.
 
     Used for logs written by other programs (rclone, shell scripts) that cannot
@@ -49,7 +52,9 @@ def notify(title: str, text: str) -> None:
     try:
         result = subprocess.run(
             ["osascript", "-e", script, title, text],
-            check=False, capture_output=True, text=True,
+            check=False,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             logger.warning("Notification failed: %s", result.stderr.strip())

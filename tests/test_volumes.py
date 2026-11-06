@@ -28,10 +28,12 @@ class TestVolumes(support.CardFixtureTestCase):
 
     @patch("subprocess.run")
     def test_get_volume_identity(self, run):
-        payload = plistlib.dumps({
-            "DeviceIdentifier": "disk4s1",
-            "VolumeUUID": "uuid-a",
-        })
+        payload = plistlib.dumps(
+            {
+                "DeviceIdentifier": "disk4s1",
+                "VolumeUUID": "uuid-a",
+            }
+        )
         run.return_value = MagicMock(returncode=0, stdout=payload)
         identity = volumes.get_volume_identity(self.usb_volume)
         self.assertEqual(identity.volume_uuid, "uuid-a")

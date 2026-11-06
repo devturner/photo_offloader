@@ -4,6 +4,7 @@
 The menu bar stays alive whether or not the background service is running. When the service
 is stopped the menu says so and offers Start; nothing is greyed out except the explanatory line.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ class Snapshot:
 
 @dataclass(frozen=True)
 class Entry:
-    key: Optional[str]          # None = separator
+    key: Optional[str]  # None = separator
     title: str = ""
     enabled: bool = True
 
@@ -32,8 +33,12 @@ def parse_status(output: str, returncode: int, usb: bool = False) -> Snapshot:
         name, _, value = line.partition(":")
         fields[name.strip().lower()] = value.strip().lower()
     running = returncode == 0 and fields.get("service") == "running"
-    return Snapshot(running=running, paused=fields.get("imports") == "paused",
-                    transfer=fields.get("transfer") == "in progress", usb=usb)
+    return Snapshot(
+        running=running,
+        paused=fields.get("imports") == "paused",
+        transfer=fields.get("transfer") == "in progress",
+        usb=usb,
+    )
 
 
 def menu_title(snapshot: Snapshot) -> str:
@@ -50,7 +55,9 @@ VIEW_LOG = Entry("view_log", "View Import Log")
 
 
 def menu_entries(snapshot: Snapshot) -> List[Entry]:
-    quit_entry = Entry("quit", "Quit Menu Bar (Service Keeps Running)" if snapshot.running else "Quit Menu Bar")
+    quit_entry = Entry(
+        "quit", "Quit Menu Bar (Service Keeps Running)" if snapshot.running else "Quit Menu Bar"
+    )
     if not snapshot.running:
         return [
             Entry("info", "Photo Offloader is stopped", enabled=False),
@@ -64,6 +71,14 @@ def menu_entries(snapshot: Snapshot) -> List[Entry]:
     entries = [Entry("open_dashboard", "Open Dashboard")]
     if snapshot.usb and not snapshot.transfer:
         entries.append(Entry("copy_usb", "Copy to USB Drive"))
-    entries.append(Entry("pause", "Resume Automatic Imports" if snapshot.paused else "Pause Automatic Imports"))
-    entries += [Entry(None), VIEW_LOG, Entry(None), Entry("stop", "Stop Photo Offloader…"), quit_entry]
+    entries.append(
+        Entry("pause", "Resume Automatic Imports" if snapshot.paused else "Pause Automatic Imports")
+    )
+    entries += [
+        Entry(None),
+        VIEW_LOG,
+        Entry(None),
+        Entry("stop", "Stop Photo Offloader…"),
+        quit_entry,
+    ]
     return entries

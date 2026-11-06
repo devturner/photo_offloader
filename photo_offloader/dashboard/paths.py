@@ -1,4 +1,5 @@
 """Every file and program the dashboard reads, writes or launches."""
+
 from __future__ import annotations
 
 import os
@@ -21,7 +22,7 @@ class Paths:
     python: Path
     launchctl: str = "/bin/launchctl"
     pgrep: str = "/usr/bin/pgrep"
-    rclone_config: Optional[Path] = None   # where rclone keeps its remotes (not ours to change)
+    rclone_config: Optional[Path] = None  # where rclone keeps its remotes (not ours to change)
 
     @classmethod
     def default(cls) -> "Paths":
@@ -41,7 +42,9 @@ class Paths:
     # files the importer / trigger / service maintain
     @property
     def status_file(self) -> Path:
-        return Path(os.environ.get("PHOTO_OFFLOADER_STATUS_FILE", str(self.install_dir / "status.json")))
+        return Path(
+            os.environ.get("PHOTO_OFFLOADER_STATUS_FILE", str(self.install_dir / "status.json"))
+        )
 
     @property
     def pause_file(self) -> Path:
@@ -69,8 +72,7 @@ class Paths:
 
     @property
     def trigger_log_file(self) -> Path:
-        return Path(os.environ.get("PHOTO_OFFLOADER_TRIGGER_LOG",
-                                   str(config.TRIGGER_LOG_PATH)))
+        return Path(os.environ.get("PHOTO_OFFLOADER_TRIGGER_LOG", str(config.TRIGGER_LOG_PATH)))
 
     @property
     def events_log_file(self) -> Path:

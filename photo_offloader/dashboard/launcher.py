@@ -7,6 +7,7 @@ auto-open on import can both call this safely.
 
 The page itself lives in ``web/``; the state it shows comes from ``core``.
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -46,14 +47,20 @@ def _activate_pid(pid: int) -> bool:
             NSApplicationActivateIgnoringOtherApps,
             NSRunningApplication,
         )
-    except Exception:  # not installed, or its Cocoa bindings are unusable: the caller opens a browser
+    except (
+        Exception
+    ):  # not installed, or its Cocoa bindings are unusable: the caller opens a browser
         return False
     app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
     return bool(app and app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps))
 
 
-def _bring_forward(existing: Dict[str, Any], if_closed: bool, open_browser: Callable[[str], Any],
-                   activate: Callable[[int], bool]) -> None:
+def _bring_forward(
+    existing: Dict[str, Any],
+    if_closed: bool,
+    open_browser: Callable[[str], Any],
+    activate: Callable[[int], bool],
+) -> None:
     """Show the dashboard that is already running, unless ``if_closed`` and a page is open."""
     if if_closed and float(existing.get("idle_seconds") or 1e9) < PAGE_OPEN_WITHIN_SECONDS:
         return
@@ -68,7 +75,7 @@ def _remove_own_record(record: Path) -> None:
         if record.is_file() and int(json.loads(record.read_text())["pid"]) == os.getpid():
             record.unlink()
     except (OSError, ValueError, KeyError):
-        pass   # a leftover record is harmless: find_running_instance checks the server answers
+        pass  # a leftover record is harmless: find_running_instance checks the server answers
 
 
 def main(
@@ -106,9 +113,14 @@ def main(
             return 0
 
         webview = _import_webview() if webview_module == "auto" else webview_module
-        window = webview is not None and os.environ.get("PHOTO_OFFLOADER_DASHBOARD_MODE") != "browser"
-        server = DashboardServer(DashboardCore(paths), web_root,
-                                 idle_timeout=None if window else (idle_timeout or BROWSER_IDLE_TIMEOUT))
+        window = (
+            webview is not None and os.environ.get("PHOTO_OFFLOADER_DASHBOARD_MODE") != "browser"
+        )
+        server = DashboardServer(
+            DashboardCore(paths),
+            web_root,
+            idle_timeout=None if window else (idle_timeout or BROWSER_IDLE_TIMEOUT),
+        )
         server.start()
         write_instance_file(record, server, mode="window" if window else "browser")
     finally:
@@ -116,8 +128,13 @@ def main(
 
     try:
         if window:
-            webview.create_window("Photo Offloader", server.url, width=WINDOW_SIZE[0],
-                                  height=WINDOW_SIZE[1], resizable=False)
+            webview.create_window(
+                "Photo Offloader",
+                server.url,
+                width=WINDOW_SIZE[0],
+                height=WINDOW_SIZE[1],
+                resizable=False,
+            )
             webview.start()  # blocks until the window is closed
         else:
             open_browser(server.url)

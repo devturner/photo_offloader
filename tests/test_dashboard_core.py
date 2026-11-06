@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for photo_offloader.dashboard.core: the state the dashboard renders and the actions it can run."""
+
 import dataclasses
 import json
 import os
@@ -33,8 +34,12 @@ class Fixture(unittest.TestCase):
         (self.install / "bin" / "photo-offloader-google-sync").write_text("")
         (self.install / "scripts" / "trigger.sh").write_text("#!/bin/bash\n")
 
-        support.isolate_config(self, root, CATALOG_DB_PATH=self.data / "catalog.sqlite3",
-                               LEGACY_CATALOG_DB_PATH=root / "legacy.sqlite3")
+        support.isolate_config(
+            self,
+            root,
+            CATALOG_DB_PATH=self.data / "catalog.sqlite3",
+            LEGACY_CATALOG_DB_PATH=root / "legacy.sqlite3",
+        )
         env = patch.dict(os.environ)
         env.start()
         self.addCleanup(env.stop)
@@ -42,9 +47,14 @@ class Fixture(unittest.TestCase):
         os.environ.pop("PHOTO_OFFLOADER_PAUSE_FILE", None)
 
         self.paths = core.Paths(
-            install_dir=self.install, data_dir=self.data, volumes_root=self.volumes,
-            usb_volume=self.usb, local_archives=(root / "CameraImports", root / "CameraImportsRaw"),
-            usb_archives=(self.usb / "CameraImports",), python=Path("/usr/bin/python3"))
+            install_dir=self.install,
+            data_dir=self.data,
+            volumes_root=self.volumes,
+            usb_volume=self.usb,
+            local_archives=(root / "CameraImports", root / "CameraImportsRaw"),
+            usb_archives=(self.usb / "CameraImports",),
+            python=Path("/usr/bin/python3"),
+        )
         self.now = 1_800_000_000.0
         self.service_up = True
         self.importer_up = False
@@ -57,12 +67,20 @@ class Fixture(unittest.TestCase):
             if "print" in argv:
                 return subprocess.CompletedProcess(argv, 0 if self.service_up else 113, "", "")
             if argv[0].endswith("pgrep"):
-                alive = self.google_up if argv[-1].endswith("photo-offloader-google-sync") else self.importer_up
+                alive = (
+                    self.google_up
+                    if argv[-1].endswith("photo-offloader-google-sync")
+                    else self.importer_up
+                )
                 return subprocess.CompletedProcess(argv, 0, "4242\n" if alive else "", "")
             return subprocess.CompletedProcess(argv, 0, "ok", "")
 
-        self.core = core.DashboardCore(self.paths, clock=lambda: self.now, run=run,
-                                       popen=lambda argv, **kw: self.spawned.append(list(argv)))
+        self.core = core.DashboardCore(
+            self.paths,
+            clock=lambda: self.now,
+            run=run,
+            popen=lambda argv, **kw: self.spawned.append(list(argv)),
+        )
 
     # helpers ---------------------------------------------------------------------------
     def advance(self, seconds):
@@ -78,9 +96,16 @@ class Fixture(unittest.TestCase):
         (self.volumes / name / "DCIM").mkdir(parents=True)
 
     def record(self, **fields):
-        base = dict(kind="import", source="NIKON Z 8", outcome="complete", files=214,
-                    copied=214, bytes=420 * 1024 * 1024, started_at=self.now - 60,
-                    finished_at=self.now - 5)
+        base = dict(
+            kind="import",
+            source="NIKON Z 8",
+            outcome="complete",
+            files=214,
+            copied=214,
+            bytes=420 * 1024 * 1024,
+            started_at=self.now - 60,
+            finished_at=self.now - 5,
+        )
         base.update(fields)
         catalog.record_import_run(**base)
 
@@ -88,13 +113,17 @@ class Fixture(unittest.TestCase):
         catalog.catalog_connection().close()
         with sqlite3.connect(self.data / "catalog.sqlite3") as db:
             for index in range(local):
-                db.execute("INSERT INTO file_locations (path, root, relative_path, size, mtime_ns, inode, indexed_at)"
-                           " VALUES (?, ?, ?, 1, 1, ?, 1)",
-                           (f"l{index}", str(self.paths.local_archives[0].resolve()), f"l{index}", index))
+                db.execute(
+                    "INSERT INTO file_locations (path, root, relative_path, size, mtime_ns, inode, indexed_at)"
+                    " VALUES (?, ?, ?, 1, 1, ?, 1)",
+                    (f"l{index}", str(self.paths.local_archives[0].resolve()), f"l{index}", index),
+                )
             for index in range(usb):
-                db.execute("INSERT INTO file_locations (path, root, relative_path, size, mtime_ns, inode, indexed_at)"
-                           " VALUES (?, ?, ?, 1, 1, ?, 1)",
-                           (f"u{index}", str(self.paths.usb_archives[0].resolve()), f"u{index}", index))
+                db.execute(
+                    "INSERT INTO file_locations (path, root, relative_path, size, mtime_ns, inode, indexed_at)"
+                    " VALUES (?, ?, ?, 1, 1, ?, 1)",
+                    (f"u{index}", str(self.paths.usb_archives[0].resolve()), f"u{index}", index),
+                )
 
     def action_ids(self, step_id):
         return [action["id"] for action in self.pipeline(step_id)["actions"]]
@@ -132,14 +161,20 @@ class TestHeadline(Fixture):
         head = self.core.state()["headline"]
         self.assertEqual(head["title"], "NIKON Z 8 was already imported")
         self.assertNotIn("Waiting", head["detail"])
-        self.assertIn({"id": "import_card", "label": "Import now"}, self.pipeline("card")["actions"])
+        self.assertIn(
+            {"id": "import_card", "label": "Import now"}, self.pipeline("card")["actions"]
+        )
 
     def test_import_now_is_hidden_while_the_importer_is_busy(self):
         self.add_card("NIKON Z 8")
         self.mark_card_handled()
         self.importer_up = True
-        self.write_status(state="copying", source=str(self.volumes / "NIKON Z 8" / "DCIM"),
-                          files_done=1, files_total=10)
+        self.write_status(
+            state="copying",
+            source=str(self.volumes / "NIKON Z 8" / "DCIM"),
+            files_done=1,
+            files_total=10,
+        )
         self.assertEqual(self.pipeline("card")["actions"], [])
 
     def test_import_now_forgets_the_handled_card_and_rechecks(self):
@@ -172,10 +207,17 @@ class TestHeadline(Fixture):
 class TestActivity(Fixture):
     def copying(self, **extra):
         self.importer_up = True
-        fields = dict(state="copying", phase="card-to-ssd", source="/Volumes/NIKON Z 8",
-                      bytes_done=100 * 1024**2, bytes_total=400 * 1024**2,
-                      bytes_transferred=100 * 1024**2, transfer_speed_bps=50 * 1024**2,
-                      eta_seconds=6, current_file="DSC_0142.NEF")
+        fields = dict(
+            state="copying",
+            phase="card-to-ssd",
+            source="/Volumes/NIKON Z 8",
+            bytes_done=100 * 1024**2,
+            bytes_total=400 * 1024**2,
+            bytes_transferred=100 * 1024**2,
+            transfer_speed_bps=50 * 1024**2,
+            eta_seconds=6,
+            current_file="DSC_0142.NEF",
+        )
         fields.update(extra)
         self.write_status(**fields)
 
@@ -186,17 +228,27 @@ class TestActivity(Fixture):
         self.assertEqual(activity["title"], "Copying new files")
         self.assertAlmostEqual(activity["percent"], 25.0)
         self.assertEqual(activity["detail"], "RAW · DSC_0142.NEF")
-        self.assertEqual((activity["files_done"], activity["files_total"], activity["new_files"]), (40, 160, 3))
+        self.assertEqual(
+            (activity["files_done"], activity["files_total"], activity["new_files"]), (40, 160, 3)
+        )
         self.assertEqual(state["headline"]["title"], "Copying new files")
         self.assertEqual(state["headline"]["detail"], "NIKON Z 8 · RAW · DSC_0142.NEF")
         archive = self.pipeline("archive")
-        self.assertEqual((archive["state"], archive["headline"], archive["detail"]),
-                         ("active", "Copying", "RAW · DSC_0142.NEF"))
+        self.assertEqual(
+            (archive["state"], archive["headline"], archive["detail"]),
+            ("active", "Copying", "RAW · DSC_0142.NEF"),
+        )
 
     def checking(self, **extra):
         # Between copies the importer reports each file's copy decision as "scanning".
-        fields = dict(state="scanning", phase="copy-decision", stage="copy", category="RAW",
-                      decision_files_checked=5, decision_files_total=1188)
+        fields = dict(
+            state="scanning",
+            phase="copy-decision",
+            stage="copy",
+            category="RAW",
+            decision_files_checked=5,
+            decision_files_total=1188,
+        )
         fields.update(extra)
         self.copying(**fields)
 
@@ -205,10 +257,16 @@ class TestActivity(Fixture):
         expectations = [
             (dict(state="scanning", phase="card-to-ssd", stage="scan"), "Scanning card"),
             (dict(state="scanning", phase="card-to-ssd", stage="metadata"), "Reading photo info"),
-            (dict(state="scanning", phase="copy-decision", stage="copy", new_files=0), "Checking for new files"),
+            (
+                dict(state="scanning", phase="copy-decision", stage="copy", new_files=0),
+                "Checking for new files",
+            ),
             (dict(state="scanning", phase="USB backup", stage="usb"), "Comparing with USB backup"),
             (dict(state="copying", phase="USB backup", stage="usb"), "Backing up to USB"),
-            (dict(state="scanning", phase="catalog-update", stage="catalog"), "Updating file index"),
+            (
+                dict(state="scanning", phase="catalog-update", stage="catalog"),
+                "Updating file index",
+            ),
         ]
         for fields, title in expectations:
             with self.subTest(title=title):
@@ -225,8 +283,13 @@ class TestActivity(Fixture):
             if step % 2:
                 self.checking(new_files=2, bytes_done=transferred, bytes_transferred=transferred)
             else:
-                self.copying(stage="copy", category="RAW", new_files=2,
-                             bytes_done=transferred, bytes_transferred=transferred)
+                self.copying(
+                    stage="copy",
+                    category="RAW",
+                    new_files=2,
+                    bytes_done=transferred,
+                    bytes_transferred=transferred,
+                )
             seen.append(self.core.state()["activity"])
         self.assertEqual({a["title"] for a in seen}, {"Copying new files"})
         percents = [a["percent"] for a in seen]
@@ -238,8 +301,10 @@ class TestActivity(Fixture):
     def test_while_scanning_the_card_step_is_active_not_the_archive(self):
         self.add_card("NIKON Z 8")
         self.copying(state="scanning", phase="card-to-ssd", stage="metadata")
-        self.assertEqual((self.pipeline("card")["state"], self.pipeline("card")["detail"]),
-                         ("active", "Reading photo info"))
+        self.assertEqual(
+            (self.pipeline("card")["state"], self.pipeline("card")["detail"]),
+            ("active", "Reading photo info"),
+        )
         self.assertNotEqual(self.pipeline("archive")["state"], "active")
 
     def test_speed_does_not_blank_out_while_unchanged_files_are_checked(self):
@@ -258,12 +323,21 @@ class TestActivity(Fixture):
     def test_import_stages_are_listed_with_progress(self):
         self.checking(usb_planned=False)
         stages = self.core.state()["activity"]["stages"]
-        self.assertEqual([(s["id"], s["state"]) for s in stages],
-                         [("scan", "done"), ("metadata", "done"), ("copy", "active"), ("usb", "skipped"),
-                          ("upload", "skipped")])
+        self.assertEqual(
+            [(s["id"], s["state"]) for s in stages],
+            [
+                ("scan", "done"),
+                ("metadata", "done"),
+                ("copy", "active"),
+                ("usb", "skipped"),
+                ("upload", "skipped"),
+            ],
+        )
         self.copying(stage="usb", phase="USB backup", usb_planned=True)
         stages = self.core.state()["activity"]["stages"]
-        self.assertEqual([s["state"] for s in stages], ["done", "done", "done", "active", "skipped"])
+        self.assertEqual(
+            [s["state"] for s in stages], ["done", "done", "done", "active", "skipped"]
+        )
 
     def test_usb_backup_is_recognised_by_phase(self):
         self.importer_up = True
@@ -335,17 +409,26 @@ class TestLastTransferAndHistory(Fixture):
         last = state["last_transfer"]
         self.assertEqual(last["title"], "Imported from NIKON Z 8")
         # User feedback 2026-11-04: say what this session backed up, then the card total.
-        self.assertEqual(last["summary"], "15 new: 7 photos, 7 RAW, 1 other · 280.0 MB · 214 on card, all backed up")
+        self.assertEqual(
+            last["summary"],
+            "15 new: 7 photos, 7 RAW, 1 other · 280.0 MB · 214 on card, all backed up",
+        )
         self.assertEqual(state["headline"]["tone"], "success")
 
     def test_an_import_with_nothing_new_says_so(self):
         self.record(copied=0, skipped=214, details={"new": {}, "new_bytes": 0})
-        self.assertEqual(self.core.history()[0]["summary"], "No new files · 214 on card, all backed up")
+        self.assertEqual(
+            self.core.history()[0]["summary"], "No new files · 214 on card, all backed up"
+        )
 
     def test_usb_copies_of_the_session_are_counted(self):
-        self.record(usb=True, details={"new": {"RAW": 2}, "new_bytes": 60 * 1024**2, "usb_copied": 2})
-        self.assertEqual(self.core.history()[0]["summary"],
-                         "2 new: 2 RAW · 60.0 MB · 214 on card, all backed up · 2 copied to USB")
+        self.record(
+            usb=True, details={"new": {"RAW": 2}, "new_bytes": 60 * 1024**2, "usb_copied": 2}
+        )
+        self.assertEqual(
+            self.core.history()[0]["summary"],
+            "2 new: 2 RAW · 60.0 MB · 214 on card, all backed up · 2 copied to USB",
+        )
 
     def test_runs_recorded_before_session_details_still_read_sensibly(self):
         self.record(copied=12)
@@ -372,9 +455,12 @@ class TestLastTransferAndHistory(Fixture):
     def test_dismissing_survives_a_restart_and_a_newer_run_reappears(self):
         self.record(outcome="failed", message="boom")
         self.core.act("dismiss_last")
-        restarted = core.DashboardCore(self.paths, clock=lambda: self.now,
-                                       run=lambda argv, **k: subprocess.CompletedProcess(argv, 0, "", ""),
-                                       popen=lambda *a, **k: None)
+        restarted = core.DashboardCore(
+            self.paths,
+            clock=lambda: self.now,
+            run=lambda argv, **k: subprocess.CompletedProcess(argv, 0, "", ""),
+            popen=lambda *a, **k: None,
+        )
         self.assertIsNone(restarted.state()["last_transfer"])
         self.record(outcome="failed", message="again")
         self.assertIsNotNone(restarted.state()["last_transfer"])
@@ -411,8 +497,11 @@ class TestLogs(Fixture):
         os.environ["PHOTO_OFFLOADER_TRIGGER_LOG"] = str(self.install / "trigger.log")
 
     def test_each_log_opens_in_console(self):
-        for log_id, path in (("import", self.install / "import.log"), ("trigger", self.install / "trigger.log"),
-                             ("google", self.install / "google_photos_sync.log")):
+        for log_id, path in (
+            ("import", self.install / "import.log"),
+            ("trigger", self.install / "trigger.log"),
+            ("google", self.install / "google_photos_sync.log"),
+        ):
             with self.subTest(log=log_id):
                 path.write_text("line\n")
                 self.assertTrue(self.core.act("open_log", {"log": log_id})["ok"])
@@ -438,7 +527,9 @@ class TestEject(Fixture):
         self.assertIn({"id": "eject_card", "label": "Eject"}, self.pipeline("card")["actions"])
         result = self.core.act("eject_card")
         self.assertTrue(result["ok"], result)
-        self.assertEqual(self.ran[-1], ["/usr/sbin/diskutil", "eject", str(self.volumes / "NIKON Z 8")])
+        self.assertEqual(
+            self.ran[-1], ["/usr/sbin/diskutil", "eject", str(self.volumes / "NIKON Z 8")]
+        )
 
     def test_the_card_cannot_be_ejected_while_it_is_being_imported(self):
         self.add_card("NIKON Z 8")
@@ -447,14 +538,16 @@ class TestEject(Fixture):
         self.assertEqual(self.pipeline("card")["actions"], [])
         ran_before = list(self.ran)
         self.assertFalse(self.core.act("eject_card")["ok"])
-        self.assertFalse(any("eject" in argv for argv in self.ran[len(ran_before):]))
+        self.assertFalse(any("eject" in argv for argv in self.ran[len(ran_before) :]))
 
     def test_the_usb_drive_can_be_ejected_when_nothing_is_using_it(self):
         self.usb.mkdir()
         self.assertTrue(self.core.act("eject_usb")["ok"])
         self.assertEqual(self.ran[-1], ["/usr/sbin/diskutil", "eject", str(self.usb)])
         self.importer_up = True
-        self.write_status(state="copying", phase="USB backup", stage="usb", bytes_done=1, bytes_total=4)
+        self.write_status(
+            state="copying", phase="USB backup", stage="usb", bytes_done=1, bytes_total=4
+        )
         self.core._cache.clear()
         self.assertFalse(self.core.act("eject_usb")["ok"])
 
@@ -467,23 +560,38 @@ class TestRunFlow(Fixture):
     # User feedback 2026-11-04: the panel fell back to the "Imported" screen between
     # copying and uploading; it should stay on the transfer and end with a summary.
     def google_configured(self):
-        (self.data / "preferences.json").write_text(json.dumps({"google_photos": {"configured": True}}))
+        (self.data / "preferences.json").write_text(
+            json.dumps({"google_photos": {"configured": True}})
+        )
 
     def google_status(self, state, seconds_ago):
-        stamp = datetime.fromtimestamp(self.now - seconds_ago).astimezone().isoformat(timespec="seconds")
-        (self.install / "google_photos_status.json").write_text(json.dumps({"state": state, "updated_at": stamp}))
+        stamp = (
+            datetime.fromtimestamp(self.now - seconds_ago)
+            .astimezone()
+            .isoformat(timespec="seconds")
+        )
+        (self.install / "google_photos_status.json").write_text(
+            json.dumps({"state": state, "updated_at": stamp})
+        )
 
     def finished_import(self, seconds_ago=3):
-        self.record(started_at=self.now - seconds_ago - 95, finished_at=self.now - seconds_ago, files=2378,
-                    copied=18, details={"new": {"JPG": 9, "RAW": 9}, "new_bytes": 400 * 1024**2})
+        self.record(
+            started_at=self.now - seconds_ago - 95,
+            finished_at=self.now - seconds_ago,
+            files=2378,
+            copied=18,
+            details={"new": {"JPG": 9, "RAW": 9}, "new_bytes": 400 * 1024**2},
+        )
 
     def test_the_moment_before_the_upload_starts_stays_in_the_transfer_view(self):
         self.google_configured()
-        self.google_status("complete", seconds_ago=600)      # last sync was before this import
+        self.google_status("complete", seconds_ago=600)  # last sync was before this import
         self.finished_import(seconds_ago=2)
         state = self.core.state()
         activity = state["activity"]
-        self.assertEqual((activity["kind"], activity["title"]), ("upload", "Starting upload to Google Photos"))
+        self.assertEqual(
+            (activity["kind"], activity["title"]), ("upload", "Starting upload to Google Photos")
+        )
         self.assertEqual([s["state"] for s in activity["stages"]][-1], "active")
         self.assertEqual(state["headline"]["tone"], "active")
 
@@ -492,29 +600,48 @@ class TestRunFlow(Fixture):
         # status.json said "complete" before the run reached the history table.
         self.google_configured()
         self.add_card("NIKON Z 8")
-        (self.install / ".last_camera_source").write_text(str(self.volumes / "NIKON Z 8" / "DCIM") + "\n")
-        self.record(started_at=self.now - 900, finished_at=self.now - 720)    # the previous import
+        (self.install / ".last_camera_source").write_text(
+            str(self.volumes / "NIKON Z 8" / "DCIM") + "\n"
+        )
+        self.record(started_at=self.now - 900, finished_at=self.now - 720)  # the previous import
         self.google_status("complete", seconds_ago=700)
-        self.write_status(state="complete", phase="card-to-ssd", stage="copy", usb_planned=False,
-                          source=str(self.volumes / "NIKON Z 8"))
+        self.write_status(
+            state="complete",
+            phase="card-to-ssd",
+            stage="copy",
+            usb_planned=False,
+            source=str(self.volumes / "NIKON Z 8"),
+        )
         state = self.core.state()
         self.assertEqual(state["activity"]["title"], "Finishing import")
-        self.assertEqual([(s["id"], s["state"]) for s in state["activity"]["stages"]][2:],
-                         [("copy", "done"), ("usb", "skipped"), ("upload", "pending")])
+        self.assertEqual(
+            [(s["id"], s["state"]) for s in state["activity"]["stages"]][2:],
+            [("copy", "done"), ("usb", "skipped"), ("upload", "pending")],
+        )
         self.assertNotIn("already imported", state["headline"]["title"])
 
     def test_a_finished_run_ends_with_a_summary_in_the_same_panel(self):
         self.google_configured()
         self.finished_import(seconds_ago=60)
-        self.google_status("complete", seconds_ago=30)       # uploaded after the import
+        self.google_status("complete", seconds_ago=30)  # uploaded after the import
         state = self.core.state()
         self.assertIsNone(state["activity"])
         finished = state["finished"]
         self.assertEqual(finished["title"], "Imported from NIKON Z 8")
-        self.assertEqual([(s["id"], s["state"]) for s in finished["stages"]],
-                         [("scan", "done"), ("metadata", "done"), ("copy", "done"), ("usb", "skipped"),
-                          ("upload", "done")])
-        self.assertEqual((finished["percent"], finished["files_done"], finished["files_total"]), (100.0, 18, 2378))
+        self.assertEqual(
+            [(s["id"], s["state"]) for s in finished["stages"]],
+            [
+                ("scan", "done"),
+                ("metadata", "done"),
+                ("copy", "done"),
+                ("usb", "skipped"),
+                ("upload", "done"),
+            ],
+        )
+        self.assertEqual(
+            (finished["percent"], finished["files_done"], finished["files_total"]),
+            (100.0, 18, 2378),
+        )
         self.assertEqual(finished["elapsed_seconds"], 95)
         self.assertEqual(finished["bytes_done"], 400 * 1024**2)
 
@@ -571,8 +698,10 @@ class TestTheme(Fixture):
         self.assertEqual(restarted.state()["settings"]["theme"], "dark")
 
     def test_a_preference_that_cannot_be_saved_is_logged(self):
-        with patch("os.replace", side_effect=OSError("disk full")), \
-                self.assertLogs("camera_offloader", level="WARNING") as captured:
+        with (
+            patch("os.replace", side_effect=OSError("disk full")),
+            self.assertLogs("camera_offloader", level="WARNING") as captured,
+        ):
             self.core._save_dashboard_state(theme="dark")
         self.assertIn("disk full", captured.output[0])
         self.assertIn("dashboard_state.json", captured.output[0])
@@ -622,8 +751,13 @@ class TestPipeline(Fixture):
         self.assertEqual(self.pipeline("cloud")["actions"], [])
 
     def test_catalog_maintenance_is_never_a_permanent_button(self):
-        self.assertTrue(all(action["id"] != "update_catalog"
-                            for step in self.core.state()["pipeline"] for action in step["actions"]))
+        self.assertTrue(
+            all(
+                action["id"] != "update_catalog"
+                for step in self.core.state()["pipeline"]
+                for action in step["actions"]
+            )
+        )
 
     def test_google_photos_not_configured(self):
         step = self.pipeline("cloud")
@@ -632,17 +766,23 @@ class TestPipeline(Fixture):
     def test_not_set_up_names_the_first_missing_step(self):
         with patch.object(google_photos, "find_rclone", return_value=None):
             self.assertEqual(self.pipeline("cloud")["detail"], "Install rclone to set this up")
-        self.advance(60)   # past the cached answer
+        self.advance(60)  # past the cached answer
         with patch.object(google_photos, "find_rclone", return_value="/usr/bin/rclone"):
             self.assertEqual(self.pipeline("cloud")["detail"], "Add an rclone remote named gphotos")
 
     def test_not_set_up_names_a_custom_remote(self):
-        with (patch.object(google_photos, "find_rclone", return_value="/usr/bin/rclone"),
-              patch.dict(os.environ, {"PHOTO_OFFLOADER_GPHOTOS_REMOTE": "photos-cloud:"})):
-            self.assertEqual(self.pipeline("cloud")["detail"], "Add an rclone remote named photos-cloud")
+        with (
+            patch.object(google_photos, "find_rclone", return_value="/usr/bin/rclone"),
+            patch.dict(os.environ, {"PHOTO_OFFLOADER_GPHOTOS_REMOTE": "photos-cloud:"}),
+        ):
+            self.assertEqual(
+                self.pipeline("cloud")["detail"], "Add an rclone remote named photos-cloud"
+            )
 
     def test_google_photos_configured_and_idle(self):
-        (self.data / "preferences.json").write_text(json.dumps({"google_photos": {"configured": True}}))
+        (self.data / "preferences.json").write_text(
+            json.dumps({"google_photos": {"configured": True}})
+        )
         step = self.pipeline("cloud")
         self.assertEqual((step["state"], step["actions"][0]["id"]), ("ok", "google_sync"))
 
@@ -654,7 +794,9 @@ class TestPipeline(Fixture):
     def test_a_configured_rclone_remote_counts_even_after_a_reinstall(self):
         # User report 2026-11-04: after uninstall/reinstall the dashboard asked to set up
         # Google Photos again although rclone still had the gphotos remote.
-        self.rclone_config("[other]\ntype = drive\n\n[gphotos]\ntype = google photos\ntoken = {\"secret\": 1}\n")
+        self.rclone_config(
+            '[other]\ntype = drive\n\n[gphotos]\ntype = google photos\ntoken = {"secret": 1}\n'
+        )
         step = self.pipeline("cloud")
         self.assertEqual((step["state"], step["actions"][0]["id"]), ("ok", "google_sync"))
 
@@ -677,9 +819,11 @@ class TestPipeline(Fixture):
     def test_google_photos_upload_shows_live_progress_from_the_rclone_log(self):
         self.google_up = True
         (self.install / "google_photos_status.json").write_text(
-            json.dumps({"state": "running", "message": "Uploading"}))
+            json.dumps({"state": "running", "message": "Uploading"})
+        )
         (self.install / "google_photos_sync.log").write_text(
-            "2026/10/21 22:24:49 INFO  : 4.998 GiB / 17.703 GiB, 28%, 8.387 MiB/s, ETA 25m51s (xfr#649/1520)\n")
+            "2026/10/21 22:24:49 INFO  : 4.998 GiB / 17.703 GiB, 28%, 8.387 MiB/s, ETA 25m51s (xfr#649/1520)\n"
+        )
         state = self.core.state()
         self.assertEqual(state["upload"]["percent"], 28.0)
         step = self.pipeline("cloud")
@@ -690,23 +834,42 @@ class TestPipeline(Fixture):
         self.google_up = True
         (self.install / "google_photos_status.json").write_text(json.dumps({"state": "running"}))
         (self.install / "google_photos_sync.log").write_text(
-            "2026/10/21 22:24:49 INFO  : 4.998 GiB / 17.703 GiB, 28%, 8.387 MiB/s, ETA 25m51s (xfr#649/1520)\n")
+            "2026/10/21 22:24:49 INFO  : 4.998 GiB / 17.703 GiB, 28%, 8.387 MiB/s, ETA 25m51s (xfr#649/1520)\n"
+        )
         state = self.core.state()
         # The progress slots show the bytes; the subtitle says what is being uploaded.
-        self.assertEqual(state["headline"], {"tone": "active", "title": "Uploading to Google Photos",
-                                             "detail": "649 of 1,520 files"})
+        self.assertEqual(
+            state["headline"],
+            {
+                "tone": "active",
+                "title": "Uploading to Google Photos",
+                "detail": "649 of 1,520 files",
+            },
+        )
         activity = state["activity"]
-        self.assertEqual((activity["kind"], activity["percent"], activity["eta_seconds"]), ("upload", 28.0, 1551.0))
+        self.assertEqual(
+            (activity["kind"], activity["percent"], activity["eta_seconds"]),
+            ("upload", 28.0, 1551.0),
+        )
         self.assertAlmostEqual(activity["speed_bps"], 8.387 * 1024**2, delta=10)
         self.assertFalse(state["busy"], "an upload must not block backups or catalog updates")
 
     def start_upload(self, started_seconds_ago=30, line=None):
         self.google_up = True
-        started = datetime.fromtimestamp(self.now - started_seconds_ago).astimezone().isoformat(timespec="seconds")
+        started = (
+            datetime.fromtimestamp(self.now - started_seconds_ago)
+            .astimezone()
+            .isoformat(timespec="seconds")
+        )
         (self.install / "google_photos_status.json").write_text(
-            json.dumps({"state": "running", "updated_at": started}))
-        (self.install / "google_photos_sync.log").write_text(line or (
-            "2026/11/04 18:50:05 INFO  :   175.183 MiB / 267.950 MiB, 65%, 8.800 MiB/s, ETA 10s (xfr#8/18)\n"))
+            json.dumps({"state": "running", "updated_at": started})
+        )
+        (self.install / "google_photos_sync.log").write_text(
+            line
+            or (
+                "2026/11/04 18:50:05 INFO  :   175.183 MiB / 267.950 MiB, 65%, 8.800 MiB/s, ETA 10s (xfr#8/18)\n"
+            )
+        )
 
     def test_upload_reports_files_and_elapsed_time(self):
         # User screenshot 2026-11-04: Files and Elapsed were blank during the upload.
@@ -718,8 +881,10 @@ class TestPipeline(Fixture):
     def test_upload_speed_is_graphed(self):
         self.start_upload()
         self.core.state()
-        for line in ("2026/11/04 18:50:10 INFO  :   204.131 MiB / 267.950 MiB, 76%, 8.059 MiB/s, ETA 7s (xfr#12/18)\n",
-                     "2026/11/04 18:50:15 INFO  :   237.655 MiB / 267.950 MiB, 89%, 7.590 MiB/s, ETA 3s (xfr#12/18)\n"):
+        for line in (
+            "2026/11/04 18:50:10 INFO  :   204.131 MiB / 267.950 MiB, 76%, 8.059 MiB/s, ETA 7s (xfr#12/18)\n",
+            "2026/11/04 18:50:15 INFO  :   237.655 MiB / 267.950 MiB, 89%, 7.590 MiB/s, ETA 3s (xfr#12/18)\n",
+        ):
             self.advance(5)
             (self.install / "google_photos_sync.log").write_text(line)
             activity = self.core.state()["activity"]
@@ -727,27 +892,49 @@ class TestPipeline(Fixture):
 
     def test_upload_right_after_an_import_continues_the_same_steps(self):
         # User feedback 2026-11-04: the upload should be a step of the import, not a new view.
-        (self.data / "preferences.json").write_text(json.dumps({"google_photos": {"configured": True}}))
+        (self.data / "preferences.json").write_text(
+            json.dumps({"google_photos": {"configured": True}})
+        )
         self.record(usb=True, started_at=self.now - 200, finished_at=self.now - 60)
         self.start_upload()
         state = self.core.state()
-        self.assertEqual([(s["id"], s["state"]) for s in state["activity"]["stages"]],
-                         [("scan", "done"), ("metadata", "done"), ("copy", "done"), ("usb", "done"),
-                          ("upload", "active")])
+        self.assertEqual(
+            [(s["id"], s["state"]) for s in state["activity"]["stages"]],
+            [
+                ("scan", "done"),
+                ("metadata", "done"),
+                ("copy", "done"),
+                ("usb", "done"),
+                ("upload", "active"),
+            ],
+        )
         self.assertEqual(state["headline"]["detail"], "NIKON Z 8 · 8 of 18 files")
 
     def test_an_import_lists_the_upload_as_a_later_step_when_google_photos_is_set_up(self):
         self.importer_up = True
-        self.write_status(state="copying", phase="copy", stage="copy", usb_planned=False, bytes_done=1, bytes_total=4)
+        self.write_status(
+            state="copying",
+            phase="copy",
+            stage="copy",
+            usb_planned=False,
+            bytes_done=1,
+            bytes_total=4,
+        )
         self.assertEqual(self.core.state()["activity"]["stages"][-1]["state"], "skipped")
-        (self.data / "preferences.json").write_text(json.dumps({"google_photos": {"configured": True}}))
-        self.assertEqual(self.core.state()["activity"]["stages"][-1],
-                         {"id": "upload", "label": "Upload to Google Photos", "state": "pending"})
+        (self.data / "preferences.json").write_text(
+            json.dumps({"google_photos": {"configured": True}})
+        )
+        self.assertEqual(
+            self.core.state()["activity"]["stages"][-1],
+            {"id": "upload", "label": "Upload to Google Photos", "state": "pending"},
+        )
 
     def test_an_importer_run_takes_precedence_over_an_upload_in_the_hero(self):
         self.google_up = self.importer_up = True
         (self.install / "google_photos_status.json").write_text(json.dumps({"state": "running"}))
-        self.write_status(state="copying", phase="card-to-ssd", source="/Volumes/X", bytes_done=1, bytes_total=4)
+        self.write_status(
+            state="copying", phase="card-to-ssd", source="/Volumes/X", bytes_done=1, bytes_total=4
+        )
         state = self.core.state()
         self.assertEqual(state["activity"]["kind"], "import")
         self.assertTrue(state["busy"])
@@ -759,19 +946,25 @@ class TestPipeline(Fixture):
         state = self.core.state()
         self.assertIsNone(state["activity"])
         step = self.pipeline("cloud")
-        self.assertEqual((step["state"], step["headline"], step["actions"][0]["label"]),
-                         ("error", "Upload interrupted", "Resume"))
+        self.assertEqual(
+            (step["state"], step["headline"], step["actions"][0]["label"]),
+            ("error", "Upload interrupted", "Resume"),
+        )
 
     def test_a_failed_or_interrupted_upload_is_raised_to_the_headline(self):
         (self.install / "google_photos_status.json").write_text(
-            json.dumps({"state": "failed", "message": "rclone exited with status 7"}))
+            json.dumps({"state": "failed", "message": "rclone exited with status 7"})
+        )
         head = self.core.state()["headline"]
-        self.assertEqual((head["tone"], head["title"]), ("warning", "Google Photos upload needs attention"))
+        self.assertEqual(
+            (head["tone"], head["title"]), ("warning", "Google Photos upload needs attention")
+        )
         self.assertEqual(head["detail"], "rclone exited with status 7")
 
     def test_google_photos_failure_offers_a_retry(self):
         (self.install / "google_photos_status.json").write_text(
-            json.dumps({"state": "failed", "message": "rclone exited with status 7"}))
+            json.dumps({"state": "failed", "message": "rclone exited with status 7"})
+        )
         step = self.pipeline("cloud")
         self.assertEqual((step["state"], step["actions"][0]["label"]), ("error", "Retry"))
 
