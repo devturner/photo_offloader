@@ -183,10 +183,13 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         # Terminal output changes only where output is sent, not whether import runs.
         import time
 
-        deadline = time.monotonic() + 2
-        while not self.background_args.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        self.assertTrue(self.background_args.exists(), "background importer was not launched")
+        # The stub writes its PATH last, so once that has content both files are complete.
+        self.assertTrue(
+            self.wait_for(
+                lambda: self.background_path.exists() and self.background_path.read_text()
+            ),
+            "background importer was not launched",
+        )
         args = self.background_args.read_text()
         self.assertIn("--source", args)
         self.assertIn(str(self.dcim), args)
