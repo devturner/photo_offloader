@@ -65,7 +65,7 @@ def hash_for_copy_decision(
 ) -> Tuple[str, str]:
     """Reuse trustworthy cached hashes and avoid database writes on cache hits."""
     # The card manifest is the cheapest source of truth. Only query SQLite when
-    # the card-side fingerprint is absent or stale.
+    # its fingerprint is absent or stale.
     source_hash = card.card_manifest_entry(manifest, source, dcim_folder)
     source_hash_was_cached = source_hash is not None
     source_row = None
@@ -83,6 +83,19 @@ def hash_for_copy_decision(
         source_hash = fileops.sha256_file(source)
     if destination_hash is None:
         destination_hash = fileops.sha256_file(destination)
+
+    # Both caches outlive a format, so a new photo with an old one's path, size and time could look
+    # saved. Before skipping a file on a cached hash, look at the files themselves.
+    if (
+        source_hash_was_cached
+        and source_hash == destination_hash
+        and not fileops.ends_match(source, destination)
+    ):
+        logger.warning("Cached hash doesn't fit %s; hashing it and %s", source, destination)
+        source_hash = fileops.sha256_file(source)
+        destination_hash = fileops.sha256_file(destination)
+        source_hash_was_cached = False
+        destination_row = None
 
     # Persist hashes only when we had to establish them; do not open and commit
     # two more SQLite transactions for every unchanged duplicate on every insert.

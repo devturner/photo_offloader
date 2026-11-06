@@ -14,6 +14,9 @@ from photo_offloader import config, progress
 from photo_offloader.logs import logger
 
 COPY_CHUNK_BYTES = 4 * 1024 * 1024
+# Real neighbouring photos differ within the first 750 bytes (308 pairs). On an SD card, reading
+# 64 KB at each end costs 2.3 ms a file; 1 MB costs 23 ms, over a minute on a full card.
+ENDS_CHECK_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,24 @@ def files_match(source: Path, destination: Path, force_sha256: bool = False) -> 
         return True
     except OSError:
         return False
+
+
+def ends_match(first: Path, second: Path) -> bool:
+    """Whether two files have the same size and the same first and last ``ENDS_CHECK_BYTES``.
+
+    A quick check that a cached hash still describes the file, not proof that they're the same:
+    two different photos differ here, in their capture details and image data.
+    """
+    size = os.stat(first).st_size
+    if os.stat(second).st_size != size:
+        return False
+    with open(first, "rb") as one, open(second, "rb") as other:
+        if one.read(ENDS_CHECK_BYTES) != other.read(ENDS_CHECK_BYTES):
+            return False
+        tail_start = max(size - ENDS_CHECK_BYTES, 0)
+        one.seek(tail_start)
+        other.seek(tail_start)
+        return one.read(ENDS_CHECK_BYTES) == other.read(ENDS_CHECK_BYTES)
 
 
 def _same_file(first: Path, second: Path) -> bool:
