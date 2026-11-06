@@ -96,6 +96,60 @@ class TestGooglePhotosSync(unittest.TestCase):
             self.assertEqual(payload["last_success"], success)
             self.assertEqual(payload["state"], "failed")
 
+    def upload_saved_after(self, sent, exit_code):
+        """Run a sync that sends ``sent`` and ends with ``exit_code``; what it saved on the run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in sent:
+                (root / name).write_bytes(b"x" * 1000)
+            with (
+                patch.object(config, "INSTALL_DIR", root),
+                patch.object(config, "GOOGLE_STATUS_PATH", root / "status.json"),
+                patch.object(config, "GOOGLE_LOG_PATH", root / "sync.log"),
+                patch.object(config, "LOCAL_DEST_ROOT", root),
+                patch.object(sync, "find_rclone", return_value="rclone"),
+                patch.object(sync, "list_upload_candidates", return_value=sent),
+                patch.object(sync, "_send_pending", return_value=exit_code),
+                patch.object(sync.catalog, "record_upload_on_import") as record,
+            ):
+                self.assertEqual(sync._sync(), exit_code)
+        return record.call_args
+
+    def test_rclone_reports_as_often_as_the_dashboards_graph_samples(self):
+        # User feedback 2026-11-05: at one report every 5 s the graph's line was visibly stepped.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                patch.object(config, "INSTALL_DIR", root),
+                patch.object(config, "GOOGLE_STATUS_PATH", root / "status.json"),
+                patch.object(sync.subprocess, "run") as run,
+            ):
+                run.return_value.returncode = 0
+                sync._upload_snapshot("rclone", "gphotos:album/x", ["a.jpg"])
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--stats") + 1], "1s")
+
+    def test_a_finished_upload_is_saved_with_the_import_it_followed(self):
+        call = self.upload_saved_after(["a.jpg", "b.jpg"], 0)
+        upload = call.args[0]
+        self.assertEqual(
+            (upload["outcome"], upload["files"], upload["bytes"], upload["album"]),
+            ("complete", 2, 2000, sync.ALBUM_NAME),
+        )
+        self.assertGreaterEqual(upload["seconds"], 0)
+        self.assertEqual(call.kwargs["within_seconds"], sync.UPLOAD_FOLLOWS_IMPORT_SECONDS)
+
+    def test_a_failed_upload_is_saved_as_failed(self):
+        self.assertEqual(self.upload_saved_after(["a.jpg"], 3).args[0]["outcome"], "failed")
+
+    def test_a_file_gone_before_it_is_measured_does_not_stop_the_sync(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(config, "LOCAL_DEST_ROOT", Path(tmp)):
+                self.assertEqual(sync._pending_bytes(["gone.jpg"]), 0)
+
+    def test_a_sync_with_nothing_to_send_saves_nothing(self):
+        self.assertIsNone(self.upload_saved_after([], 0))
+
     def test_running_is_published_before_contacting_rclone_and_keeps_its_start_time(self):
         # User report 2026-11-04: the dashboard fell back to the import result while the
         # sync was still talking to rclone, because "running" was only published later.

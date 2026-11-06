@@ -36,6 +36,7 @@ UPLOAD_SILENT_SECONDS = 10  # no report from rclone for this long counts as a st
 FINISHING_GRACE_SECONDS = 30  # status says "complete", history row not written yet
 EVENTS_LOG_MAX_BYTES = 512 * 1024
 THEMES = ("system", "light", "dark")
+REPORT_STYLES = ("basic", "advanced")
 SPEED_WINDOW_SAMPLES = 10
 
 
@@ -480,30 +481,7 @@ class DashboardCore:
         """The end of an import, shown in the transfer panel until it fades or is dismissed."""
         if last is None or last["kind"] != "import":
             return None
-        details = last.get("details") or {}
-        new_files = (
-            sum(int(v) for v in (details.get("new") or {}).values())
-            if "new" in details
-            else int(last["copied"])
-        )
-        new_bytes = int(details.get("new_bytes") or 0)
-        duration = float(last["duration_seconds"])
-        upload_state = self._upload_state_after(last, google, now)
-        return {
-            "title": last["title"],
-            "detail": last["summary"],
-            "tone": last["tone"],
-            "percent": 100.0 if last["outcome"] == "complete" else None,
-            "bytes_done": new_bytes,
-            "bytes_total": new_bytes,
-            "speed_bps": new_bytes / duration if duration > 0 else 0.0,
-            "files_done": new_files,
-            "files_total": int(last["files"]),
-            "elapsed_seconds": duration,
-            "stages": display.stages_after_import(
-                last, "pending" if upload_state == "starting" else upload_state
-            ),
-        }
+        return display.run_report(last, self._upload_state_after(last, google, now))
 
     @staticmethod
     def _log_time(line: str) -> Optional[float]:
@@ -565,7 +543,21 @@ class DashboardCore:
     # ---- last transfer & history --------------------------------------------------------
 
     def history(self, limit: int = 15) -> List[Dict[str, Any]]:
-        return [display.describe_run(row) for row in catalog.list_import_history(limit=limit)]
+        rows = catalog.list_import_history(limit=limit)
+        newest = next((row for row in rows if row["kind"] == "import"), None)
+        now = self._clock()
+        return [
+            {
+                **display.describe_run(row),
+                "report": display.run_report(
+                    row,
+                    self._upload_state_after(row, self._google(now), now)
+                    if row is newest
+                    else None,
+                ),
+            }
+            for row in rows
+        ]
 
     def _last_transfer(self, now: float, row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if row is None:
@@ -632,6 +624,7 @@ class DashboardCore:
                 "auto_eject": self.paths.auto_eject_file.exists(),
                 "terminal_output": self.paths.terminal_output_file.exists(),
                 "theme": self.theme(),
+                "report_style": self.report_style(),
             },
         }
         self._log_view(now, payload, status, google)
@@ -748,6 +741,7 @@ class DashboardCore:
             "dismiss_last": self._dismiss_last,
             "clear_history": self._clear_history,
             "set_theme": lambda: self._set_theme(str(params.get("theme", ""))),
+            "set_report_style": lambda: self._set_report_style(str(params.get("report_style", ""))),
             "open_log": lambda: self._open_log(str(params.get("log", ""))),
         }
         handler = handlers.get(name)
@@ -802,6 +796,16 @@ class DashboardCore:
             return {"ok": False, "message": f"Unknown appearance: {theme}"}
         self._save_dashboard_state(theme=theme)
         return {"ok": True, "theme": theme}
+
+    def report_style(self) -> str:
+        style = str(self._dashboard_state().get("report_style", "basic"))
+        return style if style in REPORT_STYLES else "basic"
+
+    def _set_report_style(self, style: str) -> Dict[str, Any]:
+        if style not in REPORT_STYLES:
+            return {"ok": False, "message": f"Unknown report style: {style}"}
+        self._save_dashboard_state(report_style=style)
+        return {"ok": True, "report_style": style}
 
     def _eject(self, volume: Path, what: str) -> Dict[str, Any]:
         result = self._run(

@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, NamedTuple, Optional, Sequence, Tuple
@@ -463,7 +464,35 @@ def _sync() -> int:
     publish_status(
         "running", f"Preparing to upload {len(pending):,} JPG/video file(s).", new_run=True
     )
+    started_at = time.time()
+    code = _send_pending(rclone, pending)
+    catalog.record_upload_on_import(
+        {
+            "outcome": "complete" if code == 0 else "failed",
+            "files": len(pending),
+            "bytes": _pending_bytes(pending),
+            "seconds": round(time.time() - started_at, 1),
+            "album": ALBUM_NAME,
+        },
+        started_at=started_at,
+        within_seconds=UPLOAD_FOLLOWS_IMPORT_SECONDS,
+    )
+    return code
 
+
+def _pending_bytes(pending: List[str]) -> int:
+    """The size of the files to send; a file gone by now just doesn't count."""
+    total = 0
+    for name in pending:
+        try:
+            total += (config.LOCAL_DEST_ROOT / name).stat().st_size
+        except OSError as exc:
+            log_sync_event(f"Could not measure a file for the import report: {name}: {exc}")
+    return total
+
+
+def _send_pending(rclone: str, pending: List[str]) -> int:
+    """Check the remote and send ``pending``. Publishes the result and returns the exit code."""
     destination = f"{REMOTE_NAME}:album/{ALBUM_NAME}"
     problem = _check_remote(rclone)
     if problem is None:

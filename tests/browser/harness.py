@@ -306,8 +306,35 @@ def _starting_upload(s: Sandbox) -> None:
 
 
 def _finished(s: Sandbox) -> None:
-    _starting_upload(s)
-    s.google_status("complete")
+    s.add_card()
+    s.add_usb()
+    s.set_up_google()
+    s.status(state="complete", ago=50, usb_planned=True, files_done=2378, files_total=2378)
+    s.record(
+        finished_at=s.now - 49,
+        started_at=s.now - 149,
+        details={
+            "new": {"JPG": 9, "RAW": 9},
+            "new_bytes": 412 * MB,
+            "usb_copied": 18,
+            "copy_seconds": 72.0,
+            "usb_seconds": 28.0,
+            "usb_bytes": 412 * MB,
+            "upload": {
+                "outcome": "complete",
+                "files": 9,
+                "bytes": 130 * MB,
+                "seconds": 47.0,
+                "album": "Photo Offloader",
+            },
+        },
+    )
+    s.google_status("complete", ago=1)
+
+
+def _finished_advanced(s: Sandbox) -> None:
+    _finished(s)
+    s.core.act("set_report_style", {"report_style": "advanced"})
 
 
 def _failed(s: Sandbox, message: str = "Copy failed: the Mac disk is full") -> None:
@@ -377,6 +404,7 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "starting_upload": _starting_upload,
     "uploading": _uploading,
     "finished": _finished,
+    "finished_advanced": _finished_advanced,
     "failed": _failed,
     "failed_on_usb": lambda s: _failed(s, "USB backup failed: the drive was removed"),
     "stopped": lambda s: setattr(s, "service_up", False),

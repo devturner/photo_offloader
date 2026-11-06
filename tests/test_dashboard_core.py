@@ -759,6 +759,160 @@ class TestRunFlow(Fixture):
         )
         self.assertNotIn("already imported", state["headline"]["title"])
 
+    REAL_RUN = {
+        "new": {"JPG": 18, "RAW": 18, "OTHER": 2},
+        "new_bytes": 840 * 1024**2,
+        "copy_seconds": 10.0,
+        "upload": {
+            "outcome": "complete",
+            "files": 18,
+            "bytes": 450 * 1024**2,
+            "seconds": 45.0,
+            "album": "Photo Offloader",
+        },
+    }
+
+    def report(self, details, **record):
+        """The report of one run, as Recent activity gets it, with Google Photos done since."""
+        self.google_configured()
+        self.google_status("complete", seconds_ago=50)
+        self.record(
+            files=2574,
+            copied=38,
+            skipped=2536,
+            bytes=60 * 1024**3,
+            started_at=self.now - 112,
+            finished_at=self.now - 100,
+            details=details,
+            **record,
+        )
+        return self.core.history()[0]["report"]
+
+    def step(self, report, step_id):
+        return next(step for step in report["steps"] if step["id"] == step_id)
+
+    def test_a_report_has_a_row_for_each_step_of_the_run(self):
+        report = self.report(self.REAL_RUN)
+        self.assertEqual(
+            [(s["id"], s["state"], s["result"], s["bytes"], s["seconds"]) for s in report["steps"]],
+            [
+                ("scan", "done", "2,574 on card · 2,536 already saved", 60 * 1024**3, 2.0),
+                ("copy", "done", "38 new: 18 photos, 18 RAW, 2 other", 840 * 1024**2, 10.0),
+                ("usb", "skipped", "Skipped", None, None),
+                ("upload", "done", "18 files to Photo Offloader", 450 * 1024**2, 45.0),
+            ],
+        )
+        self.assertEqual((report["total_seconds"], report["total_note"]), (57.0, "Start to finish"))
+
+    def test_speed_is_over_the_time_of_that_step_alone(self):
+        report = self.report(self.REAL_RUN)
+        self.assertAlmostEqual(self.step(report, "copy")["speed_bps"], 84 * 1024**2)
+        self.assertAlmostEqual(self.step(report, "upload")["speed_bps"], 10 * 1024**2)
+        self.assertIsNone(self.step(report, "scan")["speed_bps"])
+
+    def test_a_report_lists_where_the_time_went(self):
+        self.assertEqual(
+            self.report(self.REAL_RUN)["segments"],
+            [
+                {"id": "scan", "label": "Scan", "seconds": 2.0},
+                {"id": "copy", "label": "Copy", "seconds": 10.0},
+                {"id": "upload", "label": "Upload", "seconds": 45.0},
+            ],
+        )
+
+    def test_a_usb_backup_is_timed_and_measured(self):
+        report = self.report(
+            {**self.REAL_RUN, "usb_copied": 38, "usb_seconds": 4.0, "usb_bytes": 400}, usb=True
+        )
+        usb = self.step(report, "usb")
+        self.assertEqual(
+            (usb["state"], usb["result"], usb["files"], usb["bytes"], usb["seconds"]),
+            ("done", "38 files copied", 38, 400, 4.0),
+        )
+        self.assertEqual(self.step(report, "scan")["seconds"], 0.0, "never below zero")
+
+    def test_a_run_from_before_times_were_saved_still_has_a_report(self):
+        report = self.report({"new": {"JPG": 1}, "new_bytes": 5})
+        self.assertIsNone(self.step(report, "copy")["seconds"])
+        self.assertIsNone(self.step(report, "copy")["speed_bps"])
+        self.assertIsNone(self.step(report, "scan")["seconds"], "the copy's share isn't known")
+        self.assertEqual(self.step(report, "upload")["result"], "Not recorded")
+        self.assertEqual(report["segments"], [{"id": "import", "label": "Import", "seconds": 12.0}])
+        self.assertEqual((report["total_seconds"], report["total_note"]), (12.0, "Import only"))
+
+    def test_a_failed_upload_says_it_stopped(self):
+        upload = {**self.REAL_RUN["upload"], "outcome": "failed", "seconds": 7.0}
+        step = self.step(self.report({**self.REAL_RUN, "upload": upload}), "upload")
+        self.assertEqual(
+            (step["state"], step["result"], step["seconds"]), ("error", "Stopped", 7.0)
+        )
+        self.assertIsNone(step["bytes"], "what it set out to send isn't what got there")
+
+    def test_an_import_with_nothing_for_google_photos_says_so(self):
+        report = self.report({"new": {"RAW": 3}, "new_bytes": 5, "copy_seconds": 1.0})
+        self.assertEqual(self.step(report, "upload")["result"], "Nothing to send")
+
+    def test_a_failed_copy_does_not_claim_later_steps(self):
+        report = self.report(
+            {"new": {"JPG": 1}, "new_bytes": 5, "copy_seconds": 1.0},
+            outcome="failed",
+            failed=2,
+            message="Mac disk full",
+        )
+        self.assertEqual(self.step(report, "copy")["state"], "error")
+        self.assertEqual(self.step(report, "copy")["result"], "1 new: 1 photo · 2 failed")
+        self.assertEqual(self.step(report, "usb")["result"], "Skipped")
+        self.assertEqual(self.step(report, "upload")["result"], "Skipped")
+        self.assertEqual(report["total_note"], "Start to finish")
+
+    def test_the_newest_import_reports_an_upload_still_running(self):
+        self.record(
+            finished_at=self.now - 10, started_at=self.now - 20, details={"new": {"JPG": 1}}
+        )
+        self.google_up = True
+        self.google_status("running", seconds_ago=5)
+        report = self.core.history()[0]["report"]
+        self.assertEqual(self.step(report, "upload")["result"], "Uploading now")
+        self.assertEqual(report["total_note"], "Import only")
+
+    def test_an_older_import_does_not_report_todays_upload_as_its_own(self):
+        self.record(finished_at=self.now - 500, details={"new": {"JPG": 1}})
+        self.record(finished_at=self.now - 10, details={"new": {"JPG": 1}})
+        self.google_up = True
+        self.google_status("running", seconds_ago=5)
+        self.assertEqual(
+            self.step(self.core.history()[1]["report"], "upload")["result"], "Not recorded"
+        )
+
+    def test_a_usb_backup_run_has_just_its_own_step(self):
+        self.record(kind="usb_backup", copied=3, skipped=1, usb=True, bytes=9, details={})
+        report = self.core.history()[0]["report"]
+        self.assertEqual([s["id"] for s in report["steps"]], ["usb"])
+        self.assertEqual(report["steps"][0]["seconds"], 55.0)
+        self.assertEqual(
+            report["segments"], [{"id": "usb", "label": "USB backup", "seconds": 55.0}]
+        )
+
+    def test_a_catalog_update_has_a_report_too(self):
+        self.record(kind="catalog", details={})
+        report = self.core.history()[0]["report"]
+        self.assertEqual(
+            [(s["label"], s["seconds"]) for s in report["steps"]], [("Update file catalog", 55.0)]
+        )
+
+    def test_the_report_style_defaults_to_basic_and_is_kept(self):
+        self.assertEqual(self.core.state()["settings"]["report_style"], "basic")
+        self.assertTrue(self.core.act("set_report_style", {"report_style": "advanced"})["ok"])
+        self.assertEqual(self.core.state()["settings"]["report_style"], "advanced")
+
+    def test_a_saved_report_style_that_is_not_known_falls_back_to_the_default(self):
+        self.core._save_dashboard_state(report_style="fancy")
+        self.assertEqual(self.core.state()["settings"]["report_style"], "basic")
+
+    def test_an_unknown_report_style_is_refused(self):
+        self.assertFalse(self.core.act("set_report_style", {"report_style": "fancy"})["ok"])
+        self.assertEqual(self.core.state()["settings"]["report_style"], "basic")
+
     def test_a_finished_run_ends_with_a_summary_in_the_same_panel(self):
         self.google_configured()
         self.finished_import(seconds_ago=60)
@@ -768,21 +922,10 @@ class TestRunFlow(Fixture):
         finished = state["finished"]
         self.assertEqual(finished["title"], "Imported from NIKON Z 8")
         self.assertEqual(
-            [(s["id"], s["state"]) for s in finished["stages"]],
-            [
-                ("scan", "done"),
-                ("metadata", "done"),
-                ("copy", "done"),
-                ("usb", "skipped"),
-                ("upload", "done"),
-            ],
+            [(s["id"], s["state"]) for s in finished["steps"]],
+            [("scan", "done"), ("copy", "done"), ("usb", "skipped"), ("upload", "done")],
         )
-        self.assertEqual(
-            (finished["percent"], finished["files_done"], finished["files_total"]),
-            (100.0, 18, 2378),
-        )
-        self.assertEqual(finished["elapsed_seconds"], 95)
-        self.assertEqual(finished["bytes_done"], 400 * 1024**2)
+        self.assertEqual(finished["total_seconds"], 95)
 
     def test_the_summary_fades_like_the_result_and_can_be_dismissed(self):
         self.finished_import(seconds_ago=60)
@@ -797,7 +940,7 @@ class TestRunFlow(Fixture):
         self.google_configured()
         self.finished_import(seconds_ago=60)
         self.google_status("failed", seconds_ago=30)
-        self.assertEqual(self.core.state()["finished"]["stages"][-1]["state"], "error")
+        self.assertEqual(self.core.state()["finished"]["steps"][-1]["state"], "error")
 
 
 class TestEventLog(Fixture):

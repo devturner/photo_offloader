@@ -181,6 +181,36 @@ def record_import_run(
         logger.warning("Could not record import history: %s", exc)
 
 
+def record_upload_on_import(
+    upload: Dict[str, object], *, started_at: float, within_seconds: float
+) -> None:
+    """Keep an upload with the import it followed, since the sync's status file is overwritten.
+
+    The newest import counts if it finished successfully no more than ``within_seconds`` before
+    the upload began, and has no finished upload already. It may finish after the upload began:
+    the importer starts the sync, then writes its history row. Like all history, a database
+    problem is logged and swallowed.
+    """
+    try:
+        with catalog_db() as db:
+            row = db.execute(
+                """SELECT id, finished_at, details FROM import_history
+                   WHERE kind = 'import' AND outcome = 'complete' ORDER BY id DESC LIMIT 1"""
+            ).fetchone()
+            if row is None or started_at - float(row[1]) > within_seconds:
+                return
+            details = json.loads(row[2] or "{}")
+            if (details.get("upload") or {}).get("outcome") == "complete":
+                return
+            details["upload"] = upload
+            db.execute(
+                "UPDATE import_history SET details = ? WHERE id = ?",
+                (json.dumps(details, sort_keys=True), row[0]),
+            )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        logger.warning("Could not record the upload in import history: %s", exc)
+
+
 def list_import_history(limit: int = 20) -> List[Dict[str, object]]:
     """Most recent runs first."""
     try:

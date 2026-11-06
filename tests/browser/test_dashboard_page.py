@@ -38,7 +38,6 @@ TRANSFER_STATES = (
 SUMMARY_STATES = ("finished", "failed", "failed_on_usb")
 RESTING_STATES = ("idle", "card_mounted", "already_imported", "paused")
 SLOT_NAMES = ["Progress", "Speed", "Files", "Elapsed", "Remaining"]
-SUMMARY_SLOT_NAMES = ["Progress", "Average speed", "Files", "Took", "Remaining"]
 HOSTILE = '<img src=x onerror="window.__pwned=1">'
 DARK_BACKGROUND, LIGHT_BACKGROUND = "rgb(28, 28, 30)", "rgb(245, 245, 247)"
 
@@ -159,13 +158,13 @@ class TestSlots(PageTestCase):
         for state in ("copying", "usb_backup", "uploading"):
             with self.subTest(state=state):
                 self.show(state)
-                self.assertEqual(list(self.slots()), SLOT_NAMES)
+                self.assertEqual(self.page.locator(".step .mini").count(), 0)
 
-    def test_a_summary_has_five_slots_too(self):
-        for state in SUMMARY_STATES:
+    def test_all_five_slots_are_there_while_anything_runs(self):
+        for state in TRANSFER_STATES:
             with self.subTest(state=state):
                 self.show(state)
-                self.assertEqual(list(self.slots()), SUMMARY_SLOT_NAMES)
+                self.assertEqual(list(self.slots()), SLOT_NAMES)
 
     def test_a_value_not_known_yet_is_a_dash_not_missing(self):
         self.show("scan")
@@ -189,27 +188,6 @@ class TestSlots(PageTestCase):
         )
         self.assertEqual(self.page.locator(".slot .v.none").count(), 0)
 
-    def test_the_finished_summary_totals_the_run(self):
-        self.show("finished")
-        self.assertEqual(
-            self.slots(),
-            {
-                "Progress": "100% · 412.0 MB",
-                "Average speed": "4.1 MB/s",
-                "Files": "18 new · 2,378 on card",
-                "Took": "1m 40s",
-                "Remaining": "Done",
-            },
-        )
-
-    def test_a_run_that_did_not_finish_is_not_called_done(self):
-        self.show("failed")
-        self.assertEqual(self.slots()["Remaining"], "—")
-        sandbox = self.load("idle")
-        sandbox.record(outcome="canceled")
-        self.open_page()
-        self.assertEqual(self.slots()["Remaining"], "—")
-
     def test_a_resting_panel_has_no_slots_or_steps(self):
         for state in RESTING_STATES:
             with self.subTest(state=state):
@@ -228,9 +206,6 @@ class TestStepStrip(PageTestCase):
         "finishing_import": ["done", "done", "done", "done", "pending"],
         "starting_upload": ["done", "done", "done", "done", "active"],
         "uploading": ["done", "done", "done", "done", "active"],
-        "finished": ["done", "done", "done", "done", "done"],
-        "failed": ["done", "done", "error", "skipped", "skipped"],
-        "failed_on_usb": ["done", "done", "done", "error", "skipped"],
     }
 
     def test_each_state_marks_the_right_steps(self):
@@ -258,19 +233,20 @@ class TestStepStrip(PageTestCase):
         )
         self.open_page()
         self.assertEqual(self.steps(), ["done", "done", "active", "skipped", "skipped"])
+        expect(self.page.locator(".stages span[data-state=skipped]").first).to_have_css(
+            "text-decoration-line", "line-through"
+        )
 
     def test_each_step_state_looks_different(self):
         look = """() => Object.fromEntries([...document.querySelectorAll('.stages span')].map(s => {
             const c = getComputedStyle(s);
             return [s.dataset.state, [c.borderTopColor, c.textDecorationLine].join(' ')]; }))"""
-        self.show("failed")
-        failed = self.page.evaluate(look)
-        self.show("scan")
-        running = self.page.evaluate(look)
-        looks = {**failed, **running}
-        self.assertEqual(sorted(looks), ["active", "done", "error", "pending", "skipped"])
-        self.assertIn("line-through", looks["skipped"])
-        self.assertEqual(len({looks[s] for s in ("active", "done", "error", "pending")}), 4, looks)
+        sandbox = self.load("idle")
+        sandbox.transfer(state="copying", phase="usb-backup", stage="usb")
+        self.open_page()
+        looks = self.page.evaluate(look)
+        self.assertEqual(sorted(looks), ["active", "done", "pending"])
+        self.assertEqual(len(set(looks.values())), 3, looks)
 
 
 class TestNothingTruncated(PageTestCase):
@@ -562,6 +538,296 @@ class TestReadmeScreenshot(PageTestCase):
         self.assertNotIn("Nothing uploaded yet", self.page.locator("#pipeline").inner_text())
 
 
+class TestReports(PageTestCase):
+    """A finished run's report, in the panel and from Recent activity, in either style."""
+
+    def cards(self):
+        return self.page.evaluate("""() => [...document.querySelectorAll('.place')]
+            .map(c => [...c.children].map(e => e.textContent))""")
+
+    def table(self, within="#hero"):
+        return self.page.evaluate(
+            """within => [...document.querySelectorAll(within + ' .report-table tr')]
+                .map(r => [...r.children].map(c => c.textContent))""",
+            within,
+        )
+
+    def choose(self, style):
+        self.page.click("#menu-button")
+        self.click_action(f"[data-report-choice={style}]", "set_report_style")
+        self.page.click("#menu-button")
+
+    def test_basic_is_the_default(self):
+        self.show("finished")
+        self.assertEqual(
+            self.cards(),
+            [
+                ["Mac archive", "18 files · 412.0 MB", "1m 12s at 5.7 MB/s"],
+                ["USB backup", "18 files · 412.0 MB", "28s at 14.7 MB/s"],
+                ["Google Photos", "9 files · 130.0 MB", "47s at 2.8 MB/s"],
+            ],
+        )
+        self.assertEqual(self.table(), [])
+
+    def test_basic_shows_where_the_time_went(self):
+        self.show("finished")
+        widths = self.page.evaluate(
+            "[...document.querySelectorAll('.timebar > div')].map(s => parseFloat(s.style.width))"
+        )
+        self.assertEqual([round(w) for w in widths], [49, 19, 32])
+        legend = self.page.locator(".legend").inner_text()
+        for part in ("Copy 1m 12s", "USB backup 28s", "Upload 47s", "Total 2m 27s"):
+            self.assertIn(part, legend)
+
+    def test_advanced_is_a_table_of_the_steps(self):
+        self.show("finished")
+        self.choose("advanced")
+        expect(self.page.locator("#hero .report-table")).to_be_visible()
+        self.assertEqual(self.cards(), [])
+        self.assertEqual(
+            self.table(),
+            [
+                ["Step", "Result", "Size", "Time", "Speed"],
+                [
+                    "Scan and read photo info",
+                    "2,378 on card · 2,360 already saved",
+                    "80.0 GB",
+                    "<1s",
+                    "—",
+                ],
+                ["Copy to Mac", "18 new: 9 photos, 9 RAW", "412.0 MB", "1m 12s", "5.7 MB/s"],
+                ["Back up to USB", "18 files copied", "412.0 MB", "28s", "14.7 MB/s"],
+                [
+                    "Upload to Google Photos",
+                    "9 files to Photo Offloader",
+                    "130.0 MB",
+                    "47s",
+                    "2.8 MB/s",
+                ],
+                ["Total", "Start to finish", "", "2m 27s", ""],
+            ],
+        )
+
+    def test_the_choice_is_kept_after_reopening_the_page(self):
+        self.show("finished")
+        self.choose("advanced")
+        self.assertEqual(self.sandbox.core.report_style(), "advanced")
+        self.open_page()
+        expect(self.page.locator("#hero .report-table")).to_be_visible()
+        expect(self.page.locator("[data-report-choice=advanced]")).to_have_attribute(
+            "aria-checked", "true"
+        )
+
+    def test_a_failed_step_stands_out_and_says_so(self):
+        self.show("failed_on_usb")
+        failed = self.page.locator("#hero .place[data-state=error]")
+        expect(failed).to_have_count(1)
+        expect(failed.locator(".main")).to_have_text("Stopped")
+
+    def test_a_step_under_half_a_second_does_not_read_as_no_time_at_all(self):
+        sandbox = self.load("idle")
+        sandbox.record(details={"copy_seconds": 0.2, "new_bytes": 5})
+        self.open_page()
+        self.assertIn("<1s", self.page.locator(".place").first.inner_text())
+
+    def test_an_older_run_shows_dashes_for_what_was_not_saved(self):
+        sandbox = self.load("idle")
+        sandbox.record(usb=False, details={"new": {"JPG": 1}, "new_bytes": 5})
+        self.open_page()
+        self.assertEqual(self.cards()[0], ["Mac archive", "1 file · 5 B", "—"])
+        self.assertEqual(self.cards()[1], ["USB backup", "Skipped", "—"])
+
+    def rows(self):
+        return self.page.locator("#history .row")
+
+    def test_clicking_a_past_run_expands_its_report_under_it(self):
+        self.show("readme_import")
+        self.assertEqual(self.page.locator(".run-report").count(), 0)
+        self.rows().nth(2).click()
+        expect(
+            self.page.locator("#history .run").nth(2).locator(".run-report .place")
+        ).to_have_count(3)
+        self.assertEqual(self.rows().nth(2).get_attribute("aria-expanded"), "true")
+        self.assertEqual(self.rows().nth(0).get_attribute("aria-expanded"), "false")
+        self.assertEqual(self.page.locator("dialog[open]").count(), 0)
+
+    def row_top(self, index):
+        return self.rows().nth(index).bounding_box()["y"]
+
+    def test_an_open_report_pushes_the_runs_below_it_down_until_it_closes(self):
+        self.show("readme_import", **NATIVE_WINDOW)
+        above, below = self.row_top(0), self.row_top(1)
+        self.rows().first.click()
+        height = self.page.locator(".run-report").bounding_box()["height"]
+        self.assertEqual(self.row_top(0), above)
+        self.assertAlmostEqual(self.row_top(1), below + height, delta=1)
+        self.rows().first.click()
+        expect(self.page.locator(".run-report")).to_have_count(0)
+        self.assertEqual(self.row_top(1), below)
+
+    def _report_heights_over(self, milliseconds):
+        return self.page.evaluate(
+            """ms => new Promise(done => {
+                const seen = [], end = performance.now() + ms;
+                const look = () => {
+                    const report = document.querySelector('.run-report');
+                    seen.push(report ? report.getBoundingClientRect().height : 0);
+                    if (performance.now() < end) requestAnimationFrame(look); else done(seen);
+                };
+                look();
+            })""",
+            milliseconds,
+        )
+
+    def test_a_report_unfolds_and_folds_instead_of_jumping(self):
+        self.load("readme_import")
+        self.open_page(reduced_motion="no-preference")
+        self.rows().first.click()
+        opening = self._report_heights_over(300)
+        self.assertGreater(len({round(h) for h in opening}), 3, opening)
+        self.assertEqual(opening, sorted(opening))
+        self.rows().first.click()
+        closing = self._report_heights_over(300)
+        self.assertGreater(len({round(h) for h in closing}), 3, closing)
+        self.assertEqual(closing, sorted(closing, reverse=True))
+        self.assertEqual(closing[-1], 0)
+
+    def run_opacities(self):
+        return self.page.evaluate(
+            "[...document.querySelectorAll('#history .run')].map(r => +getComputedStyle(r).opacity)"
+        )
+
+    def test_the_other_runs_dim_while_a_report_is_open(self):
+        self.show("readme_import")
+        self.page.mouse.move(0, 0)
+        self.assertEqual(self.run_opacities(), [1, 1, 1])
+        self.rows().nth(1).click()
+        self.page.mouse.move(0, 0)
+        opacities = self.run_opacities()
+        self.assertEqual(opacities[1], 1)
+        self.assertLess(opacities[0], 0.7)
+        self.assertLess(opacities[2], 0.7)
+        self.rows().nth(1).click()
+        self.page.mouse.move(0, 0)
+        self.assertEqual(self.run_opacities(), [1, 1, 1])
+
+    def test_a_dimmed_run_comes_back_when_it_is_pointed_at_or_focused(self):
+        self.show("readme_import")
+        self.rows().nth(1).click()
+        self.rows().nth(0).hover()
+        self.assertEqual(self.run_opacities()[0], 1)
+        self.page.mouse.move(0, 0)
+        self.rows().nth(2).focus()
+        self.assertEqual(self.run_opacities()[2], 1)
+
+    def test_clearing_the_list_forgets_the_open_report(self):
+        self.show("readme_import")
+        self.rows().first.click()
+        expect(self.page.locator("#history.has-open")).to_have_count(1)
+        self.page.click("#clear-history")
+        self.click_action("#clear-history", "clear_history")
+        expect(self.page.locator("#history.has-open")).to_have_count(0)
+
+    def test_a_mouse_click_leaves_no_focus_ring_on_the_row(self):
+        self.show("readme_import")
+        self.rows().first.click()
+        self.assertFalse(self.page.evaluate("document.activeElement.matches('.row')"))
+
+    def test_a_focus_ring_stays_inside_the_row(self):
+        self.show("readme_import")
+        self.page.keyboard.press("Tab")
+        self.rows().first.focus()
+        self.page.keyboard.press("Enter")
+        expect(self.rows().first).to_be_focused()
+        self.assertLess(
+            self.page.evaluate(
+                "parseFloat(getComputedStyle(document.activeElement).outlineOffset)"
+            ),
+            0,
+        )
+
+    def test_clicking_it_again_closes_it(self):
+        self.show("readme_import")
+        self.rows().first.click()
+        self.rows().first.click()
+        expect(self.page.locator(".run-report")).to_have_count(0)
+
+    def test_only_one_report_is_open_at_a_time(self):
+        self.show("readme_import")
+        self.rows().nth(0).click()
+        self.rows().nth(1).click()
+        expect(self.page.locator(".run-report")).to_have_count(1)
+        expect(self.page.locator("#history .run").nth(1).locator(".run-report")).to_have_count(1)
+
+    def test_an_open_report_stays_open_when_the_page_refreshes(self):
+        self.show("readme_import")
+        self.rows().first.focus()
+        self.page.keyboard.press("Enter")
+        self.sandbox.advance(120)  # the list is drawn again as its "ago" times change
+        self.refresh()
+        expect(self.page.locator(".run-report")).to_have_count(1)
+        expect(self.rows().first).to_be_focused()
+
+    def test_an_open_report_uses_the_chosen_style_and_follows_a_change(self):
+        self.show("readme_import")
+        self.rows().first.click()
+        expect(self.page.locator(".run-report .place")).to_have_count(3)
+        self.choose("advanced")
+        expect(self.page.locator(".run-report .report-table")).to_be_visible()
+        self.assertGreater(len(self.table(".run-report")), 3)
+
+    def test_opening_a_report_leaves_the_rest_of_the_page_alone(self):
+        self.show("readme_import", **NATIVE_WINDOW)
+        where = """() => ['#hero', '#pipeline', '#history'].map(s => {
+            const r = document.querySelector(s).getBoundingClientRect(); return [r.top, r.height]; })"""
+        before, text = self.page.evaluate(where), self.page.locator("#hero").inner_text()
+        self.rows().first.click()
+        expect(self.page.locator(".run-report")).to_have_count(1)
+        self.assertEqual(self.page.evaluate(where), before)
+        self.assertEqual(self.page.locator("#hero").inner_text(), text)
+
+    def test_a_report_low_in_a_long_list_scrolls_into_view(self):
+        sandbox = self.load("idle")
+        for _ in range(12):
+            sandbox.record()
+        self.open_page(**NATIVE_WINDOW)
+        self.rows().last.click()
+        inside = """() => { const list = document.querySelector('#history').getBoundingClientRect(),
+            report = document.querySelector('.run-report').getBoundingClientRect();
+            return report.bottom <= list.bottom + 1 && report.top >= list.top - 1; }"""
+        self.assertTrue(self.page.evaluate(inside))
+
+    def test_a_past_run_can_be_opened_from_the_keyboard(self):
+        self.show("readme_import")
+        self.rows().first.focus()
+        self.page.keyboard.press("Enter")
+        expect(self.page.locator(".run-report")).to_have_count(1)
+        self.page.keyboard.press("Enter")
+        expect(self.page.locator(".run-report")).to_have_count(0)
+
+    def test_a_report_treats_card_text_as_text(self):
+        sandbox = self.load("idle")
+        sandbox.record(details={"upload": {"outcome": "complete", "files": 0, "album": HOSTILE}})
+        self.open_page()
+        self.rows().first.click()
+        expect(self.page.locator(".run-report")).to_contain_text(HOSTILE)
+        self.assertIsNone(self.page.evaluate("window.__pwned || null"))
+
+    def test_both_styles_fit_the_panel_at_both_widths(self):
+        overflow = """() => { const hero = document.querySelector('#hero').getBoundingClientRect();
+            return [...document.querySelectorAll('#hero *')].filter(e => {
+                const r = e.getBoundingClientRect();
+                return r.bottom > hero.bottom + 0.5 || r.right > hero.right + 0.5; }).length; }"""
+        for style in ("basic", "advanced"):
+            for window in (NATIVE_WINDOW, NARROW):
+                for state in SUMMARY_STATES:
+                    with self.subTest(style=style, state=state, width=window["width"]):
+                        sandbox = self.load(state)
+                        sandbox.core.act("set_report_style", {"report_style": style})
+                        self.open_page(**window)
+                        self.assertEqual(self.page.evaluate(overflow), 0)
+
+
 class TestSpeedGraph(PageTestCase):
     """The graph fills its width for a run of any length, and shows the trend, not each poll."""
 
@@ -837,6 +1103,11 @@ class TestScreenshots(PageTestCase):
     def test_save_every_state(self):
         folder = Path(os.environ["PHOTO_OFFLOADER_TEST_SCREENSHOTS"])
         folder.mkdir(parents=True, exist_ok=True)
+        self.show("readme_import", color_scheme="dark", **NATIVE_WINDOW)
+        self.page.locator("#history .row").first.click()
+        self.page.screenshot(path=str(folder / "report-from-history-dark.png"))
+        self.page.click("#menu-button")
+        self.page.screenshot(path=str(folder / "menu-dark.png"))
         for state in SCENARIOS:
             for scheme in ("light", "dark"):
                 self.show(state, color_scheme=scheme, **NATIVE_WINDOW)

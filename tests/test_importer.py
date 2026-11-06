@@ -313,6 +313,31 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         self.assertEqual(second["details"]["new"], {"JPG": 1})
         self.assertEqual(second["details"]["new_bytes"], len(b"new jpg"))
         self.assertEqual(second["files"], 4)
+        self.assertIn("copy_seconds", second["details"])
+        self.assertNotIn("usb_seconds", second["details"], "there was no USB backup to time")
+
+    def test_a_usb_backup_with_nothing_to_copy_does_not_claim_the_cards_bytes(self):
+        # The transfer counter still holds the card's copy, because the USB stage never reset it.
+        self.addCleanup(app._RUN.clear)
+        app._RUN.update(kind="import")
+        identity = VolumeIdentity(self.usb_volume.resolve(), "disk4s1", "uuid-a")
+        with (
+            patch("photo_offloader.volumes.usb_is_mounted", return_value=True),
+            patch("photo_offloader.volumes.get_volume_identity", return_value=identity),
+            patch("photo_offloader.transfer.copy_local_archive_to_usb") as backup,
+            patch.dict(progress._PROGRESS, {"bytes_transferred": 999}),
+        ):
+            backup.return_value = ImportStats()
+            app._backup_after_import(identity)
+        self.assertNotIn("usb_bytes", app._run_details())
+
+    def test_a_stage_is_timed_even_when_it_fails_partway(self):
+        self.addCleanup(app._RUN.clear)
+        app._RUN.update(kind="import")
+        with patch("time.monotonic", side_effect=[100.0, 112.34]), self.assertRaises(OSError):
+            with app._timed("copy_seconds"):
+                raise OSError("card pulled out")
+        self.assertEqual(app._run_details()["copy_seconds"], 12.3)
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
@@ -444,6 +469,11 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         (run,) = catalog.list_import_history()
         self.assertTrue(run["usb"])
         self.assertEqual(run["details"]["usb_copied"], 3)
+        self.assertGreaterEqual(run["details"]["copy_seconds"], 0)
+        self.assertGreaterEqual(run["details"]["usb_seconds"], 0)
+        self.assertEqual(
+            run["details"]["usb_bytes"], sum(path.stat().st_size for path in self.media().values())
+        )
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
