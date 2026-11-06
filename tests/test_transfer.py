@@ -154,6 +154,26 @@ class TestTransfer(support.CardFixtureTestCase):
         self.assertEqual((result.status, result.path), ("skipped", copy))
         self.assertEqual(catalog.catalog_row(source)[3], fileops.sha256_file(source))
 
+    def test_an_intact_card_skips_the_end_check_for_a_hash_from_its_manifest(self):
+        source, _, digest = self.saved_photo()
+        manifest = {}
+        card.update_card_manifest_entry(manifest, source, self.dcim, digest)
+        with patch.object(fileops, "ends_match", side_effect=AssertionError("must not read")):
+            result = transfer.copy_one_to_destination(
+                source, self.dcim, self.local, manifest, trust_manifest=True
+            )
+        self.assertEqual(result.status, "skipped")
+
+    def test_a_hash_from_the_catalog_is_always_checked_even_on_an_intact_card(self):
+        # The catalog isn't per card, so an intact manifest says nothing about its rows.
+        source, destination, digest = self.saved_photo()
+        catalog.catalog_record(source, sha256=digest)
+        content = self.replace_keeping_details(source)
+        result = transfer.copy_one_to_destination(
+            source, self.dcim, self.local, {}, trust_manifest=True
+        )
+        self.assert_new_photo_was_saved(destination, result, content)
+
     def test_a_skipped_file_is_not_reported_as_copying(self):
         # Dashboard log 2026-11-06: the panel flipped to Copying on a card with nothing to copy.
         source, _, digest = self.saved_photo()

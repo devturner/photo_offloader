@@ -95,6 +95,13 @@ the saved copy. If they differ, both files are hashed in full, and a new photo g
 this rarer still. The comparison isn't proof that the files are identical; it only rules out a wrong
 cache entry. The full check happens when a file is copied.
 
+**An unchanged card isn't read again.** Cameras only add files. If every file in a card's manifest is
+still on the card with the same path, size and time, the card can't have been formatted, so that
+comparison is skipped and a re-insert reads no photos. New files are copied and verified as usual. If
+a file is missing or changed, that import does the comparison, and files that have left the card drop
+out of the manifest only once an import completes. This also means a saved copy that changed on disk
+without its size or time changing goes unnoticed here.
+
 **Daylight saving and time zones.** Cameras store file times in local time, so after a clock change
 every file on a card can appear to have moved by exactly an hour. A shift of a whole number of hours,
 up to 24, with the same size counts as unchanged. Otherwise a single clock change would mean hashing

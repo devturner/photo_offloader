@@ -297,6 +297,65 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
             any(entry.get("sha256") for entry in card.load_card_manifest(self.dcim).values())
         )
 
+    def import_counting_end_checks(self):
+        with (
+            patch("time.sleep"),
+            patch.object(fileops, "ends_match", wraps=fileops.ends_match) as ends,
+        ):
+            code = app.main(["--source", str(self.card), "--no-usb", "--no-eject"])
+        return code, ends.call_count
+
+    def test_an_unchanged_card_is_not_read_again_and_new_photos_are_still_saved(self):
+        media = self.media()
+        self.assertEqual(self.import_counting_end_checks()[0], 0)
+        self.assertEqual(self.import_counting_end_checks(), (0, 0))
+        new_photo = media["JPG"].with_name("new.jpg")
+        new_photo.write_bytes(b"a new photo")
+        self.assertEqual(self.import_counting_end_checks(), (0, 0))
+        self.assertIn("new.jpg", self.imported_names(self.local))
+
+    def test_a_deleted_photo_means_one_fully_checked_import_then_back_to_fast(self):
+        media = self.media()
+        self.import_counting_end_checks()
+        media["JPG"].unlink()
+        code, checks = self.import_counting_end_checks()
+        self.assertEqual(code, 0)
+        self.assertGreater(checks, 0)
+        self.assertEqual(self.import_counting_end_checks(), (0, 0))
+
+    def format_keeping_the_id_with_one_new_photo_matching_an_old_one(self, media):
+        """Everything old is gone, and one new photo has an old one's path, size and time."""
+        for kind, path in media.items():
+            if kind != "RAW":
+                path.unlink()
+        before = media["RAW"].stat()
+        content = bytes(reversed(media["RAW"].read_bytes()))
+        media["RAW"].write_bytes(content)
+        os.utime(media["RAW"], ns=(before.st_atime_ns, before.st_mtime_ns))
+        return content
+
+    def assert_saved_in_raw_archive(self, content):
+        saved = [
+            path.read_bytes() for path in config.LOCAL_RAW_DEST_ROOT.rglob("*") if path.is_file()
+        ]
+        self.assertIn(content, saved)
+
+    def test_a_format_that_keeps_the_card_id_cannot_lose_a_new_photo(self):
+        media = self.media()
+        self.import_counting_end_checks()
+        content = self.format_keeping_the_id_with_one_new_photo_matching_an_old_one(media)
+        self.assertEqual(self.import_counting_end_checks()[0], 0)
+        self.assert_saved_in_raw_archive(content)
+
+    def test_an_interrupted_import_after_such_a_format_cannot_lose_it_either(self):
+        media = self.media()
+        self.import_counting_end_checks()
+        content = self.format_keeping_the_id_with_one_new_photo_matching_an_old_one(media)
+        with patch.object(app.transfer, "copy_category", side_effect=OSError("card pulled")):
+            self.assertNotEqual(self.import_counting_end_checks()[0], 0)
+        self.assertEqual(self.import_counting_end_checks()[0], 0)
+        self.assert_saved_in_raw_archive(content)
+
     def test_importer_log_file_is_size_capped(self):
         app.configure_logging()
         handlers = [h for h in logs.logger.handlers if isinstance(h, logging.FileHandler)]
