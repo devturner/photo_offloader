@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import catalog
+from photo_offloader import catalog, google_photos
 from photo_offloader.dashboard import core
 from tests import support
 
@@ -621,6 +621,18 @@ class TestPipeline(Fixture):
     def test_google_photos_not_configured(self):
         step = self.pipeline("cloud")
         self.assertEqual((step["state"], step["headline"]), ("off", "Not set up"))
+
+    def test_not_set_up_names_the_first_missing_step(self):
+        with patch.object(google_photos, "find_rclone", return_value=None):
+            self.assertEqual(self.pipeline("cloud")["detail"], "Install rclone to set this up")
+        self.advance(60)   # past the cached answer
+        with patch.object(google_photos, "find_rclone", return_value="/usr/bin/rclone"):
+            self.assertEqual(self.pipeline("cloud")["detail"], "Add an rclone remote named gphotos")
+
+    def test_not_set_up_names_a_custom_remote(self):
+        with (patch.object(google_photos, "find_rclone", return_value="/usr/bin/rclone"),
+              patch.dict(os.environ, {"PHOTO_OFFLOADER_GPHOTOS_REMOTE": "photos-cloud:"})):
+            self.assertEqual(self.pipeline("cloud")["detail"], "Add an rclone remote named photos-cloud")
 
     def test_google_photos_configured_and_idle(self):
         (self.data / "preferences.json").write_text(json.dumps({"google_photos": {"configured": True}}))
