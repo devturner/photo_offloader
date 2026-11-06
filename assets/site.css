@@ -40,7 +40,7 @@ article img { margin: 1.5rem 0; }
 article li { margin: .25rem 0; }
 code { padding: .1em .35em; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; font: .88em ui-monospace, SFMono-Regular, Menlo, monospace; }
 pre { margin: 1rem 0; padding: .9rem 1rem; overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; line-height: 1.45; }
-pre code { padding: 0; background: none; border: 0; font-size: .82em; }
+pre code { padding: 0; background: none; border: 0; font-size: .8em; }
 /* display:block lets a wide table scroll inside the column on a phone instead of widening the page. */
 table { display: block; max-width: 100%; margin: 1rem 0; overflow-x: auto; border-collapse: collapse; }
 th, td { padding: .45rem .7rem; border: 1px solid var(--line); text-align: left; vertical-align: top; }
