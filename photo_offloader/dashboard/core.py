@@ -410,7 +410,7 @@ class DashboardCore:
 
     def _upload_state_after(self, row: Dict[str, Any], google: Dict[str, Any], now: float) -> str:
         """Where the Google Photos step stands for the import in ``row``."""
-        if not google["configured"] or row["outcome"] != "complete":
+        if not google["configured"] or not display.saved_on_mac(row):
             return "skipped"
         if google["state"] == "running":
             return "active"
@@ -426,7 +426,7 @@ class DashboardCore:
         follows_import = (
             row is not None
             and row["kind"] == "import"
-            and row["outcome"] == "complete"
+            and display.saved_on_mac(row)
             and now - float(row["finished_at"]) < UPLOAD_FOLLOWS_IMPORT_SECONDS
         )
         upload_state = self._upload_state_after(row, google, now) if follows_import else ""

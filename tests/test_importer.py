@@ -199,14 +199,53 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
-    def test_a_usb_failure_is_reported_without_starting_the_upload(self, notify, launch):
+    def test_a_usb_failure_is_reported_and_the_upload_still_starts(self, notify, launch):
+        # Each stage stands alone: the photos are verified on the Mac, so a USB problem must
+        # not also keep them from Google Photos until someone notices.
         result = app._report_outcome(
             ImportStats(found=3), ImportStats(failed=2), True, False, False
         )
         self.assertEqual(result, 1)
-        launch.assert_not_called()
+        launch.assert_called_once_with()
         self.assertEqual(notify.call_args[0][0], "USB Backup Incomplete")
         self.assertIn("copied to the Mac", notify.call_args[0][1])
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    def test_a_card_that_would_not_eject_still_gets_its_upload(self, notify, launch):
+        result = app._report_outcome(ImportStats(found=3), ImportStats(), True, True, False)
+        self.assertEqual(result, 2)
+        launch.assert_called_once_with()
+
+    @patch("photo_offloader.volumes.eject_volume", return_value=True)
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    def test_a_usb_failure_records_that_the_mac_copy_was_verified(self, notify, launch, eject):
+        self.media()
+        with (
+            patch("time.sleep"),
+            patch("photo_offloader.volumes.usb_is_mounted", return_value=True),
+            patch("photo_offloader.volumes.get_volume_identity", return_value=None),
+            patch.object(app, "_backup_after_import", return_value=ImportStats(failed=1)),
+        ):
+            self.assertEqual(app.main(["--source", str(self.card)]), 1)
+        launch.assert_called_once_with()
+        history = catalog.list_import_history()[0]
+        self.assertEqual(history["outcome"], "failed")
+        self.assertTrue(history["details"]["local_verified"])
+
+    @patch("photo_offloader.volumes.eject_volume", return_value=True)
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    def test_a_failed_copy_is_not_recorded_as_verified(self, notify, launch, eject):
+        self.media()
+        with (
+            patch("time.sleep"),
+            patch("photo_offloader.fileops.copy_file_with_progress", side_effect=OSError("bad")),
+        ):
+            self.assertEqual(app.main(["--source", str(self.card), "--no-usb"]), 1)
+        launch.assert_not_called()
+        self.assertNotIn("local_verified", catalog.list_import_history()[0]["details"])
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
@@ -501,7 +540,7 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         )
         (run,) = catalog.list_import_history()
         self.assertEqual((run["copied"], run["failed"]), (3, 0))  # counts the local import
-        launch.assert_not_called()
+        launch.assert_called_once_with()
 
 
 if __name__ == "__main__":

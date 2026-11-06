@@ -150,6 +150,34 @@ class TestHeadline(Fixture):
         head = self.core.state()["headline"]
         self.assertEqual(head["title"], "NIKON Z 8 is mounted")
 
+    def usb_failed_run(self, **details):
+        return {
+            "kind": "import",
+            "outcome": "failed",
+            "usb": True,
+            "message": "Local import succeeded; USB backup has 1 failure(s)",
+            "finished_at": 1000.0,
+            "details": details,
+        }
+
+    def test_an_upload_after_a_usb_failure_shows_on_the_import_it_followed(self):
+        google = {"configured": True, "state": "running", "updated_at": 1001.0}
+        run = self.usb_failed_run(local_verified=True)
+        self.assertEqual(self.core._upload_state_after(run, google, 1002.0), "active")
+        stages = {
+            stage["id"]: stage["state"] for stage in display.stages_after_import(run, "active")
+        }
+        self.assertEqual(stages["upload"], "active")
+
+    def test_an_import_not_verified_on_the_mac_shows_no_upload(self):
+        google = {"configured": True, "state": "running", "updated_at": 1001.0}
+        run = self.usb_failed_run()
+        self.assertEqual(self.core._upload_state_after(run, google, 1002.0), "skipped")
+        stages = {
+            stage["id"]: stage["state"] for stage in display.stages_after_import(run, "active")
+        }
+        self.assertEqual(stages["upload"], "skipped")
+
     def mark_card_handled(self, name="NIKON Z 8"):
         (self.install / ".last_camera_source").write_text(str(self.volumes / name / "DCIM") + "\n")
 
