@@ -422,6 +422,9 @@ def _usb_report_step(details: Dict[str, Any], state: str) -> Dict[str, Any]:
     )
 
 
+CHECK_STEP_LABEL = "Check for new files"
+
+
 def _import_steps(
     row: Dict[str, Any], details: Dict[str, Any], upload_state: str
 ) -> List[Dict[str, Any]]:
@@ -437,6 +440,8 @@ def _import_steps(
         if copy_seconds is not None
         else None
     )
+    files_copied = _new_files_count(row, details)
+    only_checked = not files_copied and states["copy"] == "done"
     copied = _new_files_text(row, details)
     if row["failed"]:
         copied += f" · {int(row['failed'])} failed"
@@ -452,11 +457,11 @@ def _import_steps(
         ),
         _report_step(
             "copy",
-            "Copy to Mac",
+            CHECK_STEP_LABEL if only_checked else "Copy to Mac",
             "Mac archive",
             states["copy"],
             copied,
-            files=_new_files_count(row, details),
+            files=files_copied,
             bytes=details.get("new_bytes"),
             seconds=copy_seconds,
         ),
@@ -487,10 +492,13 @@ SEGMENT_LABELS = {"scan": "Scan", "copy": "Copy", "usb": "USB backup", "upload":
 def _segments(steps: List[Dict[str, Any]], duration: float) -> List[Dict[str, Any]]:
     """Where the time went. Without a copy time, the import can't be split up."""
     timed = {step["id"]: step["seconds"] for step in steps}
+    labels = dict(SEGMENT_LABELS)
+    if any(step["label"] == CHECK_STEP_LABEL for step in steps):
+        labels["copy"] = "Check"
     if "scan" in timed and timed["scan"] is None:
         parts = [("import", "Import", duration), ("upload", "Upload", timed["upload"])]
     else:
-        parts = [(key, SEGMENT_LABELS.get(key, "Update"), timed[key]) for key in timed]
+        parts = [(key, labels.get(key, "Update"), timed[key]) for key in timed]
     return [
         {"id": key, "label": label, "seconds": seconds} for key, label, seconds in parts if seconds
     ]

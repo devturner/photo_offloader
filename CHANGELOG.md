@@ -55,6 +55,7 @@ All notable changes to Photo Offloader are documented here.
 - **Checking a card no longer rewrites the status file for every file.** It wrote about 4 times per file, which took 8.8 s of a 25.7 s check on a 2,722-file card. It now writes at most 4 times a second, and the dashboard reads about once a second.
 - **Re-inserting an unchanged card no longer reads its photos.** Cameras only add files, so if every file from the last import is still on the card with the same path, size and time, the card can't have been formatted and the 64 KB comparison is skipped. If anything is missing or changed, that import does the comparison. New files are copied and verified as always.
 - **The panel no longer flips to *Copying new files* on a card with nothing to copy.** Each file found already saved reported its state as copying.
+- **A report no longer says *Copy 20s* when nothing was copied.** With no new files, that time is shown as *Check*, and the advanced table says *Check for new files*.
 - **The import log now shows where the time went**, with one line per file type, such as `Time for JPG, 1361 file(s): 7.5 s: end checks 3.9 s, status 1.3 s, catalog 1.0 s, other 1.3 s`.
 
 ### Changed (2.5)

@@ -882,6 +882,21 @@ class TestRunFlow(Fixture):
         self.assertAlmostEqual(self.step(report, "upload")["speed_bps"], 10 * 1024**2)
         self.assertIsNone(self.step(report, "scan")["speed_bps"])
 
+    def copy_labels(self, new, **record):
+        report = self.report({**self.REAL_RUN, "new": new}, **record)
+        segment = next(seg for seg in report["segments"] if seg["id"] == "copy")
+        return self.step(report, "copy")["label"], segment["label"]
+
+    def test_a_run_that_copied_nothing_says_it_checked(self):
+        # User feedback 2026-11-06: "Copy 20s" on a card with no new files.
+        self.assertEqual(self.copy_labels({}), ("Check for new files", "Check"))
+
+    def test_a_run_that_copied_files_says_it_copied(self):
+        self.assertEqual(self.copy_labels({"JPG": 1}), ("Copy to Mac", "Copy"))
+
+    def test_a_failed_copy_still_says_copy_when_nothing_got_through(self):
+        self.assertEqual(self.copy_labels({}, outcome="failed", failed=3), ("Copy to Mac", "Copy"))
+
     def test_a_report_lists_where_the_time_went(self):
         self.assertEqual(
             self.report(self.REAL_RUN)["segments"],
