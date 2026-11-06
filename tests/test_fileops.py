@@ -53,6 +53,15 @@ class TestFileops(support.CardFixtureTestCase):
             self.assertTrue(fileops.install_without_overwrite(temp, final))
         self.assertEqual(final.read_bytes(), b"data")
 
+    def test_install_on_a_drive_without_hard_links_never_overwrites_an_existing_file(self):
+        # exFAT, the usual format for a USB backup drive, takes the fallback path.
+        temp, final = self.root / "tmp", self.root / "final"
+        temp.write_bytes(b"new")
+        final.write_bytes(b"old")
+        with patch("os.link", side_effect=OSError(errno.EXDEV, "cross-device")):
+            self.assertFalse(fileops.install_without_overwrite(temp, final))
+        self.assertEqual(final.read_bytes(), b"old")
+
     def test_camera_index_file_name_match_is_case_insensitive(self):
         self.assertTrue(fileops.is_camera_index_file(Path("nc_fllst.dat")))
         self.assertFalse(fileops.is_camera_index_file(Path("NOTES.DAT")))
