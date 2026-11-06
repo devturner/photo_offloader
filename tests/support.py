@@ -141,6 +141,7 @@ class CardFixtureTestCase(unittest.TestCase):
             ("WAIT_SECONDS", 0),
             ("EJECT_CARD_AFTER_SUCCESS", True),
             ("MIN_FREE_SPACE_BUFFER_BYTES", 0),
+            ("READ_RETRY_PAUSE_SECONDS", 0),
         ):
             patcher = patch.object(config, name, value)
             patcher.start()

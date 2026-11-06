@@ -220,34 +220,41 @@ class TestTotals(unittest.TestCase):
         self.assertEqual(summary["unknown"], ["DCIM/101NIKON"])
 
 
+ENOUGH = run_report.CARD_TROUBLE_MIN_FILES
+
+
 class TestLikelyCause(unittest.TestCase):
+    def test_a_handful_of_bad_photos_at_the_end_is_not_blamed_on_the_card(self):
+        # Five seemed low to the user: the copy tries every file, so these are simply the last ones.
+        self.assertGreaterEqual(ENOUGH, 20)
+
     def test_every_file_after_a_point_failing_looks_like_the_card(self):
         cause = summarize(
-            [outcome("JPG", "A.JPG")] + [failed("JPG", f"B{n}.JPG") for n in range(5)]
+            [outcome("JPG", "A.JPG")] + [failed("JPG", f"B{n}.JPG") for n in range(ENOUGH)]
         )["cause"]
         self.assertIn("A.JPG", cause["detail"])
         self.assertIn("card or reader", cause["detail"])
 
     def test_every_file_failing_says_every_file(self):
-        cause = summarize([failed("JPG", f"B{n}.JPG") for n in range(5)])["cause"]
+        cause = summarize([failed("JPG", f"B{n}.JPG") for n in range(ENOUGH)])["cause"]
         self.assertIn("Every file failed", cause["detail"])
 
     def test_a_few_failures_are_not_enough_to_blame_the_card(self):
         cause = summarize(
-            [outcome("JPG", "A.JPG")] + [failed("JPG", f"B{n}.JPG") for n in range(4)]
+            [outcome("JPG", "A.JPG")] + [failed("JPG", f"B{n}.JPG") for n in range(ENOUGH - 1)]
         )
         self.assertIsNone(cause["cause"])
 
     def test_a_success_after_a_failure_means_the_card_was_still_working(self):
         cause = summarize(
-            [failed("JPG", f"B{n}.JPG") for n in range(5)] + [outcome("JPG", "Z.JPG")]
+            [failed("JPG", f"B{n}.JPG") for n in range(ENOUGH)] + [outcome("JPG", "Z.JPG")]
         )
         self.assertIsNone(cause["cause"])
 
     def test_a_full_mac_is_not_blamed_on_the_card(self):
         cause = summarize(
             [outcome("JPG", "A.JPG")]
-            + [failed("JPG", f"B{n}.JPG", "The Mac ran out of space") for n in range(5)]
+            + [failed("JPG", f"B{n}.JPG", "The Mac ran out of space") for n in range(ENOUGH)]
         )
         self.assertIsNone(cause["cause"])
 
@@ -569,6 +576,144 @@ class TestCopyRecordsEachFile(CardFixtureTestCase):
             transfer.copy_category([source], self.dcim, [self.local], "JPG", stats)
         self.assertEqual(stats.outcomes[0].result, run_report.FAILED)
         self.assertEqual(stats.outcomes[0].reason, run_report.READ_ERROR)
+
+
+class TestSecondTry(CardFixtureTestCase):
+    def copy_failing(self, times, names=None, reason=errno.EIO):
+        """``copy_one_to_destination`` that fails each named file its first ``times`` tries."""
+        real, tries = transfer.copy_one_to_destination, {}
+
+        def copy(source, *args, **kwargs):
+            tries[source.name] = tries.get(source.name, 0) + 1
+            if (names is None or source.name in names) and tries[source.name] <= times:
+                raise OSError(reason, "Input/output error", str(source))
+            return real(source, *args, **kwargs)
+
+        self.tries = tries
+        return patch.object(transfer, "copy_one_to_destination", side_effect=copy)
+
+    def first_pass(self):
+        files = self.media()
+        stats = transfer.ImportStats()
+        for category, source in files.items():
+            root = transfer.media_info.local_root_for_category(category)
+            transfer.copy_category([source], self.dcim, [root], category, stats)
+        return files, stats
+
+    def test_a_read_error_that_clears_up_saves_the_file(self):
+        with self.copy_failing(1, {"photo.nef"}):
+            files, stats = self.first_pass()
+            self.assertEqual(stats.failed, 1)
+            recovered = transfer.retry_read_errors(self.dcim, stats)
+        self.assertEqual(recovered, 1)
+        self.assertEqual(stats.failed, 0)
+        self.assertEqual(stats.errors, [])
+        saved = next(item for item in stats.outcomes if item.source == files["RAW"])
+        self.assertEqual(saved.result, "copied")
+        self.assertTrue(saved.retried)
+        self.assertTrue(Path(saved.archive_path).is_file())
+        self.assertEqual(stats.destination_copies, 3)
+
+    def test_a_recovered_file_counts_as_new(self):
+        with self.copy_failing(1, {"photo.nef"}):
+            _files, stats = self.first_pass()
+            transfer.retry_read_errors(self.dcim, stats)
+        self.assertEqual(transfer.progress._PROGRESS["new_files"], 3)
+
+    def test_a_file_that_fails_again_stays_failed(self):
+        with self.copy_failing(2, {"photo.nef"}):
+            _files, stats = self.first_pass()
+            self.assertEqual(transfer.retry_read_errors(self.dcim, stats), 0)
+        self.assertEqual(stats.failed, 1)
+        self.assertEqual(len(stats.errors), 1)
+
+    def test_only_read_errors_are_tried_again(self):
+        # A full disk doesn't clear up in five seconds, and trying again would only fill it further.
+        with self.copy_failing(1, {"photo.nef"}, errno.ENOSPC):
+            _files, stats = self.first_pass()
+            self.assertEqual(stats.failed, 1)
+            transfer.retry_read_errors(self.dcim, stats)
+        self.assertEqual(self.tries["photo.nef"], 1)
+
+    def test_a_clean_copy_does_not_wait(self):
+        _files, stats = self.first_pass()
+        with patch.object(transfer.time, "sleep") as sleep:
+            self.assertEqual(transfer.retry_read_errors(self.dcim, stats), 0)
+        sleep.assert_not_called()
+
+    def test_it_waits_before_trying_again(self):
+        with self.copy_failing(1, {"photo.nef"}):
+            _files, stats = self.first_pass()
+            with patch.object(transfer.time, "sleep") as sleep:
+                transfer.retry_read_errors(self.dcim, stats)
+        sleep.assert_called_once_with(config.READ_RETRY_PAUSE_SECONDS)
+
+    def many_lost(self, count):
+        return [
+            FileOutcome(
+                "JPG", self.dcim / f"lost{n}.jpg", run_report.FAILED, reason=run_report.READ_ERROR
+            )
+            for n in range(count)
+        ]
+
+    def test_a_dead_card_is_not_tried_file_by_file(self):
+        # With no timeout on a read yet, each try on a dying card can take a long time.
+        stats = transfer.ImportStats(failed=50, outcomes=self.many_lost(50))
+        with patch.object(
+            transfer, "copy_one_to_destination", side_effect=OSError(errno.EIO, "x")
+        ) as copy:
+            transfer.retry_read_errors(self.dcim, stats)
+        self.assertEqual(copy.call_count, transfer.READ_RETRY_GIVE_UP_AFTER)
+        self.assertEqual(stats.failed, 50)
+
+    def test_a_success_starts_the_count_of_failures_again(self):
+        stats = transfer.ImportStats(failed=30, outcomes=self.many_lost(30))
+        calls = {"n": 0}
+
+        def copy(source, dcim, base, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] % transfer.READ_RETRY_GIVE_UP_AFTER == 0:
+                return transfer.DestinationResult(base, "skipped", source, "", "abc")
+            raise OSError(errno.EIO, "x")
+
+        with patch.object(transfer, "copy_one_to_destination", side_effect=copy):
+            transfer.retry_read_errors(self.dcim, stats)
+        self.assertEqual(calls["n"], 30)
+
+    def test_a_card_that_has_gone_is_not_tried_at_all(self):
+        stats = transfer.ImportStats(failed=3, outcomes=self.many_lost(3))
+        with patch.object(transfer, "copy_one_to_destination") as copy:
+            transfer.retry_read_errors(self.root / "gone" / "DCIM", stats)
+        copy.assert_not_called()
+
+    def test_the_list_says_which_files_needed_a_second_try(self):
+        facts = run_report.RunFacts(
+            source="card",
+            started_at=1_800_000_000.0,
+            outcome="complete",
+            message="",
+            dcim=self.dcim,
+            problems=False,
+            outcomes=[FileOutcome("JPG", self.dcim / "a.jpg", "copied", retried=True)],
+        )
+        folder = config.RUN_REPORTS_DIR / run_report.save_report(facts)[0]
+        with (folder / "files.csv").open(encoding="utf-8-sig", newline="") as handle:
+            self.assertEqual(next(csv.DictReader(handle))["result"], "copied on the second try")
+
+    def test_an_import_retries_and_finishes_clean(self):
+        self.media()
+        with (
+            self.copy_failing(1, {"photo.nef"}),
+            patch("time.sleep"),
+            patch("photo_offloader.importer.launch_google_photos_sync"),
+            patch("photo_offloader.volumes.eject_volume", return_value=True),
+        ):
+            self.assertEqual(app.main(["--source", str(self.card), "--no-usb"]), 0)
+        row = catalog.list_import_history()[0]
+        self.assertEqual(row["outcome"], "complete")
+        self.assertEqual(row["failed"], 0)
+        self.assertEqual(row["copied"], 3)
+        self.assertEqual(row["details"]["second_tries"], 1)
 
 
 if __name__ == "__main__":

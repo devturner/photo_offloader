@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import plistlib
 import re
 import sqlite3
 import subprocess
@@ -19,6 +20,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from xml.parsers.expat import ExpatError
 
 from photo_offloader import catalog, google_photos, jsonfile, logs, run_report
 from photo_offloader.dashboard import display
@@ -33,6 +35,8 @@ SPEED_SAMPLES = 130
 UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60  # an upload this soon after an import continues its steps
 UPLOAD_START_GRACE_SECONDS = 30  # importer done, sync process still starting
 CARD_HISTORY_ROWS = 20  # enough to get past any backups since a card's last import
+CARD_ID_SECONDS = 30.0  # how long a mounted card's ID is trusted before asking again
+DISKUTIL_SECONDS = 5  # a failing card can leave diskutil waiting, and a poll waits for this
 PREVIEW_LINES = 40  # of a report's file list, in the debug package's save sheet
 UPLOAD_SILENT_SECONDS = 10  # no report from rclone for this long counts as a stall
 FINISHING_GRACE_SECONDS = 30  # status says "complete", history row not written yet
@@ -153,13 +157,40 @@ class DashboardCore:
         if card is None:
             return False
         rows = catalog.list_import_history(limit=CARD_HISTORY_ROWS)
-        last = next((r for r in rows if r["kind"] == "import" and r["source"] == card.name), None)
+        imports = [r for r in rows if r["kind"] == "import"]
+        if not any(self._left_files_behind(row) for row in imports):
+            return False  # the usual case, and it saves asking diskutil on every poll
+        card_id = self._cached(f"card-id:{card}", CARD_ID_SECONDS, lambda: self._volume_id(card))
+        last = next((row for row in imports if self._is_this_card(row, card, card_id)), None)
+        return last is not None and self._left_files_behind(last)
+
+    @staticmethod
+    def _left_files_behind(row: Dict[str, Any]) -> bool:
         return (
-            last is not None
-            and last["outcome"] == "failed"
-            and bool(last["files"] or last["details"].get("problems"))
-            and not last["details"].get("local_verified")
+            row["outcome"] == "failed"
+            and bool(row["files"] or row["details"].get("problems"))
+            and not row["details"].get("local_verified")
         )
+
+    @staticmethod
+    def _is_this_card(row: Dict[str, Any], card: Path, card_id: Optional[str]) -> bool:
+        """Cameras give every card the same name, so only use it when there's no ID to compare."""
+        saved_id = row["details"].get("card_id")
+        return saved_id == card_id if saved_id and card_id else row["source"] == card.name
+
+    def _volume_id(self, volume: Path) -> Optional[str]:
+        try:
+            result = self._run(
+                ["/usr/sbin/diskutil", "info", "-plist", str(volume)],
+                capture_output=True,
+                timeout=DISKUTIL_SECONDS,
+            )
+            return plistlib.loads(result.stdout).get("VolumeUUID")
+        except (OSError, subprocess.SubprocessError) as exc:
+            logs.logger.debug("Could not ask diskutil about %s: %s", volume, exc)
+        except (ValueError, TypeError, AttributeError, ExpatError) as exc:
+            logs.logger.debug("Unreadable details for %s: %s", volume, exc)
+        return None  # the caller compares names instead
 
     def usb_mounted(self) -> bool:
         return self._cached(
@@ -919,7 +950,7 @@ class DashboardCore:
         result = self._run(
             ["/usr/sbin/diskutil", "eject", str(volume)], capture_output=True, text=True, timeout=60
         )
-        self._invalidate("card", "usb")
+        self._invalidate("card", "usb", f"card-id:{volume}")
         if result.returncode != 0:
             reason = (result.stderr or result.stdout or "").strip() or "it may be in use"
             return {"ok": False, "message": f"Could not eject the {what}: {reason}"}

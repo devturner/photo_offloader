@@ -130,7 +130,12 @@ def _save_run_report(outcome: str, message: str) -> Dict[str, object]:
     except Exception as exc:
         logger.exception("Could not save this run's report: %s", exc)
         return {}
-    return {"report": folder, **({"problems": summary} if summary else {})}
+    second_tries = sum(1 for item in outcomes if item.retried)
+    return {
+        "report": folder,
+        **({"problems": summary} if summary else {}),
+        **({"second_tries": second_tries} if second_tries else {}),
+    }
 
 
 def _run_details() -> Dict[str, object]:
@@ -146,6 +151,8 @@ def _run_details() -> Dict[str, object]:
                 details[name] = round(float(_RUN[name]), 1)  # type: ignore[arg-type]
         if "usb_bytes" in _RUN:
             details["usb_bytes"] = _RUN["usb_bytes"]
+        if _RUN.get("card_id"):
+            details["card_id"] = _RUN["card_id"]
         if _RUN.get("local_verified"):
             # A run that failed later, on USB, still has its photos safe on the Mac.
             details["local_verified"] = True
@@ -434,7 +441,7 @@ def _scan_card(
     else:
         dcim_folder = card.find_card_dcim()
     card_volume = dcim_folder.parent.resolve()
-    _RUN.update(source=card_volume.name, dcim=dcim_folder)
+    _RUN.update(source=card_volume.name, dcim=dcim_folder, card_id=card.card_volume_id(dcim_folder))
     logger.info("Source card volume: %s", card_volume)
     progress.update_status(
         source=str(card_volume),
@@ -582,6 +589,7 @@ def _copy_card_to_mac(
     for category in card.MEDIA_CATEGORIES:
         category_root = media_info.local_root_for_category(category)
         transfer.copy_category(files[category], dcim_folder, [category_root], category, local_stats)
+    transfer.retry_read_errors(dcim_folder, local_stats)
 
     _RUN.update(
         copied=local_stats.destination_copies,

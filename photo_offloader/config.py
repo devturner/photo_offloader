@@ -64,3 +64,4 @@ EJECT_CARD_AFTER_SUCCESS = True  # still requires the dashboard's auto-eject set
 VERIFY_WITH_SHA256 = False  # --sha256 forces a full hash comparison
 USE_FILE_BIRTH_TIME = True  # month folder fallback when a file has no EXIF date
 MIN_FREE_SPACE_BUFFER_BYTES = 100 * 1024 * 1024
+READ_RETRY_PAUSE_SECONDS = 5  # before trying again the files a card failed to give up

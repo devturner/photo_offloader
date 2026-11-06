@@ -77,12 +77,17 @@ RAW and its JPG, matched by name. A RAW or JPG shot alone counts like a movie: i
 Below that is one row per file type, with what wasn't saved, what's safe and what's on the card. Click a
 row to see its files, and why they failed. A row with more than 30 files names the first 20 and offers
 **Open these in a list**. If a folder couldn't be read, its contents are unknown, so nothing is counted
-for it. If every file after a point failed to read, the report says so first, because that looks like the
-card or the reader, not the photos.
+for it. If at least the last 20 files all failed to read, the report says so first, because that looks like
+the card or the reader, not the photos.
+
+Before any of this, a file that failed to read gets a second try: one pass at the end of the copy, after 5
+seconds, which stops after 10 failures in a row. A file saved this way goes through the same verified copy, and
+the full list marks it.
 
 Until a retry succeeds, the Camera card box says `Don't format: files not saved`, even if you dismiss the
-panel, and **Eject** asks first. The warning returns if that card comes back and isn't imported again, such
-as while imports are paused.
+panel, and **Eject** asks first. The warning follows the card by its volume ID, because cameras give every card
+the same name: it returns if that card comes back and isn't imported again, such as while imports are paused,
+and another card with the same name doesn't get it. A card with no ID is matched by name.
 
 - **Try again** imports the card again. Files already saved are skipped.
 - **Open full list** opens every file on the card in your spreadsheet app, with its result and hash.

@@ -24,6 +24,8 @@ from photo_offloader import (
 )
 from photo_offloader.logs import logger
 
+READ_RETRY_GIVE_UP_AFTER = 10  # failures in a row on the second try: the card has stopped answering
+
 
 @dataclass
 class ImportStats:
@@ -290,23 +292,27 @@ def copy_one_to_destination(
     return _copy_and_verify(source, dcim_folder, destination_base, final_path, manifest, before)
 
 
+def _count_new_file(category: str, source: Path) -> None:
+    progress._PROGRESS["new_files"] = int(progress._PROGRESS.get("new_files", 0) or 0) + 1
+    progress._PROGRESS["new_media_files"] = (
+        int(progress._PROGRESS.get("new_media_files", 0) or 0) + 1
+    )
+    by_category = dict(progress._PROGRESS.get("new_by_category") or {})
+    by_category[category] = int(by_category.get(category, 0)) + 1
+    progress._PROGRESS["new_by_category"] = by_category
+    try:
+        progress._PROGRESS["new_bytes"] = (
+            int(progress._PROGRESS.get("new_bytes", 0) or 0) + source.stat().st_size
+        )
+    except OSError:
+        pass  # only a display counter: the copy itself has already been verified
+
+
 def _count_session_file(category: str, source: Path, copied: bool) -> None:
     """Session counters the dashboard shows while importing and keeps in history."""
     progress._PROGRESS["files_done"] = int(progress._PROGRESS.get("files_done", 0) or 0) + 1
     if copied:
-        progress._PROGRESS["new_files"] = int(progress._PROGRESS.get("new_files", 0) or 0) + 1
-        progress._PROGRESS["new_media_files"] = (
-            int(progress._PROGRESS.get("new_media_files", 0) or 0) + 1
-        )
-        by_category = dict(progress._PROGRESS.get("new_by_category") or {})
-        by_category[category] = int(by_category.get(category, 0)) + 1
-        progress._PROGRESS["new_by_category"] = by_category
-        try:
-            progress._PROGRESS["new_bytes"] = (
-                int(progress._PROGRESS.get("new_bytes", 0) or 0) + source.stat().st_size
-            )
-        except OSError:
-            pass  # only a display counter: the copy itself has already been verified
+        _count_new_file(category, source)
 
 
 def _count_result(result: DestinationResult, source: Path, label: str, stats: ImportStats) -> None:
@@ -406,6 +412,72 @@ def copy_category(
         logs.timing_summary(time.perf_counter() - started),
     )
     card.save_card_manifest(dcim_folder, card_manifest)
+
+
+def _mark_recovered(index: int, result: DestinationResult, stats: ImportStats) -> None:
+    """A file saved on its second try now counts like any other saved file."""
+    item = stats.outcomes[index]
+    stats.failed -= 1
+    stats.errors = [error for error in stats.errors if error[0] != str(item.source)]
+    stats.verified_copies += 1
+    if result.status == "copied":
+        stats.destination_copies += 1
+        _count_new_file(item.category, item.source)
+    else:
+        stats.destination_skips += 1
+    stats.outcomes[index] = run_report.FileOutcome(
+        item.category,
+        item.source,
+        result.status,
+        str(result.path or ""),
+        result.sha256,
+        retried=True,
+    )
+    logger.warning("%s needed a second try; now saved and verified", item.source)
+
+
+def retry_read_errors(dcim_folder: Path, stats: ImportStats) -> int:
+    """Try once more the files the card failed to give up. Returns how many were then saved.
+
+    Readers and cards can fail for a moment. Only read errors are tried: a full disk won't clear up.
+    A file goes through the same verified copy, so nothing can be overwritten. With no timeout on a
+    read yet (R11) a dying card can take a long time per file, hence giving up on a run of failures.
+    """
+    to_try = [
+        index
+        for index, item in enumerate(stats.outcomes)
+        if item.result == run_report.FAILED and item.reason == run_report.READ_ERROR
+    ]
+    if not to_try:
+        return 0
+    logger.info("Trying %d file(s) again after read errors.", len(to_try))
+    progress.update_status(
+        state="copying", phase="copy", message=f"Trying {len(to_try)} file(s) again"
+    )
+    time.sleep(config.READ_RETRY_PAUSE_SECONDS)
+    if not dcim_folder.is_dir():
+        logger.error("The card has gone, so its failed files can't be tried again.")
+        return 0
+    manifest = card.load_card_manifest(dcim_folder)
+    recovered = failures_in_a_row = 0
+    for index in to_try:
+        item = stats.outcomes[index]
+        root = media_info.local_root_for_category(item.category)
+        try:
+            result = copy_one_to_destination(item.source, dcim_folder, root, manifest)
+        except Exception as exc:
+            item.reason = run_report.failure_reason(exc, item.source)
+            logger.error("%s failed again: %s", item.source, exc)
+            failures_in_a_row += 1
+            if failures_in_a_row >= READ_RETRY_GIVE_UP_AFTER:
+                logger.error("%d failures in a row; not trying any more.", failures_in_a_row)
+                break
+            continue
+        failures_in_a_row = 0
+        recovered += 1
+        _mark_recovered(index, result, stats)
+    card.save_card_manifest(dcim_folder, manifest)
+    return recovered
 
 
 def _local_archive_files(source_roots: Sequence[Path]) -> List[Tuple[Path, Path]]:

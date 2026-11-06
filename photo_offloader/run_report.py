@@ -35,9 +35,9 @@ TYPE_ORDER = ("RAW", "JPG", "VIDEO", "OTHER")  # chosen by the user: rows never 
 
 NAMES_SHOWN_IN_FULL = 30  # a row names all its files up to here...
 NAMES_SHOWN_WHEN_LONG = 20  # ...and past that, the first 20 and how many more
-# Fewer than this in a row could be a few bad files. All must be read errors, so a full Mac doesn't
-# get blamed on the card.
-CARD_TROUBLE_MIN_FILES = 5
+# The copy tries every file, so these are the last files on the card, all failing. Fewer than this
+# could be a few bad photos. All must be read errors, so a full Mac doesn't get blamed on the card.
+CARD_TROUBLE_MIN_FILES = 20
 
 REPORTS_KEPT = 20  # of each of the two kinds below
 PROBLEMS_SUFFIX, OK_SUFFIX = "-problems", "-ok"
@@ -62,6 +62,7 @@ class FileOutcome:
     archive_path: str = ""
     sha256: str = ""
     reason: str = ""
+    retried: bool = False  # saved, but only on the second try: a card can warn of failing this way
 
 
 @dataclass
@@ -327,6 +328,8 @@ def _csv_cell(value: object) -> str:
 def _csv_rows(facts: RunFacts) -> Iterable[Dict[str, object]]:
     for item in facts.outcomes:
         result = f"{FAILED}: {item.reason}" if item.result == FAILED else item.result
+        if item.retried:
+            result += " on the second try"
         yield {
             "type": TYPE_LABELS.get(item.category, item.category),
             "result": result,

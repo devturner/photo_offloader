@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import plistlib
+import subprocess
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from photo_offloader import catalog, config, run_report
 from photo_offloader.run_report import FileOutcome
@@ -129,6 +132,93 @@ class TestCardWarning(ReportFixture):
     def test_with_no_card_there_is_no_warning(self):
         self.failed_run()
         self.assertEqual(self.card_step()["state"], "off")
+
+
+class TestCardWarningFollowsTheCard(ReportFixture):
+    """Cameras give every card the same name, so a name says little about which card it is."""
+
+    def mount(self, volume_id, name="NIKON Z 8"):
+        if not (self.volumes / name).exists():
+            self.add_card(name)
+        real = self.core._run
+
+        def run(argv, **kwargs):
+            if "diskutil" in argv[0]:
+                plist = plistlib.dumps({"VolumeUUID": volume_id} if volume_id else {})
+                return subprocess.CompletedProcess(argv, 0, plist, b"")
+            return real(argv, **kwargs)
+
+        self.core._run = run
+        self.core._cache.clear()
+
+    def failed_card(self, volume_id):
+        self.record(
+            outcome="failed",
+            failed=1,
+            details={"card_id": volume_id, "problems": {"problems": 1, "safe": 0}},
+        )
+
+    def test_the_card_that_failed_is_warned_about(self):
+        self.failed_card("CARD-A")
+        self.mount("CARD-A")
+        self.assertEqual(self.card_step()["state"], "error")
+
+    def test_another_card_with_the_same_name_is_not(self):
+        self.failed_card("CARD-A")
+        self.mount("CARD-B")
+        self.assertEqual(self.card_step()["state"], "ok")
+
+    def test_another_card_succeeding_does_not_clear_the_first(self):
+        # Card A failed, card B of the same name then worked, and card A comes back.
+        self.failed_card("CARD-A")
+        self.record(outcome="complete", details={"card_id": "CARD-B"})
+        self.mount("CARD-A")
+        self.assertEqual(self.card_step()["state"], "error")
+
+    def test_the_same_card_succeeding_clears_it(self):
+        self.failed_card("CARD-A")
+        self.record(outcome="complete", details={"card_id": "CARD-A"})
+        self.mount("CARD-A")
+        self.assertEqual(self.card_step()["state"], "ok")
+
+    def test_a_run_from_before_ids_falls_back_to_the_name(self):
+        self.record(outcome="failed", failed=1)
+        self.mount("CARD-A")
+        self.assertEqual(self.card_step()["state"], "error")
+
+    def test_a_card_with_no_id_falls_back_to_the_name(self):
+        self.failed_card("CARD-A")
+        self.mount(None)
+        self.assertEqual(self.card_step()["state"], "error")
+
+    def test_a_stuck_diskutil_falls_back_to_the_name(self):
+        self.failed_card("CARD-A")
+        self.mount("CARD-B")
+
+        def stuck(argv, **_kwargs):
+            raise subprocess.TimeoutExpired(argv, 5)
+
+        real = self.core._run
+        self.core._run = lambda argv, **kw: (
+            stuck(argv) if "diskutil" in argv[0] else real(argv, **kw)
+        )
+        self.assertEqual(self.card_step()["state"], "error")
+
+    def test_with_nothing_at_risk_diskutil_is_not_asked(self):
+        # It takes about 160 ms and this runs on every poll, while a failing card can make it hang.
+        self.record(outcome="complete", details={"card_id": "CARD-A"})
+        self.mount("CARD-A")
+        asked = []
+        real = self.core._run
+        self.core._run = lambda argv, **kw: (asked.append(argv), real(argv, **kw))[1]
+        self.core.state()
+        self.assertFalse([argv for argv in asked if "diskutil" in argv[0]])
+
+    def test_the_importer_records_the_cards_id(self):
+        from photo_offloader import importer
+
+        with patch.dict(importer._RUN, {"kind": "import", "card_id": "CARD-A"}):
+            self.assertEqual(importer._run_details()["card_id"], "CARD-A")
 
 
 class TestRunWording(ReportFixture):
