@@ -8,8 +8,13 @@ app sit on top. Open work and its reasons are in `scratch/ai_tasks.md` (gitignor
 first when asked to "continue". What only the user can do is in `scratch/human_todo.md`.
 
 ## Commands
-- Tests: `.venv/bin/python -m unittest discover` (about 540 tests, about 2 min). Use the
-  project `.venv`, not the system `python3`, which has no Pillow.
+- Tests: `tools/test.sh full` (about 650 tests, about 2.5 min) or `tools/test.sh fast` (about 35 s,
+  without `test_trigger`, `test_service_control` and the browser tests). Use the project `.venv`,
+  not the system `python3`, which has no Pillow.
+- Which tests when: only the affected modules while working; `fast` before a commit that touches
+  several areas; `full` once before a push; CI always runs everything. Changes to the shell scripts
+  or the dashboard page need the slow modules they affect run directly. Run mutation checks in the
+  background on a temp copy, never chained with a full run.
 - One module or test: `.venv/bin/python -m unittest tests.test_usb_backup`, or add
   `.TestBackupLauncher.test_request_runs_importer_when_lock_is_free`. Filter by name with `-k`.
 - Browser tests: `.venv/bin/python -m unittest tests.browser.test_dashboard_page` (about 45 s). They
