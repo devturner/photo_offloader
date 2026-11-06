@@ -366,8 +366,19 @@ def _run_usb_backup() -> int:
     return 0
 
 
-def _scan_card(args: argparse.Namespace) -> Tuple[Path, Path, Dict[str, List[Path]]]:
-    """Find the card, list its media, reconcile the card manifest and read photo info."""
+def _unreadable_message(count: int) -> str:
+    """The instruction comes first, and it's short: a narrow dashboard cuts off a long line."""
+    places = "1 location" if count == 1 else f"{count} locations"
+    return f"Don't format this card: {places} couldn't be read."
+
+
+def _scan_card(
+    args: argparse.Namespace,
+) -> Tuple[Path, Path, Dict[str, List[Path]], List[Path]]:
+    """Find the card, list its media, reconcile the card manifest and read photo info.
+
+    Also returns what could not be read, because that makes the import incomplete.
+    """
     if args.source:
         logger.info("Using explicit source path: %s", args.source)
         dcim_folder = card.resolve_dcim_path(args.source)
@@ -394,8 +405,11 @@ def _scan_card(args: argparse.Namespace) -> Tuple[Path, Path, Dict[str, List[Pat
     )
     logger.info("Scanning: %s", dcim_folder)
     time.sleep(1)
-    files = card.scan_with_retry(dcim_folder)
+    unreadable: List[Path] = []
+    files = card.scan_with_retry(dcim_folder, unreadable)
     if not any(files.values()):
+        if unreadable:
+            raise RuntimeError(_unreadable_message(len(unreadable)))
         raise RuntimeError(f"No supported media files found under {dcim_folder}")
 
     total_found = sum(len(items) for items in files.values())
@@ -438,7 +452,7 @@ def _scan_card(args: argparse.Namespace) -> Tuple[Path, Path, Dict[str, List[Pat
             prefetched,
             time.monotonic() - metadata_started,
         )
-    return dcim_folder, card_volume, files
+    return dcim_folder, card_volume, files, unreadable
 
 
 def _check_local_space(files: Dict[str, List[Path]]) -> None:
@@ -521,10 +535,15 @@ def _report_local_failure(
     local_stats: transfer.ImportStats,
 ) -> None:
     print_summary(dcim_folder, destinations, local_stats, False, False)
+    unreadable_message = (
+        _unreadable_message(local_stats.unreadable_on_card)
+        if local_stats.unreadable_on_card
+        else ""
+    )
     progress.update_status(
         state="failed",
         phase="card-to-ssd",
-        message=f"Local SSD import failed: {local_stats.failed} failure(s)",
+        message=unreadable_message or f"Local SSD import failed: {local_stats.failed} failure(s)",
         current_file="",
         current_path="",
     )
@@ -534,7 +553,8 @@ def _report_local_failure(
     logger.error("Local SSD import failed; card was not ejected and USB backup was not started.")
     logs.notify(
         "Photo Import Incomplete",
-        "Local SSD copy failed. Card remains mounted; USB backup was not started.",
+        unreadable_message
+        or "Local SSD copy failed. Card remains mounted; USB backup was not started.",
     )
 
 
@@ -585,8 +605,9 @@ def _report_outcome(
 
 
 def _import_card(args: argparse.Namespace) -> int:
-    dcim_folder, card_volume, files = _scan_card(args)
+    dcim_folder, card_volume, files, unreadable = _scan_card(args)
     local_stats = transfer.ImportStats(found=int(_RUN["files"]), source_bytes=int(_RUN["bytes"]))
+    local_stats.add_unreadable(unreadable)
 
     usb_expected = not args.no_usb and volumes.usb_is_mounted()
     usb_identity = volumes.get_volume_identity(config.USB_DEST_VOLUME) if usb_expected else None

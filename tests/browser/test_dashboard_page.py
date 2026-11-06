@@ -35,7 +35,7 @@ TRANSFER_STATES = (
     "starting_upload",
     "uploading",
 )
-SUMMARY_STATES = ("finished", "failed", "failed_on_usb")
+SUMMARY_STATES = ("finished", "failed", "failed_on_usb", "failed_unreadable_card")
 RESTING_STATES = ("idle", "card_mounted", "already_imported", "paused")
 SLOT_NAMES = ["Progress", "Speed", "Files", "Elapsed", "Remaining"]
 HOSTILE = '<img src=x onerror="window.__pwned=1">'

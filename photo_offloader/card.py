@@ -5,6 +5,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import stat
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -346,8 +347,12 @@ def resolve_dcim_path(path: Path) -> Path:
     raise RuntimeError(f"DCIM folder not found at {dcim if path.name.lower() != 'dcim' else path}")
 
 
-def _walk_card_files(root: Path) -> Iterator[Path]:
-    """Yield regular, non-hidden files under ``root`` (one stat-free scandir pass)."""
+def _walk_card_files(root: Path, unreadable: List[Path]) -> Iterator[Path]:
+    """Yield regular, non-hidden files under ``root`` (one stat-free scandir pass).
+
+    Anything that can't be read goes in ``unreadable``, so the import can't report success
+    while files are left behind: this is how a failing card behaves.
+    """
     stack = [root]
     while stack:
         current = stack.pop()
@@ -365,24 +370,41 @@ def _walk_card_files(root: Path) -> Iterator[Path]:
                             yield Path(entry.path)
                     except OSError as exc:
                         logger.error("Could not inspect %s: %s", entry.path, exc)
+                        unreadable.append(Path(entry.path))
         except OSError as exc:
             logger.error("Could not read %s: %s", current, exc)
+            unreadable.append(current)
 
 
-def find_media_files(dcim_folder: Path) -> Dict[str, List[Path]]:
-    """Inventory a camera card.
+def _optional_card_folders(card_root: Path, unreadable: List[Path]) -> List[Path]:
+    """The scan folders besides DCIM that this card has."""
+    folders: List[Path] = []
+    for name in CARD_SCAN_FOLDERS[1:]:
+        folder = card_root / name
+        try:
+            if stat.S_ISDIR(os.stat(folder).st_mode):
+                folders.append(folder)
+        except FileNotFoundError:
+            pass  # most cards only have some of these
+        except OSError as exc:
+            logger.error("Could not check %s: %s", folder, exc)
+            unreadable.append(folder)
+    return folders
+
+
+def find_media_files(
+    dcim_folder: Path, unreadable: Optional[List[Path]] = None
+) -> Dict[str, List[Path]]:
+    """Inventory a camera card, adding anything that can't be read to ``unreadable``.
 
     Known photo/RAW/video types are categorised; every other file is returned
     under ``OTHER`` instead of being ignored, so nothing on the card is silently
     left behind (sidecar XML, thumbnails, unfamiliar RAW formats, AVCHD indexes).
     """
+    problems: List[Path] = [] if unreadable is None else unreadable
     files: Dict[str, List[Path]] = {category: [] for category in MEDIA_CATEGORIES}
-    card_root = dcim_folder.parent
-    roots = [dcim_folder] + [
-        card_root / name for name in CARD_SCAN_FOLDERS[1:] if (card_root / name).is_dir()
-    ]
-    for root in roots:
-        for path in _walk_card_files(root):
+    for root in [dcim_folder, *_optional_card_folders(dcim_folder.parent, problems)]:
+        for path in _walk_card_files(root, problems):
             if path.name.lower() in IGNORED_CARD_FILENAMES:
                 continue
             files[MEDIA_EXTENSIONS.get(path.suffix.lower(), "OTHER")].append(path)
@@ -391,15 +413,20 @@ def find_media_files(dcim_folder: Path) -> Dict[str, List[Path]]:
     return files
 
 
-def scan_with_retry(dcim_folder: Path) -> Dict[str, List[Path]]:
-    files = find_media_files(dcim_folder)
+def scan_with_retry(
+    dcim_folder: Path, unreadable: Optional[List[Path]] = None
+) -> Dict[str, List[Path]]:
+    """Scan, retrying while a card shows no files. ``unreadable`` reflects the last attempt."""
+    problems: List[Path] = [] if unreadable is None else unreadable
+    files = find_media_files(dcim_folder, problems)
     if any(files.values()):
         return files
     deadline = time.monotonic() + config.WAIT_SECONDS
     while time.monotonic() < deadline:
         logger.info("No matching files visible yet; checking again...")
         time.sleep(2)
-        files = find_media_files(dcim_folder)
+        problems.clear()
+        files = find_media_files(dcim_folder, problems)
         if any(files.values()):
             break
     return files
