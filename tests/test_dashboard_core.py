@@ -368,6 +368,18 @@ class TestActivity(Fixture):
         self.assertAlmostEqual(activity["speed_history"][-1], 30 * 1024**2, delta=1024)
         self.assertIsNotNone(activity["eta_seconds"])
 
+    def test_the_graph_keeps_three_minutes_and_the_speed_still_uses_the_last_ten_seconds(self):
+        moved = 100 * 1024**2
+        self.copying(bytes_transferred=moved)
+        self.core.state()
+        for second in range(400):
+            self.advance(1)
+            moved += (1 if second < 390 else 5) * 1024**2
+            self.copying(bytes_transferred=moved)
+            activity = self.core.state()["activity"]
+        self.assertEqual(len(activity["speed_history"]), 180)
+        self.assertAlmostEqual(activity["speed_bps"], 5 * 1024**2, delta=1024)
+
     def test_speed_history_resets_when_the_transfer_ends(self):
         self.copying()
         self.core.state()

@@ -12,6 +12,7 @@ JSON payload. The clock is frozen; ``Sandbox.advance`` moves it.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -158,11 +159,18 @@ COPY_PROGRESS = dict(
 )
 
 
+def _steady_speed_mb(second: int, slow_from: int = 20, slow_to: int = 26) -> int:
+    """A believable copy speed: small changes, plus a slowdown part of the way through."""
+    slowdown = 70 if slow_from <= second < slow_to else 0
+    return round(160 + 18 * math.sin(second / 4) + 9 * math.sin(second * 1.7)) - slowdown
+
+
 def _copying(s: Sandbox, **fields: Any) -> None:
     """Poll while bytes move, as an open page would, so the speed graph has samples."""
     moved = 0
-    for second in range(25):
-        moved += (120 + (second % 5) * 30) * MB
+    for second in range(45):
+        moved += _steady_speed_mb(second) * MB
+        s.advance(1)
         s.transfer(
             **{
                 "state": "copying",
@@ -177,7 +185,6 @@ def _copying(s: Sandbox, **fields: Any) -> None:
             }
         )
         s.core.state()
-        s.advance(1)
 
 
 def _uploading(s: Sandbox) -> None:

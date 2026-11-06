@@ -28,7 +28,7 @@ from photo_offloader.google_photos import parse_rclone_stats_line
 SERVICE_LABEL = "com.user.photooffloader"
 LAST_TRANSFER_TTL_SECONDS = 10 * 60  # completed/canceled results fade after this
 STALE_STATUS_SECONDS = 20  # an "active" status this old, with no importer, is stale
-SPEED_SAMPLES = 60
+SPEED_SAMPLES = 180  # three minutes at one poll a second; SPARK_MAX_POINTS in web/index.html
 UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60  # an upload this soon after an import continues its steps
 UPLOAD_START_GRACE_SECONDS = 30  # importer done, sync process still starting
 FINISHING_GRACE_SECONDS = 30  # status says "complete", history row not written yet

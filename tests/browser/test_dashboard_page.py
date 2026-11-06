@@ -8,6 +8,7 @@ PHOTO_OFFLOADER_TEST_SCREENSHOTS to a folder to also save a picture of every sta
 from __future__ import annotations
 
 import os
+import re
 import unittest
 from pathlib import Path
 from typing import Dict, List
@@ -156,8 +157,8 @@ class TestSlots(PageTestCase):
             self.slots(),
             {
                 "Progress": "43% · 34.0 of 80.0 GB",
-                "Speed": "168.0 MB/s",
-                "Files": "1,214 of 2,378 · 27 new",
+                "Speed": "153.1 MB/s",
+                "Files": "1,214 of 2,378 · 47 new",
                 "Elapsed": "1m 59s",
                 "Remaining": "4m 00s",
             },
@@ -496,6 +497,70 @@ class TestCardTextIsNeverMarkup(PageTestCase):
         expect(self.page.locator("#hero p")).to_have_text(HOSTILE)
         expect(self.page.locator("#history .t")).to_contain_text(HOSTILE)
         expect(self.page.locator("#history .s")).to_contain_text(HOSTILE)
+
+
+class TestSpeedGraph(PageTestCase):
+    """The graph fills its width for a run of any length, and shows the trend, not each poll."""
+
+    def setUp(self):
+        super().setUp()
+        self.show("idle")
+
+    def points(self, values):
+        """The (x, y) pairs of the drawn line, control points included."""
+        line = self.page.evaluate("v => sparkPaths(v, 600, 44).line", values)
+        numbers = [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", line)]
+        return list(zip(numbers[::2], numbers[1::2]))
+
+    def height(self, values):
+        heights = [y for _, y in self.points(values)]
+        return max(heights) - min(heights)
+
+    def test_a_short_run_starts_at_the_left_edge_and_grows_to_the_right(self):
+        points = self.points([100] * 5)
+        self.assertEqual(points[0][0], 0)
+        self.assertLess(points[-1][0], 300)
+
+    def test_ten_seconds_is_enough_to_fill_the_width(self):
+        self.assertLess(self.points([100] * 9)[-1][0], 600)
+        self.assertEqual(self.points([100] * 10)[-1][0], 600)
+
+    def test_a_longer_run_fills_the_whole_width(self):
+        for samples in (10, 30, 120, 180):
+            with self.subTest(samples=samples):
+                points = self.points([100] * samples)
+                self.assertEqual((points[0][0], points[-1][0]), (0, 600))
+
+    def test_a_very_long_run_shows_only_the_latest_three_minutes(self):
+        points = self.points([10**9] * 100 + [100] * 180)
+        self.assertEqual(
+            {y for _, y in points}, {points[0][1]}, "the old spike still sets the scale"
+        )
+        self.assertEqual((points[0][0], points[-1][0]), (0, 600))
+
+    def test_a_jagged_speed_is_drawn_as_a_calm_line(self):
+        jagged = [100, 200] * 20
+        self.assertLess(self.height(jagged), 19 / 2)  # 19 is the height of the raw zigzag
+
+    def test_a_real_slowdown_still_shows(self):
+        self.assertGreater(self.height([200] * 20 + [20] * 20), 25)
+
+    def test_a_long_run_is_smoothed_as_much_for_its_width_as_a_short_one(self):
+        # Eight-second swings: a fixed five-second average would leave most of this in a full graph.
+        swings = ([100] * 4 + [200] * 4) * 23
+        self.assertLess(self.height(swings), 19 / 2)
+
+    def test_a_half_minute_slowdown_still_shows_on_a_full_graph(self):
+        self.assertGreater(self.height([200] * 75 + [20] * 30 + [200] * 75), 25)
+
+    def test_the_curve_stays_inside_the_graph(self):
+        for _, y in self.points([0, 500, 0, 900, 10, 700, 0] * 5):
+            self.assertTrue(0 <= y <= 44, y)
+
+    def test_the_area_closes_under_the_line_it_fills(self):
+        area = self.page.evaluate("sparkPaths([100, 100, 100], 600, 44).area")
+        self.assertTrue(area.endswith(" L0 44 Z"), area)
+        self.assertNotIn("L600 44", area)
 
 
 @unittest.skipUnless(

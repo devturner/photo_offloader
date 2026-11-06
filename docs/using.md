@@ -12,7 +12,8 @@ or in a browser tab if the native window isn't available.
 ### Import steps
 
 While an import runs, the top panel shows these steps with progress, speed, file count, elapsed
-and remaining time. A value not known yet shows a dash.
+and remaining time. A value not known yet shows a dash. The graph shows the copy speed over the run,
+up to the latest three minutes.
 
 | Step | What is happening |
 | --- | --- |

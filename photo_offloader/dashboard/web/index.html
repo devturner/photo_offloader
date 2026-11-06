@@ -332,16 +332,33 @@ function relTime(epoch, now) {
   const d = new Date(epoch * 1000);
   return s < 86400 * 6 ? Math.round(s / 86400) + " d ago" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
-// The graph is a fixed one-minute window (one sample per poll), filled from the right,
-// so it never rescales its time axis or jumps as samples arrive.
-const SPARK_POINTS = 60;
+// One sample per poll. The line starts at the left edge and reaches the right after SPARK_MIN_POINTS,
+// then the time axis stretches to fit the run, up to SPARK_MAX_POINTS (core.SPEED_SAMPLES), and scrolls.
+const SPARK_MIN_POINTS = 10, SPARK_MAX_POINTS = 180;
+// A poll only sees the bytes since the last one, and none move while a copy is being verified,
+// so raw samples jump about even at a steady speed. Averaging neighbours shows the trend. The
+// average widens with the run, because a longer run packs more samples into the same width.
+function smoothedSpeeds(vals) {
+  const reach = Math.max(2, Math.round(vals.length / 30));
+  return vals.map((_, i) => {
+    const near = vals.slice(Math.max(0, i - reach), i + reach + 1);
+    return near.reduce((sum, v) => sum + v, 0) / near.length;
+  });
+}
 function sparkPaths(values, w, hgt) {
-  const vals = (values || []).slice(-SPARK_POINTS);
+  const vals = smoothedSpeeds((values || []).slice(-SPARK_MAX_POINTS));
   if (vals.length < 2) return null;
-  const max = Math.max(...vals, 1), step = w / (SPARK_POINTS - 1), x0 = w - (vals.length - 1) * step;
-  const pts = vals.map((v, i) => [x0 + i * step, hgt - 2 - (v / max) * (hgt - 6)]);
-  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-  return { line, area: line + ` L${w} ${hgt} L${x0.toFixed(1)} ${hgt} Z` };
+  const max = Math.max(...vals, 1), step = w / (Math.max(vals.length, SPARK_MIN_POINTS) - 1);
+  const pts = vals.map((v, i) => [i * step, hgt - 2 - (v / max) * (hgt - 6)]);
+  const at = (x, y) => x.toFixed(1) + " " + y.toFixed(1);
+  // Curve through the midpoints between samples: it is smooth and can't overshoot them.
+  let line = "M" + at(...pts[0]);
+  for (let i = 1; i < pts.length - 1; i++) {
+    line += ` Q${at(...pts[i])} ${at((pts[i][0] + pts[i + 1][0]) / 2, (pts[i][1] + pts[i + 1][1]) / 2)}`;
+  }
+  const last = pts[pts.length - 1];
+  line += " L" + at(...last);
+  return { line, area: line + ` L${last[0].toFixed(1)} ${hgt} L0 ${hgt} Z` };
 }
 const fmtCount = (n) => Number(n || 0).toLocaleString();
 // "34.4 of 80.0 GB" rather than "34.4 GB of 80.0 GB" when both share a unit.
