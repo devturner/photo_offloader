@@ -107,6 +107,7 @@ checks the `Host` and `Origin` of each request, so other websites can't drive it
 | Dashboard and menu bar | `dashboard.log`, `menubar.log`, `menubar-error.log` in the same folder | Trimmed when you run `install.sh` |
 
 Each import logs a `Run provenance` entry with the app version and Git commit, so a log can always
-be matched to the code that wrote it.
+be matched to the code that wrote it. The Google Photos log times each step before an upload
+(`Upload step: …`), and rclone adds a progress line every second during one.
 
 The **⋯ › View logs** menu in the dashboard opens these in Console.

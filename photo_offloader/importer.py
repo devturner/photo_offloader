@@ -12,6 +12,7 @@ card when enabled and independently synchronizes missing files to USB.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import json
 import logging
@@ -41,6 +42,16 @@ from photo_offloader.logs import logger
 
 # What the current run has learned so far; turned into a history row by main().
 _RUN: Dict[str, object] = {}
+
+
+@contextlib.contextmanager
+def _timed(name: str) -> Iterator[None]:
+    """Keep how long a step of this run took, however it ends, for its history row."""
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        _RUN[name] = time.monotonic() - started
 
 
 def _finish_run_record(exit_code: int) -> None:
@@ -78,6 +89,11 @@ def _run_details() -> Dict[str, object]:
             k: v for k, v in dict(progress._PROGRESS.get("new_by_category") or {}).items() if v
         }
         details["new_bytes"] = int(progress._PROGRESS.get("new_bytes", 0) or 0)
+        for name in ("copy_seconds", "usb_seconds"):
+            if name in _RUN:
+                details[name] = round(float(_RUN[name]), 1)  # type: ignore[arg-type]
+        if "usb_bytes" in _RUN:
+            details["usb_bytes"] = _RUN["usb_bytes"]
     if "usb_copied" in _RUN:
         details["usb_copied"] = int(_RUN["usb_copied"])  # type: ignore[call-overload]
     return details
@@ -365,6 +381,9 @@ def _scan_card(args: argparse.Namespace) -> Tuple[Path, Path, Dict[str, List[Pat
         files_total=0,
         files_done=0,
         new_files=0,
+        new_media_files=0,
+        expected_new_files=None,
+        expected_new_bytes=None,
         new_by_category={},
         new_bytes=0,
         usb_planned=False,
@@ -399,6 +418,12 @@ def _scan_card(args: argparse.Namespace) -> Tuple[Path, Path, Dict[str, List[Pat
     # manifest is diagnostic/cache data only; copy decisions still verify destinations.
     reconciliation = card.reconcile_card_manifest(dcim_folder, files)
     logger.info("Card manifest reconciliation: %s", reconciliation)
+    expected_new = card.expected_new_files(dcim_folder, files)
+    logger.info("Files expected to be new (files, bytes): %s", expected_new)
+    if expected_new:
+        progress.update_status(
+            expected_new_files=expected_new[0], expected_new_bytes=expected_new[1]
+        )
     # Record discovery immediately, but do not advance successful timestamps
     # until destination copies have been verified.
     card.update_card_scan_history(dcim_folder, files, "scanning", 0, total_found)
@@ -443,6 +468,8 @@ def _backup_after_import(usb_identity: Optional[volumes.VolumeIdentity]) -> tran
     try:
         backup_stats = transfer.copy_local_archive_to_usb(usb_identity)
         _RUN["usb_copied"] = backup_stats.destination_copies
+        if backup_stats.destination_copies:  # with nothing to copy, the counter is still the card's
+            _RUN["usb_bytes"] = int(progress._PROGRESS.get("bytes_transferred", 0) or 0)
     except Exception as exc:
         backup_stats.failed += 1
         backup_stats.errors.append((str(config.USB_DEST_VOLUME), str(exc)))
@@ -563,7 +590,8 @@ def _import_card(args: argparse.Namespace) -> int:
     else:
         logger.info("USB backup not selected or not mounted; local SSD import only.")
 
-    _copy_card_to_mac(dcim_folder, files, local_stats, usb_expected)
+    with _timed("copy_seconds"):
+        _copy_card_to_mac(dcim_folder, files, local_stats, usb_expected)
     if local_stats.failed:
         _report_local_failure(dcim_folder, files, local_destinations, local_stats)
         return 1
@@ -576,7 +604,8 @@ def _import_card(args: argparse.Namespace) -> int:
     # Stage 2: Mac archive -> USB.
     _RUN["usb"] = bool(usb_expected)
     if usb_expected:
-        backup_stats = _backup_after_import(usb_identity)
+        with _timed("usb_seconds"):
+            backup_stats = _backup_after_import(usb_identity)
     else:
         backup_stats = transfer.ImportStats()
         progress.update_status(

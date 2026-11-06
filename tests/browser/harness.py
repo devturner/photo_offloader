@@ -12,6 +12,7 @@ JSON payload. The clock is frozen; ``Sandbox.advance`` moves it.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -148,6 +149,12 @@ class Sandbox:
         self.status(usb_planned=True, **fields)
 
 
+README_CARD_FILES = 2478
+README_MB_PER_FILE = 25
+README_COPY_SECONDS = 120
+README_ALREADY_SAVED = 477
+README_SAVED_BEFORE = 1200  # the card after the last import listed in Recent activity
+
 COPY_PROGRESS = dict(
     bytes_done=34 * GB,
     bytes_total=80 * GB,
@@ -158,11 +165,18 @@ COPY_PROGRESS = dict(
 )
 
 
+def _steady_speed_mb(second: int, slow_from: int = 20, slow_to: int = 26) -> int:
+    """A believable copy speed: small changes, plus a slowdown part of the way through."""
+    slowdown = 70 if slow_from <= second < slow_to else 0
+    return round(160 + 18 * math.sin(second / 4) + 9 * math.sin(second * 1.7)) - slowdown
+
+
 def _copying(s: Sandbox, **fields: Any) -> None:
     """Poll while bytes move, as an open page would, so the speed graph has samples."""
     moved = 0
-    for second in range(25):
-        moved += (120 + (second % 5) * 30) * MB
+    for second in range(45):
+        moved += _steady_speed_mb(second) * MB
+        s.advance(1)
         s.transfer(
             **{
                 "state": "copying",
@@ -177,7 +191,83 @@ def _copying(s: Sandbox, **fields: Any) -> None:
             }
         )
         s.core.state()
-        s.advance(1)
+
+
+def _past_import(s: Sandbox, days_ago: int, seconds: int, new_files: int, card_files: int) -> None:
+    new_bytes = new_files * README_MB_PER_FILE * MB
+    finished = s.now - days_ago * 86400
+    s.record(
+        files=card_files,
+        copied=new_files,
+        skipped=card_files - new_files,
+        bytes=card_files * README_MB_PER_FILE * MB,
+        started_at=finished - seconds,
+        finished_at=finished,
+        details={
+            "new": {"JPG": new_files // 2, "RAW": new_files - new_files // 2},
+            "new_bytes": new_bytes,
+            "usb_copied": new_files,
+        },
+    )
+
+
+def _readme_import(s: Sandbox) -> None:
+    """The README's picture: a card part-way through, sized like a real one (about 25 MB a file).
+    Some of its files are already saved. Every number comes from the speed samples and the same
+    sums the importer does, so the panel's figures agree."""
+    speeds = [_steady_speed_mb(second, 70, 82) * MB for second in range(README_COPY_SECONDS)]
+    file_bytes = README_MB_PER_FILE * MB
+    copied = sum(speeds)
+    new_files = copied // file_bytes
+    files_done = new_files + README_ALREADY_SAVED
+    done = files_done * file_bytes
+    total = README_CARD_FILES * file_bytes
+    elapsed = README_COPY_SECONDS + 6  # the scan came first
+    _past_import(s, days_ago=12, seconds=58, new_files=342, card_files=443)
+    _past_import(s, days_ago=5, seconds=41, new_files=251, card_files=694)
+    _past_import(s, days_ago=1, seconds=83, new_files=506, card_files=README_SAVED_BEFORE)
+    with catalog.catalog_db() as db:
+        db.executemany(
+            "INSERT INTO google_photos_uploads (path, size, mtime_ns, inode, uploaded_at, remote,"
+            " album) VALUES (?, 1, 1, 1, ?, 'gphotos', 'Photo Offloader')",
+            [(f"/archive/{number}.jpg", s.now) for number in range(1633)],
+        )
+    s.transfer(
+        state="copying",
+        phase="copy",
+        stage="copy",
+        category="RAW",
+        current_file=f"_DZ8{1000 + files_done}.NEF",
+        files_done=files_done,
+        files_total=README_CARD_FILES,
+        new_files=new_files,
+        expected_new_files=README_CARD_FILES - README_SAVED_BEFORE,
+        expected_new_bytes=(README_CARD_FILES - README_SAVED_BEFORE) * file_bytes,
+        bytes_done=done,
+        bytes_total=total,
+        bytes_transferred=copied,
+        elapsed_seconds=elapsed,
+        eta_seconds=(total - done) / (done / elapsed),
+    )
+    s.core.state()  # starts the graph; the clock is frozen, so no poll adds to it afterwards
+    s.core._samples.extend(speeds)
+
+
+def _stalled_copy(s: Sandbox) -> None:
+    """Twenty seconds without a byte moved, between two stretches at full speed."""
+    speeds = [75 * MB] * 40 + [0] * 20 + [75 * MB] * 30
+    copied = sum(speeds)
+    s.transfer(
+        state="copying",
+        phase="copy",
+        stage="copy",
+        category="RAW",
+        bytes_done=copied,
+        bytes_total=3 * copied,
+        bytes_transferred=copied,
+    )
+    s.core.state()  # starts the graph; the clock is frozen, so no poll adds to it afterwards
+    s.core._samples.extend(speeds)
 
 
 def _uploading(s: Sandbox) -> None:
@@ -189,8 +279,9 @@ def _uploading(s: Sandbox) -> None:
     s.google_up = True
     s.google_status("running", ago=75)
     for mb, files in ((55.6, 3), (87.7, 5), (121.8, 8), (175.1, 11), (204.1, 13)):
+        stamp = datetime.fromtimestamp(s.now).strftime("%Y/%m/%d %H:%M:%S")
         s.paths.google_log_file.write_text(
-            f"2026/11/04 18:50:00 INFO  :   {mb} MiB / 267.950 MiB, {int(mb / 2.68)}%, "
+            f"{stamp} INFO  :   {mb} MiB / 267.950 MiB, {int(mb / 2.68)}%, "
             f"8.8 MiB/s, ETA 7s (xfr#{files}/18)\n"
         )
         s.core.state()
@@ -215,8 +306,35 @@ def _starting_upload(s: Sandbox) -> None:
 
 
 def _finished(s: Sandbox) -> None:
-    _starting_upload(s)
-    s.google_status("complete")
+    s.add_card()
+    s.add_usb()
+    s.set_up_google()
+    s.status(state="complete", ago=50, usb_planned=True, files_done=2378, files_total=2378)
+    s.record(
+        finished_at=s.now - 49,
+        started_at=s.now - 149,
+        details={
+            "new": {"JPG": 9, "RAW": 9},
+            "new_bytes": 412 * MB,
+            "usb_copied": 18,
+            "copy_seconds": 72.0,
+            "usb_seconds": 28.0,
+            "usb_bytes": 412 * MB,
+            "upload": {
+                "outcome": "complete",
+                "files": 9,
+                "bytes": 130 * MB,
+                "seconds": 47.0,
+                "album": "Photo Offloader",
+            },
+        },
+    )
+    s.google_status("complete", ago=1)
+
+
+def _finished_advanced(s: Sandbox) -> None:
+    _finished(s)
+    s.core.act("set_report_style", {"report_style": "advanced"})
 
 
 def _failed(s: Sandbox, message: str = "Copy failed: the Mac disk is full") -> None:
@@ -230,6 +348,7 @@ def _failed(s: Sandbox, message: str = "Copy failed: the Mac disk is full") -> N
 SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "idle": lambda s: s.status(state="idle"),
     "card_mounted": lambda s: s.add_card(),
+    "stalled_copy": _stalled_copy,
     "already_imported": _already_imported,
     "scan": lambda s: s.transfer(
         state="scanning",
@@ -254,6 +373,7 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
         **COPY_PROGRESS,
     ),
     "copying": _copying,
+    "readme_import": _readme_import,
     # The longest values a slot should have to hold: a big card with thousands of new files.
     "copying_big_card": lambda s: _copying(
         s,
@@ -284,6 +404,7 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "starting_upload": _starting_upload,
     "uploading": _uploading,
     "finished": _finished,
+    "finished_advanced": _finished_advanced,
     "failed": _failed,
     "failed_on_usb": lambda s: _failed(s, "USB backup failed: the drive was removed"),
     "stopped": lambda s: setattr(s, "service_up", False),
@@ -384,13 +505,20 @@ class BrowserTestCase(unittest.TestCase):
         self.server.core = self.sandbox.core
         return self.sandbox
 
-    def open_page(self, *, width: int = 960, height: int = 860, color_scheme: str = "light") -> Any:
+    def open_page(
+        self,
+        *,
+        width: int = 960,
+        height: int = 860,
+        color_scheme: str = "light",
+        reduced_motion: str = "reduce",
+    ) -> Any:
         """A new page with empty browser storage, once it has rendered the current state."""
         self._close_page()
         self.context = Browser.chromium.new_context(
             viewport={"width": width, "height": height},
             color_scheme=color_scheme,
-            reduced_motion="reduce",
+            reduced_motion=reduced_motion,
         )
         self.page = self.context.new_page()
         self.page.on("pageerror", lambda error: self.page_errors.append(str(error)))

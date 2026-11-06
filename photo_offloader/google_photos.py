@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import os
 import re
@@ -10,11 +11,15 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, NamedTuple, Optional, Sequence, Tuple
+from typing import Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
 from photo_offloader import catalog, config, jsonfile, logs
+
+STATS_SECONDS = 1  # how often rclone writes a progress line, the same as the graph samples
+UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60  # an upload this soon after an import is that import's
 
 
 def remote_name() -> str:
@@ -260,6 +265,16 @@ def log_sync_event(message: str) -> None:
         pass
 
 
+@contextlib.contextmanager
+def _timed_step(name: str) -> Iterator[None]:
+    """Say in the log how long a step took, to show where the wait before an upload goes."""
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        log_sync_event(f"Upload step: {name} took {time.monotonic() - started:.1f}s")
+
+
 def find_rclone() -> Optional[str]:
     found = shutil.which("rclone")
     if found:
@@ -392,7 +407,7 @@ def _upload_snapshot(rclone: str, destination: str, pending: List[str]) -> Optio
             "--log-file",
             str(config.GOOGLE_LOG_PATH),
             "--stats",
-            "5s",
+            f"{STATS_SECONDS}s",
             "--stats-one-line",
         ]
         publish_status(
@@ -449,7 +464,8 @@ def _sync() -> int:
         publish_status("failed", f"Local photo archive does not exist: {config.LOCAL_DEST_ROOT}")
         return 1
 
-    pending = list_upload_candidates()
+    with _timed_step("finding files"):
+        pending = list_upload_candidates()
     if not pending:
         # Sync is launched after every import; skip rclone (and the network) when
         # there is nothing new to send.
@@ -460,11 +476,45 @@ def _sync() -> int:
     publish_status(
         "running", f"Preparing to upload {len(pending):,} JPG/video file(s).", new_run=True
     )
+    started_at = time.time()
+    code = _send_pending(rclone, pending)
+    catalog.record_upload_on_import(
+        {
+            "outcome": "complete" if code == 0 else "failed",
+            "files": len(pending),
+            "bytes": _pending_bytes(pending),
+            "seconds": round(time.time() - started_at, 1),
+            "album": ALBUM_NAME,
+        },
+        started_at=started_at,
+        within_seconds=UPLOAD_FOLLOWS_IMPORT_SECONDS,
+    )
+    return code
 
+
+def _pending_bytes(pending: List[str]) -> int:
+    """The size of the files to send; a file gone by now just doesn't count."""
+    total = 0
+    for name in pending:
+        try:
+            total += (config.LOCAL_DEST_ROOT / name).stat().st_size
+        except OSError as exc:
+            log_sync_event(f"Could not measure a file for the import report: {name}: {exc}")
+    return total
+
+
+def _send_pending(rclone: str, pending: List[str]) -> int:
+    """Check the remote and send ``pending``. Publishes the result and returns the exit code."""
     destination = f"{REMOTE_NAME}:album/{ALBUM_NAME}"
-    problem = _check_remote(rclone)
-    if problem is None:
-        problem = _ensure_album(rclone, destination)
+    with _timed_step("remote check"):
+        problem = _check_remote(rclone)
+    # An album that files have been uploaded to exists, so there's no need to wait for Google to say so.
+    album_known = catalog.google_photos_album_used(REMOTE_NAME, ALBUM_NAME)
+    if album_known:
+        log_sync_event("Upload step: album check skipped, it has had uploads before")
+    elif problem is None:
+        with _timed_step("album check"):
+            problem = _ensure_album(rclone, destination)
     if problem is not None:
         return problem
 
@@ -475,11 +525,18 @@ def _sync() -> int:
         log_sync_event(f"Could not persist Google Photos connection preference: {exc}")
 
     logs.rotate_log_file(config.GOOGLE_LOG_PATH, SYNC_LOG_MAX_BYTES, SYNC_LOG_BACKUPS)
-    returncode = _upload_snapshot(rclone, destination, pending)
+    with _timed_step("rclone copy"):
+        returncode = _upload_snapshot(rclone, destination, pending)
     if returncode is None:
         return 1
     if returncode == 0:
         return _record_upload(pending)
+    if album_known:
+        # The check was skipped, so make it now: it says clearly if Google refused the album, and
+        # it creates the album if it was deleted, so the next sync starts from a known state.
+        problem = _ensure_album(rclone, destination)
+        if problem is not None:
+            return problem
     publish_status(
         "failed", f"rclone exited with status {returncode}. See {config.GOOGLE_LOG_PATH}"
     )

@@ -81,6 +81,78 @@ class TestCatalog(support.CardFixtureTestCase):
         self.assertEqual(len(opened), 1)
         self.assertTrue(all(catalog.google_photos_upload_record(p) for p in paths))
 
+    def imported(self, finished_at=1000.0, outcome="complete", kind="import", details=None):
+        catalog.record_import_run(
+            kind=kind,
+            outcome=outcome,
+            started_at=finished_at - 10,
+            finished_at=finished_at,
+            details=details or {"new_bytes": 5},
+        )
+
+    def saved_upload(self, started_at=1001.0):
+        catalog.record_upload_on_import(
+            {"outcome": "complete", "files": 2}, started_at=started_at, within_seconds=60
+        )
+        return catalog.list_import_history()[0]["details"]
+
+    def test_an_upload_is_saved_on_the_import_it_followed(self):
+        self.imported()
+        self.assertEqual(
+            self.saved_upload(), {"new_bytes": 5, "upload": {"outcome": "complete", "files": 2}}
+        )
+
+    def test_an_upload_can_start_before_its_import_is_recorded(self):
+        # The importer starts the sync, then writes its history row.
+        self.imported(finished_at=1005.0)
+        self.assertIn("upload", self.saved_upload(started_at=1001.0))
+
+    def test_an_upload_long_after_the_import_is_not_saved_on_it(self):
+        self.imported()
+        self.assertNotIn("upload", self.saved_upload(started_at=2000.0))
+
+    def test_a_failed_import_has_no_upload_to_save(self):
+        self.imported(outcome="failed")
+        self.assertNotIn("upload", self.saved_upload())
+
+    def test_a_usb_backup_since_the_import_does_not_take_its_upload(self):
+        self.imported()
+        self.imported(kind="usb_backup")
+        self.saved_upload()
+        usb, run = catalog.list_import_history()
+        self.assertNotIn("upload", usb["details"])
+        self.assertIn("upload", run["details"])
+
+    def test_a_retry_replaces_a_failed_upload_but_not_a_finished_one(self):
+        self.imported(details={"upload": {"outcome": "failed"}})
+        self.assertEqual(self.saved_upload()["upload"]["outcome"], "complete")
+        catalog.record_upload_on_import({"outcome": "failed"}, started_at=1002.0, within_seconds=60)
+        self.assertEqual(
+            catalog.list_import_history()[0]["details"]["upload"]["outcome"], "complete"
+        )
+
+    def uploaded_to(self, remote, album):
+        with catalog.catalog_db() as db:
+            db.execute(
+                "INSERT INTO google_photos_uploads (path, size, mtime_ns, inode, uploaded_at,"
+                " remote, album) VALUES ('/a.jpg', 1, 1, 1, 1, ?, ?)",
+                (remote, album),
+            )
+
+    def test_an_album_is_known_once_a_file_has_been_uploaded_to_it(self):
+        self.assertFalse(catalog.google_photos_album_used("gphotos", "Trip"))
+        self.uploaded_to("gphotos", "Trip")
+        self.assertTrue(catalog.google_photos_album_used("gphotos", "Trip"))
+
+    def test_another_album_or_account_does_not_count(self):
+        self.uploaded_to("gphotos", "Trip")
+        self.assertFalse(catalog.google_photos_album_used("gphotos", "Other"))
+        self.assertFalse(catalog.google_photos_album_used("work", "Trip"))
+
+    def test_an_unreadable_catalog_just_means_asking_google(self):
+        with patch.object(catalog, "catalog_db", side_effect=sqlite3.OperationalError("locked")):
+            self.assertFalse(catalog.google_photos_album_used("gphotos", "Trip"))
+
     def test_import_history_records_and_lists_newest_first(self):
         catalog.record_import_run(
             kind="import",

@@ -96,6 +96,156 @@ class TestGooglePhotosSync(unittest.TestCase):
             self.assertEqual(payload["last_success"], success)
             self.assertEqual(payload["state"], "failed")
 
+    def upload_saved_after(self, sent, exit_code):
+        """Run a sync that sends ``sent`` and ends with ``exit_code``; what it saved on the run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in sent:
+                (root / name).write_bytes(b"x" * 1000)
+            with (
+                patch.object(config, "INSTALL_DIR", root),
+                patch.object(config, "GOOGLE_STATUS_PATH", root / "status.json"),
+                patch.object(config, "GOOGLE_LOG_PATH", root / "sync.log"),
+                patch.object(config, "LOCAL_DEST_ROOT", root),
+                patch.object(sync, "find_rclone", return_value="rclone"),
+                patch.object(sync, "list_upload_candidates", return_value=sent),
+                patch.object(sync, "_send_pending", return_value=exit_code),
+                patch.object(sync.catalog, "record_upload_on_import") as record,
+            ):
+                self.assertEqual(sync._sync(), exit_code)
+        return record.call_args
+
+    def send(self, album_known, upload_code=0, album_code=None):
+        """Run the sending step; returns its exit code, and the album-check mock."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                patch.object(config, "INSTALL_DIR", root),
+                patch.object(config, "GOOGLE_STATUS_PATH", root / "status.json"),
+                patch.object(config, "GOOGLE_LOG_PATH", root / "sync.log"),
+                patch.object(sync, "_check_remote", return_value=None),
+                patch.object(sync, "remember_google_photos_connection"),
+                patch.object(sync, "_record_upload", return_value=0),
+                patch.object(sync, "_upload_snapshot", return_value=upload_code) as upload,
+                patch.object(sync, "_ensure_album", return_value=album_code) as album,
+                patch.object(
+                    sync.catalog, "google_photos_album_used", return_value=album_known
+                ) as used,
+            ):
+                code = sync._send_pending("rclone", ["a.jpg"])
+                used.assert_called_once_with(sync.REMOTE_NAME, sync.ALBUM_NAME)
+                self.log_after = (root / "sync.log").read_text()
+                self.status_after = (
+                    json.loads((root / "status.json").read_text() or "{}")
+                    if (root / "status.json").exists()
+                    else {}
+                )
+        return code, album, upload
+
+    def test_the_log_times_each_step_of_starting_an_upload(self):
+        self.send(album_known=False)
+        for step in ("remote check", "album check", "rclone copy"):
+            self.assertRegex(self.log_after, rf"Upload step: {step} took \d+\.\ds")
+
+    def test_the_log_says_when_the_album_check_was_skipped(self):
+        self.send(album_known=True)
+        self.assertIn("Upload step: album check skipped", self.log_after)
+        self.assertNotRegex(self.log_after, r"album check took")
+
+    def test_a_step_log_line_is_not_read_as_upload_progress(self):
+        self.send(album_known=False)
+        for line in self.log_after.splitlines():
+            self.assertIsNone(sync.parse_rclone_stats_line(line), line)
+
+    def test_finding_the_files_is_timed_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                patch.object(config, "INSTALL_DIR", root),
+                patch.object(config, "GOOGLE_STATUS_PATH", root / "status.json"),
+                patch.object(config, "GOOGLE_LOG_PATH", root / "sync.log"),
+                patch.object(config, "LOCAL_DEST_ROOT", root),
+                patch.object(sync, "find_rclone", return_value="rclone"),
+                patch.object(sync, "list_upload_candidates", return_value=[]),
+            ):
+                sync._sync()
+            self.assertRegex((root / "sync.log").read_text(), r"finding files took \d+\.\ds")
+
+    def test_an_album_already_uploaded_to_is_not_checked_with_google(self):
+        code, album, upload = self.send(album_known=True)
+        self.assertEqual(code, 0)
+        album.assert_not_called()
+        upload.assert_called_once()
+
+    def test_a_new_album_is_created_first(self):
+        code, album, upload = self.send(album_known=False)
+        self.assertEqual(code, 0)
+        album.assert_called_once()
+        upload.assert_called_once()
+
+    def test_a_new_album_that_cannot_be_created_stops_before_the_upload(self):
+        code, album, upload = self.send(album_known=False, album_code=7)
+        self.assertEqual(code, 7)
+        upload.assert_not_called()
+
+    def test_a_remote_that_cannot_be_used_stops_before_the_album_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(config, "GOOGLE_LOG_PATH", Path(tmp) / "sync.log"),
+                patch.object(sync, "_check_remote", return_value=2),
+                patch.object(sync.catalog, "google_photos_album_used", return_value=False),
+                patch.object(sync, "_ensure_album") as album,
+            ):
+                self.assertEqual(sync._send_pending("rclone", ["a.jpg"]), 2)
+        album.assert_not_called()
+
+    def test_a_failed_upload_to_a_known_album_checks_it_to_say_why(self):
+        # Keeps the friendly message for a refused album, and remakes one deleted in Google Photos.
+        code, album, _ = self.send(album_known=True, upload_code=3, album_code=7)
+        self.assertEqual(code, 7)
+        album.assert_called_once()
+
+    def test_a_failed_upload_with_a_good_album_reports_rclones_failure(self):
+        code, album, _ = self.send(album_known=True, upload_code=3)
+        self.assertEqual(code, 3)
+        album.assert_called_once()
+        self.assertEqual(self.status_after["state"], "failed")
+
+    def test_rclone_reports_as_often_as_the_dashboards_graph_samples(self):
+        # User feedback 2026-11-05: at one report every 5 s the graph's line was visibly stepped.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                patch.object(config, "INSTALL_DIR", root),
+                patch.object(config, "GOOGLE_STATUS_PATH", root / "status.json"),
+                patch.object(sync.subprocess, "run") as run,
+            ):
+                run.return_value.returncode = 0
+                sync._upload_snapshot("rclone", "gphotos:album/x", ["a.jpg"])
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--stats") + 1], "1s")
+
+    def test_a_finished_upload_is_saved_with_the_import_it_followed(self):
+        call = self.upload_saved_after(["a.jpg", "b.jpg"], 0)
+        upload = call.args[0]
+        self.assertEqual(
+            (upload["outcome"], upload["files"], upload["bytes"], upload["album"]),
+            ("complete", 2, 2000, sync.ALBUM_NAME),
+        )
+        self.assertGreaterEqual(upload["seconds"], 0)
+        self.assertEqual(call.kwargs["within_seconds"], sync.UPLOAD_FOLLOWS_IMPORT_SECONDS)
+
+    def test_a_failed_upload_is_saved_as_failed(self):
+        self.assertEqual(self.upload_saved_after(["a.jpg"], 3).args[0]["outcome"], "failed")
+
+    def test_a_file_gone_before_it_is_measured_does_not_stop_the_sync(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(config, "LOCAL_DEST_ROOT", Path(tmp)):
+                self.assertEqual(sync._pending_bytes(["gone.jpg"]), 0)
+
+    def test_a_sync_with_nothing_to_send_saves_nothing(self):
+        self.assertIsNone(self.upload_saved_after([], 0))
+
     def test_running_is_published_before_contacting_rclone_and_keeps_its_start_time(self):
         # User report 2026-11-04: the dashboard fell back to the import result while the
         # sync was still talking to rclone, because "running" was only published later.

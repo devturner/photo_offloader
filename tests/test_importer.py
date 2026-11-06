@@ -313,6 +313,31 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         self.assertEqual(second["details"]["new"], {"JPG": 1})
         self.assertEqual(second["details"]["new_bytes"], len(b"new jpg"))
         self.assertEqual(second["files"], 4)
+        self.assertIn("copy_seconds", second["details"])
+        self.assertNotIn("usb_seconds", second["details"], "there was no USB backup to time")
+
+    def test_a_usb_backup_with_nothing_to_copy_does_not_claim_the_cards_bytes(self):
+        # The transfer counter still holds the card's copy, because the USB stage never reset it.
+        self.addCleanup(app._RUN.clear)
+        app._RUN.update(kind="import")
+        identity = VolumeIdentity(self.usb_volume.resolve(), "disk4s1", "uuid-a")
+        with (
+            patch("photo_offloader.volumes.usb_is_mounted", return_value=True),
+            patch("photo_offloader.volumes.get_volume_identity", return_value=identity),
+            patch("photo_offloader.transfer.copy_local_archive_to_usb") as backup,
+            patch.dict(progress._PROGRESS, {"bytes_transferred": 999}),
+        ):
+            backup.return_value = ImportStats()
+            app._backup_after_import(identity)
+        self.assertNotIn("usb_bytes", app._run_details())
+
+    def test_a_stage_is_timed_even_when_it_fails_partway(self):
+        self.addCleanup(app._RUN.clear)
+        app._RUN.update(kind="import")
+        with patch("time.monotonic", side_effect=[100.0, 112.34]), self.assertRaises(OSError):
+            with app._timed("copy_seconds"):
+                raise OSError("card pulled out")
+        self.assertEqual(app._run_details()["copy_seconds"], 12.3)
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
@@ -334,6 +359,46 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
             (last_copy["files_done"], last_copy["files_total"], last_copy["new_files"]), (3, 3, 3)
         )
         self.assertFalse(last_copy["usb_planned"])
+
+    def _last_copy_status(self):
+        seen = []
+        real = progress.update_status
+
+        def spy(**updates):
+            real(**updates)
+            seen.append(dict(progress._PROGRESS))
+
+        with patch("time.sleep"), patch.object(progress, "update_status", side_effect=spy):
+            app.main(["--source", str(self.card), "--no-usb", "--no-eject"])
+        return [s for s in seen if s.get("stage") == "copy"][-1]
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    def test_a_later_import_knows_how_many_files_are_new(self, notify, launch):
+        media = self.media()
+        first = self._last_copy_status()
+        self.assertIsNone(first["expected_new_files"])  # nothing verified on this card yet
+        self.assertEqual(first["new_media_files"], 3)
+        extra = media["JPG"].parent / "shot-later.jpg"
+        extra.write_bytes(b"a new photo")
+        second = self._last_copy_status()
+        self.assertEqual(second["expected_new_files"], 1)
+        self.assertEqual(second["expected_new_bytes"], extra.stat().st_size)
+        self.assertEqual(second["new_media_files"], 1)
+        self.assertEqual(second["files_total"], 4)
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    def test_a_rewritten_camera_index_file_is_not_a_new_photo(self, notify, launch):
+        media = self.media()
+        index = media["JPG"].parent / "NC_FLLST.DAT"
+        index.write_bytes(b"first")
+        self._last_copy_status()
+        index.write_bytes(b"rewritten by the camera")
+        status = self._last_copy_status()
+        self.assertEqual(status["new_files"], 1)  # history still records what was copied
+        self.assertEqual(status["new_media_files"], 0)
+        self.assertEqual(status["expected_new_files"], 0)
 
     @patch("photo_offloader.logs.notify")
     def test_failed_import_is_recorded_with_its_reason(self, notify):
@@ -404,6 +469,11 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         (run,) = catalog.list_import_history()
         self.assertTrue(run["usb"])
         self.assertEqual(run["details"]["usb_copied"], 3)
+        self.assertGreaterEqual(run["details"]["copy_seconds"], 0)
+        self.assertGreaterEqual(run["details"]["usb_seconds"], 0)
+        self.assertEqual(
+            run["details"]["usb_bytes"], sum(path.stat().st_size for path in self.media().values())
+        )
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")

@@ -8,11 +8,11 @@ app sit on top. Open work and its reasons are in `scratch/ai_tasks.md` (gitignor
 first when asked to "continue". What only the user can do is in `scratch/human_todo.md`.
 
 ## Commands
-- Tests: `.venv/bin/python -m unittest discover` (about 390 tests, about 90 s). Use the
+- Tests: `.venv/bin/python -m unittest discover` (about 540 tests, about 2 min). Use the
   project `.venv`, not the system `python3`, which has no Pillow.
 - One module or test: `.venv/bin/python -m unittest tests.test_usb_backup`, or add
   `.TestBackupLauncher.test_request_runs_importer_when_lock_is_free`. Filter by name with `-k`.
-- Browser tests: `.venv/bin/python -m unittest tests.browser.test_dashboard_page` (about 20 s). They
+- Browser tests: `.venv/bin/python -m unittest tests.browser.test_dashboard_page` (about 45 s). They
   are part of `discover` and skip without Playwright's Chromium (`.venv/bin/python -m playwright
   install chromium`). See "How the user likes to work" for screenshots.
 - Coverage: `.venv/bin/python -m coverage run -m unittest discover`, then `coverage combine` and

@@ -167,6 +167,15 @@ def _action(action_id: str, label: str) -> Dict[str, str]:
     return {"id": action_id, "label": label}
 
 
+def card_contents(files_total: int, expected_new: Optional[int]) -> str:
+    """The Camera card box during a copy; with no estimate, only what is on the card is known."""
+    if expected_new is None:
+        return plural(files_total, "file")
+    if expected_new == 0:
+        return f"No new files of {files_total:,}"
+    return f"{plural(expected_new, 'new file')} of {files_total:,}"
+
+
 def _card_step(
     card: Optional[Path], activity: Optional[Dict[str, Any]], busy: bool, can_reimport: bool
 ) -> Dict[str, Any]:
@@ -174,6 +183,9 @@ def _card_step(
         return _step(
             "card", "Camera card", "active", card.name if card else "Card", activity["title"]
         )
+    if activity and activity["kind"] == "import" and activity.get("stage") == "copy":
+        contents = card_contents(activity["files_total"], activity["new_files_expected"])
+        return _step("card", "Camera card", "ok", card.name if card else "Card", contents)
     if card:
         actions = (
             []
@@ -205,8 +217,6 @@ def _archive_step(activity: Optional[Dict[str, Any]], local: Optional[int]) -> D
             "active",
             "Copying",
             activity["detail"] or detail,
-            (),
-            activity["percent"],
         )
     return _step("archive", "Mac archive", "ok", "Up to date" if local else "Empty", detail)
 
@@ -215,9 +225,7 @@ def _usb_step(
     activity: Optional[Dict[str, Any]], usb_mounted: bool, usb: Optional[int], busy: bool
 ) -> Dict[str, Any]:
     if activity and activity["kind"] == "usb_backup":
-        return _step(
-            "usb", "USB backup", "active", "Backing up", activity["detail"], (), activity["percent"]
-        )
+        return _step("usb", "USB backup", "active", "Backing up", activity["detail"])
     if usb_mounted:
         return _step(
             "usb",
@@ -231,7 +239,7 @@ def _usb_step(
 
 
 def _cloud_step(
-    google: Dict[str, Any], uploaded: int, busy: bool, setup_step: str
+    google: Dict[str, Any], uploaded: int, busy: bool, setup_step: str, in_top_panel: bool
 ) -> Dict[str, Any]:
     state = google["state"]
     if not google["configured"]:
@@ -245,7 +253,8 @@ def _cloud_step(
             "Finishing upload" if upload and upload["finalizing"] else "Uploading",
             f"{upload['transferred']} of {upload['total']}" if upload else "Preparing",
             (),
-            upload["percent"] if upload else None,
+            # The top panel already has this bar, unless an import is using the panel.
+            upload["percent"] if upload and not in_top_panel else None,
         )
     if state == "interrupted":
         return _step(
@@ -290,12 +299,222 @@ def pipeline(
         _card_step(card, activity, busy, can_reimport),
         _archive_step(activity, counts["local"] if counts else None),
         _usb_step(activity, usb_mounted, counts["usb"] if counts else None, busy),
-        _cloud_step(google, counts["uploaded"] if counts else 0, busy, setup_step),
+        _cloud_step(
+            google,
+            counts["uploaded"] if counts else 0,
+            busy,
+            setup_step,
+            activity is None,  # only an import's activity comes here; otherwise it shows the upload
+        ),
     ]
 
 
 def plural(count: int, noun: str) -> str:
     return f"{count:,} {noun}{'' if count == 1 else 's'}"
+
+
+def _details(row: Dict[str, Any]) -> Dict[str, Any]:
+    details = row.get("details")
+    return details if isinstance(details, dict) else {}
+
+
+def _new_files_count(row: Dict[str, Any], details: Dict[str, Any]) -> int:
+    new = details.get("new")
+    # A run recorded before per-session details existed only has its copy count.
+    return sum(int(v) for v in new.values()) if isinstance(new, dict) else int(row["copied"])
+
+
+def _new_files_text(row: Dict[str, Any], details: Dict[str, Any]) -> str:
+    count, new = _new_files_count(row, details), details.get("new")
+    if not count:
+        return "No new files"
+    if not isinstance(new, dict):
+        return f"{count:,} new"
+    labels = {
+        "JPG": lambda n: plural(n, "photo"),
+        "RAW": lambda n: f"{n:,} RAW",
+        "VIDEO": lambda n: plural(n, "video"),
+        "OTHER": lambda n: f"{n:,} other",
+    }
+    kinds = (labels[key](int(new[key])) for key in ("JPG", "RAW", "VIDEO", "OTHER") if new.get(key))
+    return f"{count:,} new: " + ", ".join(kinds)
+
+
+def _report_step(step_id: str, label: str, place: str, state: str, result: str, **figures: Any):
+    """One row of a report. Figures not known are None, and the page shows a dash."""
+    size, seconds, files = figures.get("bytes"), figures.get("seconds"), figures.get("files")
+    return {
+        "id": step_id,
+        "label": label,
+        "place": place,
+        "state": state,
+        "result": result,
+        "files": files,
+        "bytes": size,
+        "seconds": seconds,
+        # The scan has a size, the whole card's, but only a step that moves files has a speed.
+        "speed_bps": size / seconds if size and seconds and files is not None else None,
+    }
+
+
+def _upload_report_step(details: Dict[str, Any], state: str) -> Dict[str, Any]:
+    upload = details.get("upload")
+    if isinstance(upload, dict):
+        if upload.get("outcome") != "complete":
+            # Its size is what it set out to send, which says nothing about what got there.
+            return _report_step(
+                "upload",
+                "Upload to Google Photos",
+                "Google Photos",
+                "error",
+                "Stopped",
+                seconds=upload.get("seconds"),
+            )
+        files = int(upload.get("files", 0) or 0)
+        return _report_step(
+            "upload",
+            "Upload to Google Photos",
+            "Google Photos",
+            "done",
+            f"{plural(files, 'file')} to {upload.get('album', 'Google Photos')}",
+            files=files,
+            bytes=upload.get("bytes"),
+            seconds=upload.get("seconds"),
+        )
+    new = details.get("new")
+    nothing_to_send = isinstance(new, dict) and not (new.get("JPG") or new.get("VIDEO"))
+    result = {
+        "active": "Uploading now",
+        "pending": "Starting",
+        "skipped": "Skipped",
+        "error": "Stopped",
+    }.get(state, "Nothing to send" if nothing_to_send else "Not recorded")
+    return _report_step("upload", "Upload to Google Photos", "Google Photos", state, result)
+
+
+def _usb_report_step(details: Dict[str, Any], state: str) -> Dict[str, Any]:
+    copied = details.get("usb_copied")
+    if state == "skipped":
+        result = "Skipped"
+    elif state == "error":
+        result = "Stopped"
+    elif copied is None:
+        result = "Backed up"
+    else:
+        result = f"{plural(int(copied), 'file')} copied" if copied else "Already up to date"
+    return _report_step(
+        "usb",
+        "Back up to USB",
+        "USB backup",
+        state,
+        result,
+        files=copied,
+        bytes=details.get("usb_bytes"),
+        seconds=details.get("usb_seconds"),
+    )
+
+
+def _import_steps(
+    row: Dict[str, Any], details: Dict[str, Any], upload_state: str
+) -> List[Dict[str, Any]]:
+    states = {
+        stage["id"]: stage["state"]
+        for stage in stages_after_import(
+            row, "pending" if upload_state == "starting" else upload_state
+        )
+    }
+    copy_seconds, usb_seconds = details.get("copy_seconds"), details.get("usb_seconds")
+    scan_seconds = (
+        max(float(row["duration_seconds"]) - copy_seconds - (usb_seconds or 0), 0.0)
+        if copy_seconds is not None
+        else None
+    )
+    copied = _new_files_text(row, details)
+    if row["failed"]:
+        copied += f" · {int(row['failed'])} failed"
+    return [
+        _report_step(
+            "scan",
+            "Scan and read photo info",
+            "Camera card",
+            "done",
+            f"{int(row['files']):,} on card · {int(row['skipped']):,} already saved",
+            bytes=row["bytes"],
+            seconds=scan_seconds,
+        ),
+        _report_step(
+            "copy",
+            "Copy to Mac",
+            "Mac archive",
+            states["copy"],
+            copied,
+            files=_new_files_count(row, details),
+            bytes=details.get("new_bytes"),
+            seconds=copy_seconds,
+        ),
+        _usb_report_step(details, states["usb"]),
+        _upload_report_step(details, states["upload"]),
+    ]
+
+
+def _single_step(row: Dict[str, Any], kind: str) -> Dict[str, Any]:
+    """A run that does one thing: a USB backup or a catalog update."""
+    state = {"complete": "done", "failed": "error"}.get(str(row["outcome"]), "skipped")
+    seconds = float(row["duration_seconds"])
+    if kind == "usb_backup":
+        copied = int(row["copied"])
+        result = f"{plural(copied, 'file')} copied" if copied else "Already up to date"
+        return _report_step(
+            "usb", "Back up to USB", "USB backup", state, result, files=copied, seconds=seconds
+        )
+    result = "Completed" if state == "done" else str(row.get("message") or "Stopped")
+    return _report_step(
+        "catalog", "Update file catalog", "File catalog", state, result, seconds=seconds
+    )
+
+
+SEGMENT_LABELS = {"scan": "Scan", "copy": "Copy", "usb": "USB backup", "upload": "Upload"}
+
+
+def _segments(steps: List[Dict[str, Any]], duration: float) -> List[Dict[str, Any]]:
+    """Where the time went. Without a copy time, the import can't be split up."""
+    timed = {step["id"]: step["seconds"] for step in steps}
+    if "scan" in timed and timed["scan"] is None:
+        parts = [("import", "Import", duration), ("upload", "Upload", timed["upload"])]
+    else:
+        parts = [(key, SEGMENT_LABELS.get(key, "Update"), timed[key]) for key in timed]
+    return [
+        {"id": key, "label": label, "seconds": seconds} for key, label, seconds in parts if seconds
+    ]
+
+
+def run_report(row: Dict[str, Any], upload_state: Optional[str] = None) -> Dict[str, Any]:
+    """Everything a finished run's report shows, in either style.
+
+    ``upload_state`` is what is known about the upload if the row doesn't say (see
+    ``DashboardCore._upload_state_after``); it only applies to the newest import.
+    """
+    described, details, kind = describe_run(row), _details(row), str(row["kind"])
+    duration = float(row["duration_seconds"])
+    if kind == "import":
+        steps = _import_steps(row, details, upload_state or "done")
+        upload = steps[-1]
+        whole_run = upload["seconds"] is not None or upload["result"] in (
+            "Skipped",
+            "Nothing to send",
+        )
+    else:
+        steps, whole_run = [_single_step(row, kind)], True
+    upload_seconds = steps[-1]["seconds"] if kind == "import" else None
+    return {
+        "title": described["title"],
+        "detail": described["summary"],
+        "tone": described["tone"],
+        "steps": steps,
+        "segments": _segments(steps, duration),
+        "total_seconds": duration + float(upload_seconds or 0),
+        "total_note": "Start to finish" if whole_run else "Import only",
+    }
 
 
 def describe_run(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -318,32 +537,11 @@ def describe_run(row: Dict[str, Any]) -> Dict[str, Any]:
     else:
         title, tone = done, "success"
     parts: List[str] = []
-    details = row.get("details") if isinstance(row.get("details"), dict) else {}
+    details = _details(row)
     if kind == "import":
-        new = details.get("new")
-        if isinstance(new, dict):
-            count = sum(int(v) for v in new.values())
-            labels = {
-                "JPG": lambda n: plural(n, "photo"),
-                "RAW": lambda n: f"{n:,} RAW",
-                "VIDEO": lambda n: plural(n, "video"),
-                "OTHER": lambda n: f"{n:,} other",
-            }
-            if count:
-                parts.append(
-                    f"{count:,} new: "
-                    + ", ".join(
-                        labels[key](int(new[key]))
-                        for key in ("JPG", "RAW", "VIDEO", "OTHER")
-                        if new.get(key)
-                    )
-                )
-                if details.get("new_bytes"):
-                    parts.append(format_bytes(int(details["new_bytes"])))
-            else:
-                parts.append("No new files")
-        else:  # recorded before per-session details existed
-            parts.append(f"{int(row['copied']):,} new" if row["copied"] else "No new files")
+        parts.append(_new_files_text(row, details))
+        if _new_files_count(row, details) and details.get("new_bytes"):
+            parts.append(format_bytes(int(details["new_bytes"])))
         if row["files"]:
             safe = outcome == "complete" and not row["failed"]
             parts.append(f"{int(row['files']):,} on card" + (", all backed up" if safe else ""))

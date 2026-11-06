@@ -9,7 +9,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Tuple
 
 from photo_offloader import config, fileops
 from photo_offloader.logs import logger
@@ -215,6 +215,34 @@ def reconcile_card_manifest(
     # This is an inventory observation, not a completed import.
     save_card_manifest(dcim_folder, manifest, history)
     return counts
+
+
+def expected_new_files(
+    dcim_folder: Path, discovered: Dict[str, List[Path]]
+) -> Optional[Tuple[int, int]]:
+    """(files, bytes) that look unsaved, or None with no verified file on the card to trust.
+
+    Only for showing progress: each file is still checked when it is reached. A file counts as
+    saved only with a verified hash, because reconciling lists every file before any copying,
+    so after an interrupted import being listed proves nothing. Camera index files are left out:
+    the camera rewrites them, so they would be "new" on every import without being new photos.
+    """
+    manifest = load_card_manifest(dcim_folder)
+    new_files = new_bytes = verified = 0
+    for category_paths in discovered.values():
+        for source in category_paths:
+            if fileops.is_camera_index_file(source):
+                continue
+            if card_manifest_entry(manifest, source, dcim_folder):
+                verified += 1
+                continue
+            try:
+                new_bytes += source.stat().st_size
+            except OSError as exc:
+                logger.debug("Leaving %s out of the new file estimate: %s", source, exc)
+                continue
+            new_files += 1
+    return (new_files, new_bytes) if verified else None
 
 
 def update_card_scan_history(

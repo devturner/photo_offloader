@@ -111,9 +111,35 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .stages span[data-state="done"] { color: var(--text-2); border-top-color: var(--ok); }
 .stages span[data-state="active"] { color: var(--accent); border-top-color: var(--accent); }
 .stages span[data-state="skipped"] { text-decoration: line-through; }
-.stages span[data-state="error"] { color: var(--err); border-top-color: var(--err); }
-.hero.finished .bar > div { background: var(--ok); }
-.hero.finished[data-tone="error"] .bar > div, .hero.finished[data-tone="warning"] .bar > div { background: var(--warn); }
+/* a finished run's report: Basic is the time bar and places, Advanced the table */
+.report { margin-top: 16px; flex: none; }
+.timebar { display: flex; gap: 2px; height: 10px; border-radius: 999px; overflow: hidden; }
+.timebar > div, .legend .dot { background: var(--off); }
+.timebar > [data-seg="copy"], .legend [data-seg="copy"] .dot { background: var(--accent); }
+.timebar > [data-seg="usb"], .legend [data-seg="usb"] .dot { background: var(--accent); opacity: .62; }
+.timebar > [data-seg="upload"], .legend [data-seg="upload"] .dot { background: var(--accent); opacity: .36; }
+.legend { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 16px; margin-top: 8px; font-size: 12.5px; color: var(--text-2); }
+.legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.legend .dot { width: 8px; height: 8px; border-radius: 50%; }
+.legend .total { margin-left: auto; color: var(--text); font-weight: 600; }
+.places { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+.place { background: var(--surface-2); border-radius: 12px; padding: 10px 14px; min-width: 0; }
+.place .k { display: block; font-size: 12px; font-weight: 550; color: var(--text-2); }
+.place .main { display: block; font-size: 14px; font-weight: 650; }
+.place .sub { display: block; font-size: 12.5px; color: var(--text-2); }
+.place[data-state="skipped"] .main { color: var(--text-2); font-weight: 500; }
+.place[data-state="error"] .main { color: var(--err); }
+.report-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.report-table th { font-size: 11.5px; font-weight: 550; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); text-align: left; padding: 0 10px 4px 0; }
+.report-table td { padding: 3px 10px 3px 0; border-top: 1px solid var(--border); white-space: nowrap; }
+.report-table .step-name { font-weight: 600; }
+.report-table .result { color: var(--text-2); width: 100%; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.report-table .n { text-align: right; padding: 0 0 0 10px; font-variant-numeric: tabular-nums; }
+.report-table td.n { padding: 3px 0 3px 10px; }
+.report-table tr[data-state="skipped"] td { color: var(--text-3); }
+.report-table tr[data-state="error"] td { color: var(--err); }
+.report-table tr.total td { font-weight: 650; }
+.report-table tr.total .result { font-weight: 400; }
 .step .actions { margin-top: auto; padding-top: 8px; display: flex; gap: 14px; }
 .step .actions .action { margin-top: 0; padding-top: 0; }
 .slots { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, .9fr) minmax(0, 1.5fr) minmax(0, .8fr) minmax(0, .8fr); gap: 4px 14px; margin-top: 12px; font-variant-numeric: tabular-nums; flex: none; }
@@ -135,7 +161,7 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .progress { margin-top: 14px; flex: none; }
 .bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
 .bar > div { height: 100%; border-radius: inherit; background: var(--accent); transition: width .6s ease; }
-.bar.indeterminate > div { width: 35% !important; animation: slide 1.3s ease-in-out infinite; }
+.bar.waiting > div { opacity: 0; transition: none; animation: glow ease-in-out infinite; }
 .meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; color: var(--text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
 .meta b { color: var(--text); font-weight: 600; }
 .spark { margin-top: 12px; height: 44px; width: 100%; display: block; flex: none; }
@@ -167,8 +193,16 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .link:hover { text-decoration: underline; }
 .link[hidden] { display: none; }
 .history { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow-y: auto; flex: 1 1 auto !important; min-height: 150px; overscroll-behavior: contain; }
-.row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--border); }
-.row:first-child { border-top: 0; }
+.row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 16px; border: 0; border-top: 1px solid var(--border); background: none; text-align: left; }
+.row:hover, .row:focus-visible { background: var(--surface-2); }
+.row:focus-visible { outline-offset: -2px; border-radius: 0; }
+.run { transition: opacity .18s; }
+.history.has-open .run:not(.open):not(:hover):not(:focus-within) { opacity: .5; }
+.run:first-child .row { border-top: 0; }
+.row .chev { flex: none; width: 7px; height: 7px; margin: 0 3px 0 2px; border-right: 1.5px solid var(--text-3); border-bottom: 1.5px solid var(--text-3); transform: rotate(-45deg); }
+.row[aria-expanded="true"] .chev { transform: translateY(-2px) rotate(45deg); }
+.run-report { padding: 2px 16px 16px; }
+.run-report .report { margin-top: 0; }
 .row .ico { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; flex: none; }
 .row .ico .icon { width: 16px; height: 16px; }
 .row[data-tone="success"] .ico { background: var(--ok-soft); color: var(--ok); }
@@ -192,7 +226,7 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
 .lost { background: var(--err-soft); color: var(--err); }
 
 @keyframes pulse { 50% { opacity: .35; } }
-@keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+@keyframes glow { 0%, 100% { opacity: .08; } 50% { opacity: .55; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 @media (max-width: 560px) {
   :root { --hero-h: 316px; }
@@ -202,6 +236,8 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
   .stages span { white-space: normal; align-items: flex-start; line-height: 1.25; }
   /* The two long values share the first row; the three short ones share the second. */
   .slots { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .report-table .speed { display: none; }
+  .report-table .result { white-space: normal; }
   .slot { grid-column: span 2; }
   .slot:nth-child(1), .slot:nth-child(3) { grid-column: span 3; order: -1; }
 }
@@ -230,6 +266,12 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
             <button role="menuitemradio" data-theme-choice="system" data-keep-open aria-checked="true">Auto</button>
             <button role="menuitemradio" data-theme-choice="light" data-keep-open aria-checked="false">Light</button>
             <button role="menuitemradio" data-theme-choice="dark" data-keep-open aria-checked="false">Dark</button>
+          </div>
+        </div>
+        <div class="appearance"><span class="label" id="report-label">Import report</span>
+          <div class="segmented" role="radiogroup" aria-labelledby="report-label">
+            <button role="menuitemradio" data-report-choice="basic" data-keep-open aria-checked="true">Basic</button>
+            <button role="menuitemradio" data-report-choice="advanced" data-keep-open aria-checked="false">Advanced</button>
           </div>
         </div>
         <hr>
@@ -332,18 +374,119 @@ function relTime(epoch, now) {
   const d = new Date(epoch * 1000);
   return s < 86400 * 6 ? Math.round(s / 86400) + " d ago" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
-// The graph is a fixed one-minute window (one sample per poll), filled from the right,
-// so it never rescales its time axis or jumps as samples arrive.
-const SPARK_POINTS = 60;
-function sparkPaths(values, w, hgt) {
-  const vals = (values || []).slice(-SPARK_POINTS);
-  if (vals.length < 2) return null;
-  const max = Math.max(...vals, 1), step = w / (SPARK_POINTS - 1), x0 = w - (vals.length - 1) * step;
-  const pts = vals.map((v, i) => [x0 + i * step, hgt - 2 - (v / max) * (hgt - 6)]);
-  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-  return { line, area: line + ` L${w} ${hgt} L${x0.toFixed(1)} ${hgt} Z` };
+// One sample per poll, from the first bytes moved. The line rises from zero at the left edge and
+// reaches the right after ten samples (SPARK_MIN_POINTS counts that zero), then the time axis stretches
+// to fit the run, up to SPARK_MAX_POINTS, and scrolls. The server keeps more than that
+// (core.SPEED_SAMPLES) so the smoothing has settled by the left edge.
+const SPARK_MIN_POINTS = 11, SPARK_MAX_POINTS = 90, SPARK_SMOOTHING_SECONDS = 8, POLL_MS = 1000;
+// Once a stall has scrolled the fast part off the graph, what is left of it must not fill the height.
+const SPARK_LOWEST_SCALE = 0.25; // of the run's top speed
+// A poll only sees the bytes since the last one, and none move while a copy is being verified, so raw
+// samples jump about even at a steady speed. An exponential moving average shows the trend. It only
+// looks backwards, so a new sample can't reshape what is already drawn. Dividing by the weight so far
+// stops the first sample from counting too much.
+function smoothedSpeeds(vals) {
+  const keep = Math.exp(-1 / SPARK_SMOOTHING_SECONDS);
+  let sum = 0, weight = 0;
+  return vals.map(v => { sum = sum * keep + v; weight = weight * keep + 1; return sum / weight; });
 }
+const sparkPoint = (p) => p[0].toFixed(1) + " " + p[1].toFixed(1);
+/* A monotone cubic curve, which can't wobble between samples. Adapted from curveMonotoneX in d3-shape
+   (https://github.com/d3/d3-shape), after Steffen, "A Simple Method for Monotonic Interpolation in One
+   Dimension" (1990).
+
+   Copyright 2010-2026 Mike Bostock
+
+   Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee
+   is hereby granted, provided that the above copyright notice and this permission notice appear in all
+   copies.
+
+   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE
+   INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE
+   FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+   LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+   ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. */
+function monotonePath(pts) {
+  const n = pts.length;
+  if (n < 3) return "M" + pts.map(sparkPoint).join(" L");
+  const sign = (x) => x < 0 ? -1 : 1, slopes = new Array(n);
+  for (let i = 1; i < n - 1; i++) {
+    const h0 = pts[i][0] - pts[i - 1][0], h1 = pts[i + 1][0] - pts[i][0];
+    const s0 = (pts[i][1] - pts[i - 1][1]) / (h0 || h1), s1 = (pts[i + 1][1] - pts[i][1]) / (h1 || h0), p = (s0 * h1 + s1 * h0) / (h0 + h1);
+    slopes[i] = (sign(s0) + sign(s1)) * Math.min(Math.abs(s0), Math.abs(s1), 0.5 * Math.abs(p)) || 0;
+  }
+  const oneSided = (a, b, t) => { const h = b[0] - a[0]; return h ? (3 * (b[1] - a[1]) / h - t) / 2 : t; };
+  slopes[0] = oneSided(pts[0], pts[1], slopes[1]);
+  slopes[n - 1] = oneSided(pts[n - 2], pts[n - 1], slopes[n - 2]);
+  let d = "M" + sparkPoint(pts[0]);
+  for (let i = 0; i < n - 1; i++) {
+    const dx = (pts[i + 1][0] - pts[i][0]) / 3;
+    d += ` C${sparkPoint([pts[i][0] + dx, pts[i][1] + dx * slopes[i]])} ${sparkPoint([pts[i + 1][0] - dx, pts[i + 1][1] - dx * slopes[i + 1]])} ${sparkPoint(pts[i + 1])}`;
+  }
+  return d;
+}
+const sparkTop = (values) => Math.max(...smoothedSpeeds(values || []).slice(-SPARK_MAX_POINTS), 1);
+// progress runs from 0 to 1 as the tip travels from the previous sample to the newest one.
+function sparkPaths(values, w, hgt, progress = 1, top = sparkTop(values)) {
+  const vals = [0, ...smoothedSpeeds(values || [])].slice(-SPARK_MAX_POINTS), n = vals.length;
+  if (n < 2) return null;
+  const at = n - 2 + progress, from = Math.max(0, at - (SPARK_MAX_POINTS - 2));
+  const step = w / Math.max(at - from, SPARK_MIN_POINTS - 1);
+  const valueAt = (i) => { const low = Math.floor(i), high = Math.min(low + 1, n - 1); return vals[low] + (vals[high] - vals[low]) * (i - low); };
+  const point = (i) => [(i - from) * step, hgt - 2 - (valueAt(i) / top) * (hgt - 6)];
+  const pts = [point(from)];
+  for (let i = Math.floor(from) + 1; i < at; i++) pts.push(point(i));
+  if (at > from) pts.push(point(at));
+  if (pts.length < 2) return null;
+  const line = monotonePath(pts), tip = pts[pts.length - 1];
+  return { line, area: line + ` L${tip[0].toFixed(1)} ${hgt} L0 ${hgt} Z` };
+}
+const calm = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+// One graph for the whole page, kept across refreshes so a glide isn't interrupted. It only animates
+// from a new sample until it has caught up, so it uses nothing while idle or in a hidden window.
+const speedGraph = (() => {
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("class", "spark"); svg.setAttribute("viewBox", "0 0 600 44"); svg.setAttribute("preserveAspectRatio", "none"); svg.setAttribute("aria-hidden", "true");
+  const part = (cls, d) => { const path = document.createElementNS(SVGNS, "path"); path.setAttribute("class", cls); path.setAttribute("vector-effect", "non-scaling-stroke"); if (d) path.setAttribute("d", d); svg.append(path); return path; };
+  part("base", "M0 43 L600 43");
+  const area = part("area"), line = part("line");
+  let values = [], seen = "", arrived = 0, fromTop = 0, top = 0, peak = 0, frame = 0;
+  function draw(progress) {
+    const shownTop = fromTop + (top - fromTop) * progress, paths = sparkPaths(values, 600, 44, progress, shownTop);
+    line.setAttribute("d", paths ? paths.line : "");
+    area.setAttribute("d", paths ? paths.area : "");
+    return shownTop;
+  }
+  function glide(now) {
+    const progress = Math.min(1, (now - arrived) / POLL_MS);
+    draw(progress);
+    frame = progress < 1 ? requestAnimationFrame(glide) : 0;
+  }
+  return {
+    svg,
+    update(history) {
+      const next = JSON.stringify(history || []);
+      if (next === seen) return;
+      const shrank = (history || []).length < values.length, shown = sparkTop(history);
+      peak = Math.max(shrank ? 0 : peak, shown);
+      const nextTop = Math.max(shown, peak * SPARK_LOWEST_SCALE);
+      // Nothing above zero drawn yet: starting from that scale would throw the tip to the top at once.
+      // A glide still under way when the next sample comes carries on from where it had got to.
+      fromTop = shrank || top <= 1 ? nextTop : (frame ? draw(Math.min(1, (performance.now() - arrived) / POLL_MS)) : top);
+      seen = next; values = history || []; top = nextTop; arrived = performance.now();
+      if (calm()) { fromTop = top; draw(1); return; }
+      if (!frame) frame = requestAnimationFrame(glide);
+    },
+  };
+})();
 const fmtCount = (n) => Number(n || 0).toLocaleString();
+// The estimate can come up short (each file is only checked when reached), so the total never trails.
+function newFilesText(v) {
+  const done = v.new_files || 0, expected = v.new_files_expected;
+  if (expected == null) return fmtCount(done) + " new";
+  if (!expected && !done) return "Nothing new";
+  return fmtCount(done) + " of " + fmtCount(Math.max(expected, done)) + " new";
+}
 // "34.4 of 80.0 GB" rather than "34.4 GB of 80.0 GB" when both share a unit.
 function fmtRange(done, total) {
   const [dv, du] = fmtBytes(done).split(" "), t = fmtBytes(total);
@@ -379,9 +522,54 @@ const TONE_ICON = { success: "check", idle: "camera", active: "arrow", warning: 
 const KIND_ICON = { import: "arrow", usb_backup: "plug", catalog: "refresh", upload: "up" };
 let LAST = null, HISTORY = [];
 
+// ---- a finished run's report (the panel and Recent activity share it)
+let reportStyle = "basic", reportPending = false;
+const fmtStepTime = (seconds) => seconds == null ? "—" : seconds < 0.5 ? "<1s" : fmtDuration(seconds);
+const fmtSpeed = (bps) => bps ? fmtBytes(bps) + "/s" : "—";
+const totalText = (r) => (r.total_note === "Start to finish" ? "Total " : r.total_note + ": ") + fmtStepTime(r.total_seconds);
+
+function reportAdvanced(r) {
+  const head = ["Step", "Result", "Size", "Time", "Speed"].map((text, i) => h("th", { scope: "col", class: (i > 1 ? "n" : "") + (i === 4 ? " speed" : ""), text }));
+  const rows = r.steps.map(st => h("tr", { "data-state": st.state },
+    h("td", { class: "step-name", text: st.label }),
+    h("td", { class: "result", text: st.result, title: st.result }),
+    h("td", { class: "n", text: st.bytes ? fmtBytes(st.bytes) : "—" }),
+    h("td", { class: "n", text: fmtStepTime(st.seconds) }),
+    h("td", { class: "n speed", text: fmtSpeed(st.speed_bps) })));
+  const total = h("tr", { class: "total" },
+    h("td", { text: "Total" }), h("td", { class: "result", text: r.total_note }), h("td", { class: "n" }),
+    h("td", { class: "n", text: fmtStepTime(r.total_seconds) }), h("td", { class: "n speed" }));
+  return h("div", { class: "report" }, h("table", { class: "report-table" }, h("thead", {}, h("tr", {}, ...head)), h("tbody", {}, ...rows, total)));
+}
+
+function placeCard(st) {
+  const what = st.state !== "error" && st.files ? fmtCount(st.files) + (st.files === 1 ? " file" : " files") + (st.bytes ? " · " + fmtBytes(st.bytes) : "") : st.result;
+  const when = st.seconds == null ? "—" : fmtStepTime(st.seconds) + (st.speed_bps ? " at " + fmtSpeed(st.speed_bps) : "");
+  return h("div", { class: "place", "data-state": st.state },
+    h("span", { class: "k", text: st.place }), h("span", { class: "main", text: what, title: st.result }), h("span", { class: "sub", text: when }));
+}
+
+function reportBasic(r) {
+  const spent = r.segments.reduce((sum, seg) => sum + seg.seconds, 0) || 1;
+  return h("div", { class: "report" },
+    h("div", { class: "timebar", role: "img", "aria-label": "Where the time went: " + r.segments.map(seg => seg.label + " " + fmtStepTime(seg.seconds)).join(", ") },
+      r.segments.map(seg => h("div", { "data-seg": seg.id, style: `width:${seg.seconds / spent * 100}%` }))),
+    h("div", { class: "legend" },
+      r.segments.map(seg => h("span", { "data-seg": seg.id }, h("span", { class: "dot" }), seg.label + " " + fmtStepTime(seg.seconds))),
+      h("span", { class: "total", text: totalText(r) })),
+    h("div", { class: "places" }, r.steps.filter(st => st.id !== "scan").map(placeCard)));
+}
+const reportBody = (r) => reportStyle === "advanced" ? reportAdvanced(r) : reportBasic(r);
+
+// The panel is rebuilt every second as Elapsed changes. Starting each new bar part-way through keeps
+// the glow in step, as if one bar had been glowing since the page opened.
+const GLOW_MS = 2400;
+const glowStyle = () => `width:100%;animation-duration:${GLOW_MS}ms;animation-delay:-${(performance.now() % GLOW_MS).toFixed(0)}ms`;
+
 function renderHero(s) {
   const head = s.headline, a = s.activity, f = !a && s.finished, now = s.generated_at;
-  const key = [head, a, f, s.last_transfer && s.last_transfer.id, s.interrupted];
+  if (!reportPending) reportStyle = s.settings.report_style || "basic";
+  const key = [head, a, f, s.last_transfer && s.last_transfer.id, s.interrupted, reportStyle];
   if (!changed("hero", key)) return;
   const hero = $("#hero"); hero.dataset.tone = head.tone;
   // A run keeps the transfer layout from the first step to its summary; only idle states rest.
@@ -392,31 +580,30 @@ function renderHero(s) {
   const kids = [h("div", { class: "hero-top" },
     h("div", { class: "badge" }, icon((a && KIND_ICON[a.kind]) || TONE_ICON[head.tone] || "camera")),
     h("div", { class: "grow" }, h("h2", { text: head.title, title: head.title }), h("p", { text: head.detail || "", title: head.detail || "" })))];
-  if (view) {
+  if (f) {
+    speedGraph.update([]);
+    kids.push(reportBody(f));
+  } else if (a) {
     // Every part below is always present while something runs; values that are not
     // known yet show a dash instead of disappearing, so nothing flashes or moves.
-    const v = view, p = v.percent, none = "—";
+    const v = a, p = v.percent, none = "—";
     const slot = (k, v) => h("div", { class: "slot" }, h("span", { class: "k", text: k }), h("span", { class: "v" + (v == null ? " none" : ""), text: v == null ? none : v }));
     kids.push(h("div", { class: "stages", "aria-label": "Steps" },
       (v.stages || []).map(st => h("span", { "data-state": st.state, text: st.label, title: st.label + " (" + st.state + ")" }))));
-    const files = f ? (v.files_total ? fmtCount(v.files_done) + " new · " + fmtCount(v.files_total) + " on card" : null)
+    const files = v.stage === "copy" && v.files_total ? newFilesText(v)
       : (v.files_total ? fmtCount(v.files_done) + " of " + fmtCount(v.files_total) + (v.new_files ? " · " + fmtCount(v.new_files) + " new" : "") : null);
-    const progress = p == null ? null : Math.round(p) + "%" + (v.bytes_total ? " · " + (f ? fmtBytes(v.bytes_total) : fmtRange(v.bytes_done, v.bytes_total)) : "");
+    const progress = p == null ? null : Math.round(p) + "%" + (v.bytes_total ? " · " + fmtRange(v.bytes_done, v.bytes_total) : "");
     kids.push(h("div", { class: "progress" },
-      h("div", { class: "bar" + (v.indeterminate ? " indeterminate" : ""), role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": p == null ? null : Math.round(p) },
-        h("div", { style: `width:${v.indeterminate ? 35 : Math.max(2, p || 0)}%` })),
+      h("div", { class: "bar" + (v.indeterminate ? " waiting" : ""), role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": p == null ? null : Math.round(p) },
+        h("div", { style: v.indeterminate ? glowStyle() : `width:${Math.max(2, p || 0)}%` })),
       h("div", { class: "slots" },
         slot("Progress", progress),
-        slot(f ? "Average speed" : "Speed", v.speed_bps > 0 ? fmtBytes(v.speed_bps) + "/s" : null),
+        slot("Speed", v.speed_bps > 0 ? fmtBytes(v.speed_bps) + "/s" : null),
         slot("Files", files),
-        slot(f ? "Took" : "Elapsed", v.elapsed_seconds > 0 ? fmtDuration(v.elapsed_seconds) : null),
-        slot("Remaining", f ? (p === 100 ? "Done" : null) : (v.eta_seconds != null ? fmtDuration(v.eta_seconds) : null)))));
-    const svg = document.createElementNS(SVGNS, "svg");
-    svg.setAttribute("class", "spark"); svg.setAttribute("viewBox", "0 0 600 44"); svg.setAttribute("preserveAspectRatio", "none"); svg.setAttribute("aria-hidden", "true");
-    const sp = sparkPaths(v.speed_history, 600, 44);
-    const paths = [["base", "M0 43 L600 43"]].concat(sp ? [["area", sp.area], ["line", sp.line]] : []);
-    for (const [cls, d] of paths) { const path = document.createElementNS(SVGNS, "path"); path.setAttribute("class", cls); path.setAttribute("d", d); path.setAttribute("vector-effect", "non-scaling-stroke"); svg.append(path); }
-    kids.push(svg);
+        slot("Elapsed", v.elapsed_seconds > 0 ? fmtDuration(v.elapsed_seconds) : null),
+        slot("Remaining", v.eta_seconds != null ? fmtDuration(v.eta_seconds) : null))));
+    speedGraph.update(v.speed_history);
+    kids.push(speedGraph.svg);
   }
   if (dismissable) kids.push(h("button", { class: "dismiss", "aria-label": "Dismiss", title: "Dismiss", onclick: () => run("dismiss_last", {}, true) }, icon("x")));
   hero.replaceChildren(...kids);
@@ -436,15 +623,56 @@ function renderPipeline(s) {
 const OUTCOME_ICON = { success: "check", warning: "alert", error: "xcircle" };
 function renderHistory(now) {
   const rows = HISTORY;
-  if (!changed("history", [rows, Math.floor(now / 60)])) return;
+  if (!rows.some(r => r.id === openRun)) openRun = null; // the list was cleared, or the run has aged out of it
+  $("#history").classList.toggle("has-open", openRun !== null);
+  if (!changed("history", [rows, Math.floor(now / 60), openRun, reportStyle])) return;
   $("#clear-history").hidden = HISTORY.length === 0;
   const list = $("#history");
   if (!HISTORY.length) { list.replaceChildren(h("div", { class: "empty", text: "Imports and backups will appear here." })); return; }
-  const kids = rows.map(r => h("div", { class: "row", "data-tone": r.tone },
-    h("div", { class: "ico" }, icon(OUTCOME_ICON[r.tone] || "check")),
-    h("div", { class: "grow" }, h("div", { class: "t", text: r.title }), h("div", { class: "s", text: r.summary || (r.outcome === "complete" ? "Completed" : "") })),
-    h("time", { datetime: new Date(r.finished_at * 1000).toISOString(), title: new Date(r.finished_at * 1000).toLocaleString(), text: relTime(r.finished_at, now) })));
-  list.replaceChildren(...kids);
+  // Drawing the list again replaces its buttons, so keyboard focus has to be put back.
+  const focused = document.activeElement && document.activeElement.closest("#history .row");
+  const focusedId = focused ? focused.dataset.run : null;
+  list.replaceChildren(...rows.map(r => {
+    const isOpen = r.id === openRun;
+    return h("div", { class: "run" + (isOpen ? " open" : "") },
+      h("button", { type: "button", class: "row", "data-tone": r.tone, "data-run": r.id, "aria-expanded": String(isOpen), title: isOpen ? "Close this report" : "Open this report", onclick: (e) => toggleRun(r.id, now, e.detail === 0) },
+        h("div", { class: "ico" }, icon(OUTCOME_ICON[r.tone] || "check")),
+        h("div", { class: "grow" }, h("div", { class: "t", text: r.title }), h("div", { class: "s", text: r.summary || (r.outcome === "complete" ? "Completed" : "") })),
+        h("time", { datetime: new Date(r.finished_at * 1000).toISOString(), title: new Date(r.finished_at * 1000).toLocaleString(), text: relTime(r.finished_at, now) }),
+        h("span", { class: "chev", "aria-hidden": "true" })),
+      isOpen && h("div", { class: "run-report" }, reportBody(r.report)));
+  }));
+  if (focusedId != null) list.querySelector(`.row[data-run="${focusedId}"]`).focus();
+}
+
+// One report open at a time, so the list stays short enough to scan.
+let openRun = null;
+const UNFOLD_MS = 180;
+function toggleRun(id, now, fromKeyboard) {
+  const list = $("#history"), hadOpen = openRun !== null;
+  const closing = openRun === id, shown = document.querySelector(".run-report");
+  const fold = (report, from, to) => { report.style.overflow = "hidden"; return report.animate([{ height: from + "px" }, { height: to + "px" }], { duration: UNFOLD_MS, easing: "ease-out" }); };
+  // Keep the keyboard's place when the list is drawn again. A mouse click has no place to keep, and
+  // focusing the row for one would draw a focus ring around it.
+  const focusRow = () => { const row = list.querySelector(`.row[data-run="${id}"]`); if (row && fromKeyboard) row.focus(); return row; };
+  if (!fromKeyboard && document.activeElement) document.activeElement.blur();
+  if (closing && shown && !calm()) {
+    // Stay at the bottom until the list is drawn without it, so the rows below don't jump back.
+    list.classList.remove("has-open");
+    const folding = fold(shown, shown.offsetHeight, 0);
+    folding.onfinish = () => { shown.style.height = "0"; openRun = null; renderHistory(now); focusRow(); };
+    return;
+  }
+  openRun = closing ? null : id;
+  renderHistory(now);
+  const row = focusRow(), report = row && !closing && row.parentElement.querySelector(".run-report");
+  if (!report) return;
+  // These rows are new, so they only fade if they are seen undimmed first.
+  if (!hadOpen) { list.classList.remove("has-open"); void list.offsetHeight; list.classList.add("has-open"); }
+  const show = () => report.scrollIntoView({ block: "nearest" });
+  if (calm()) { show(); return; }
+  const unfolding = fold(report, 0, report.offsetHeight);
+  unfolding.onfinish = () => { report.style.overflow = ""; show(); };
 }
 
 function renderMenu(s) {
@@ -459,7 +687,14 @@ function renderMenu(s) {
   set("#m-service", run_ ? "Stop Photo Offloader…" : "Start Photo Offloader", run_ ? "power" : "play", false);
   $("#m-service").className = run_ ? "danger" : "";
   if (!themePending) applyTheme(s.settings.theme || "system");
+  document.querySelectorAll("[data-report-choice]").forEach(b => b.setAttribute("aria-checked", String(b.dataset.reportChoice === reportStyle)));
 }
+document.querySelectorAll("[data-report-choice]").forEach(b => b.addEventListener("click", async () => {
+  reportPending = true; reportStyle = b.dataset.reportChoice;
+  document.querySelectorAll("[data-report-choice]").forEach(c => c.setAttribute("aria-checked", String(c === b)));
+  await run("set_report_style", { report_style: reportStyle }, true);
+  reportPending = false;
+}));
 
 // ---- appearance (saved by the server, so it survives restarts; cached locally for first paint)
 let themePending = false;

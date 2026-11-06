@@ -89,6 +89,74 @@ class TestCard(support.CardFixtureTestCase):
         self.assertEqual(payload["history"]["new_files"], 1)
         self.assertEqual(payload["history"]["missing_from_card"], 1)
 
+    def _verified_entry(self, path, digest="a-verified-hash"):
+        return {"size": path.stat().st_size, "mtime_ns": path.stat().st_mtime_ns, "sha256": digest}
+
+    def test_expected_new_files_counts_what_is_not_verified_as_saved(self):
+        media = self.media()
+        saved, unsaved = media["JPG"], media["RAW"]
+        card.save_card_manifest(self.dcim, {"100NIKON/photo.jpg": self._verified_entry(saved)}, {})
+        self.assertEqual(
+            card.expected_new_files(self.dcim, {"JPG": [saved], "RAW": [unsaved]}),
+            (1, unsaved.stat().st_size),
+        )
+
+    def test_a_file_seen_by_an_interrupted_import_still_counts_as_new(self):
+        # Reconciling lists every file in the manifest before anything is copied.
+        media = self.media()
+        saved, unsaved = media["JPG"], media["RAW"]
+        card.save_card_manifest(self.dcim, {"100NIKON/photo.jpg": self._verified_entry(saved)}, {})
+        files = {"JPG": [saved], "RAW": [unsaved]}
+        card.reconcile_card_manifest(self.dcim, files)
+        self.assertEqual(card.reconcile_card_manifest(self.dcim, files)["new_files"], 0)
+        self.assertEqual(card.expected_new_files(self.dcim, files)[0], 1)
+
+    def test_a_file_changed_since_it_was_verified_counts_as_new(self):
+        media = self.media()
+        saved, changed = media["JPG"], media["RAW"]
+        stale = {**self._verified_entry(changed), "size": 999}
+        card.save_card_manifest(
+            self.dcim,
+            {"100NIKON/photo.jpg": self._verified_entry(saved), "100NIKON/photo.nef": stale},
+            {},
+        )
+        self.assertEqual(
+            card.expected_new_files(self.dcim, {"JPG": [saved], "RAW": [changed]})[0], 1
+        )
+
+    def test_camera_index_files_are_not_new_photos(self):
+        media = self.media()
+        saved = media["JPG"]
+        index = saved.parent / "NC_FLLST.DAT"
+        index.write_bytes(b"rewritten by the camera")
+        card.save_card_manifest(self.dcim, {"100NIKON/photo.jpg": self._verified_entry(saved)}, {})
+        self.assertEqual(
+            card.expected_new_files(self.dcim, {"JPG": [saved], "OTHER": [index]}), (0, 0)
+        )
+
+    def test_no_estimate_without_a_verified_file_to_trust(self):
+        media = self.media()
+        files = {"JPG": [media["JPG"]], "RAW": [media["RAW"]]}
+        self.assertIsNone(
+            card.expected_new_files(self.dcim, files)
+        )  # no manifest, or read-only card
+        card.reconcile_card_manifest(self.dcim, files)  # listed, but nothing verified yet
+        self.assertIsNone(card.expected_new_files(self.dcim, files))
+
+    def test_a_damaged_manifest_gives_no_estimate(self):
+        media = self.media()
+        path = card.card_manifest_path(self.dcim)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json")
+        self.assertIsNone(card.expected_new_files(self.dcim, {"JPG": [media["JPG"]]}))
+
+    def test_a_file_that_vanishes_is_left_out_of_the_estimate(self):
+        media = self.media()
+        saved = media["JPG"]
+        card.save_card_manifest(self.dcim, {"100NIKON/photo.jpg": self._verified_entry(saved)}, {})
+        gone = saved.parent / "gone.jpg"
+        self.assertEqual(card.expected_new_files(self.dcim, {"JPG": [saved, gone]}), (0, 0))
+
     def test_reconcile_card_manifest_does_not_mark_scan_successful(self):
         media = self.media()
         self.assertTrue(

@@ -247,6 +247,10 @@ def _count_session_file(category: str, source: Path, copied: bool) -> None:
     progress._PROGRESS["files_done"] = int(progress._PROGRESS.get("files_done", 0) or 0) + 1
     if copied:
         progress._PROGRESS["new_files"] = int(progress._PROGRESS.get("new_files", 0) or 0) + 1
+        if not fileops.is_camera_index_file(source):
+            progress._PROGRESS["new_media_files"] = (
+                int(progress._PROGRESS.get("new_media_files", 0) or 0) + 1
+            )
         by_category = dict(progress._PROGRESS.get("new_by_category") or {})
         by_category[category] = int(by_category.get(category, 0)) + 1
         progress._PROGRESS["new_by_category"] = by_category

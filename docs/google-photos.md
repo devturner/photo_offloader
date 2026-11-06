@@ -150,7 +150,9 @@ Google's API sets these limits, as listed in
 
 - rclone can only add to albums it created, so you can't aim uploads at an album you made by hand.
 - rclone can only list and download what it uploaded, not the rest of your library.
-- Neither rclone nor Photo Offloader can delete an album; you do that in Google Photos.
+- Neither rclone nor Photo Offloader can delete an album; you do that in Google Photos. If you delete
+  one, an upload to it may fail once, because Photo Offloader only checks an album it has already used
+  after an upload fails. That check creates the album again for the next sync.
 - rclone only checks that a file with that name is in the album, not what it contains, so an
   edited file that keeps its name isn't replaced.
 - A second upload of identical bytes keeps the first file's name.

@@ -7,12 +7,15 @@ PHOTO_OFFLOADER_TEST_SCREENSHOTS to a folder to also save a picture of every sta
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import unittest
 from pathlib import Path
 from typing import Dict, List
 
-from tests.browser.harness import CARD, ONE_RUN, SCENARIOS, Browser, BrowserTestCase
+from photo_offloader import catalog
+from tests.browser.harness import CARD, MB, ONE_RUN, SCENARIOS, Browser, BrowserTestCase
 
 try:
     from playwright.sync_api import expect
@@ -35,7 +38,6 @@ TRANSFER_STATES = (
 SUMMARY_STATES = ("finished", "failed", "failed_on_usb")
 RESTING_STATES = ("idle", "card_mounted", "already_imported", "paused")
 SLOT_NAMES = ["Progress", "Speed", "Files", "Elapsed", "Remaining"]
-SUMMARY_SLOT_NAMES = ["Progress", "Average speed", "Files", "Took", "Remaining"]
 HOSTILE = '<img src=x onerror="window.__pwned=1">'
 DARK_BACKGROUND, LIGHT_BACKGROUND = "rgb(28, 28, 30)", "rgb(245, 245, 247)"
 
@@ -130,17 +132,39 @@ class TestFixedPanel(PageTestCase):
 
 
 class TestSlots(PageTestCase):
+    def test_an_import_counts_new_files_against_the_estimate(self):
+        for fields, expected in (
+            ({"new_files": 737, "new_files_expected": 1278}, "737 of 1,278 new"),
+            (
+                {"new_files": 14, "new_files_expected": 12},
+                "14 of 14 new",
+            ),  # never past its own total
+            ({"new_files": 0, "new_files_expected": 0}, "Nothing new"),
+            ({"new_files": 737, "new_files_expected": None}, "737 new"),
+            ({"new_files": 0, "new_files_expected": None}, "0 new"),
+        ):
+            with self.subTest(**fields):
+                self.show("idle")
+                text = self.page.evaluate("v => newFilesText(v)", fields)
+                self.assertEqual(text, expected)
+
+    def test_only_the_import_counts_new_files(self):
+        self.show("usb_backup")
+        self.assertEqual(self.slots()["Files"], "1,214 of 2,378")
+        self.show("uploading")
+        self.assertNotIn("new", self.slots()["Files"])
+
+    def test_no_card_repeats_the_progress_bar_above_it(self):
+        for state in ("copying", "usb_backup", "uploading"):
+            with self.subTest(state=state):
+                self.show(state)
+                self.assertEqual(self.page.locator(".step .mini").count(), 0)
+
     def test_all_five_slots_are_there_while_anything_runs(self):
         for state in TRANSFER_STATES:
             with self.subTest(state=state):
                 self.show(state)
                 self.assertEqual(list(self.slots()), SLOT_NAMES)
-
-    def test_a_summary_has_five_slots_too(self):
-        for state in SUMMARY_STATES:
-            with self.subTest(state=state):
-                self.show(state)
-                self.assertEqual(list(self.slots()), SUMMARY_SLOT_NAMES)
 
     def test_a_value_not_known_yet_is_a_dash_not_missing(self):
         self.show("scan")
@@ -156,34 +180,13 @@ class TestSlots(PageTestCase):
             self.slots(),
             {
                 "Progress": "43% · 34.0 of 80.0 GB",
-                "Speed": "168.0 MB/s",
-                "Files": "1,214 of 2,378 · 27 new",
+                "Speed": "153.1 MB/s",
+                "Files": "47 new",
                 "Elapsed": "1m 59s",
                 "Remaining": "4m 00s",
             },
         )
         self.assertEqual(self.page.locator(".slot .v.none").count(), 0)
-
-    def test_the_finished_summary_totals_the_run(self):
-        self.show("finished")
-        self.assertEqual(
-            self.slots(),
-            {
-                "Progress": "100% · 412.0 MB",
-                "Average speed": "4.1 MB/s",
-                "Files": "18 new · 2,378 on card",
-                "Took": "1m 40s",
-                "Remaining": "Done",
-            },
-        )
-
-    def test_a_run_that_did_not_finish_is_not_called_done(self):
-        self.show("failed")
-        self.assertEqual(self.slots()["Remaining"], "—")
-        sandbox = self.load("idle")
-        sandbox.record(outcome="canceled")
-        self.open_page()
-        self.assertEqual(self.slots()["Remaining"], "—")
 
     def test_a_resting_panel_has_no_slots_or_steps(self):
         for state in RESTING_STATES:
@@ -191,6 +194,61 @@ class TestSlots(PageTestCase):
                 self.show(state)
                 self.assertEqual(self.slots(), {})
                 self.assertEqual(self.steps(), [])
+
+
+class TestProgressBar(PageTestCase):
+    """With nothing to measure yet, the bar glows so the app doesn't look stalled."""
+
+    WAITING_STATES = ("scan", "read_photo_info", "starting_upload")
+
+    def glow(self):
+        """The fill's width as a share of the track, its animation, and how far that animation is
+        from where it would be if it had run since the page opened (0 is in step)."""
+        return self.page.evaluate(
+            """() => { const fill = document.querySelector('#hero .bar > div');
+                const share = fill.getBoundingClientRect().width / fill.parentElement.getBoundingClientRect().width;
+                const a = fill.getAnimations()[0];
+                if (!a) return [share, null, null];
+                const at = a.effect.getComputedTiming().progress * GLOW_MS;
+                const off = Math.abs(at - performance.now() % GLOW_MS);
+                return [share, a.animationName, Math.min(off, GLOW_MS - off)]; }"""
+        )
+
+    def test_the_whole_bar_glows_while_there_is_nothing_to_measure(self):
+        for state in self.WAITING_STATES:
+            with self.subTest(state=state):
+                self.show(state, reduced_motion="no-preference")
+                share, animation, _ = self.glow()
+                self.assertEqual((share, animation), (1, "glow"))
+
+    def test_a_refresh_does_not_restart_the_glow(self):
+        # The panel is rebuilt each second as Elapsed changes, which is what made the old slider flash.
+        sandbox = self.load("starting_upload")
+        sandbox.google_up = True
+        sandbox.google_status(
+            "running", ago=5
+        )  # Preparing upload: Elapsed counts, nothing to measure
+        self.open_page(reduced_motion="no-preference")
+        for _ in range(3):
+            self.page.evaluate("document.querySelector('#hero .bar > div').dataset.old = '1'")
+            self.page.wait_for_timeout(350)
+            sandbox.advance(1)
+            self.refresh()
+            self.page.wait_for_function("!document.querySelector('#hero .bar > div').dataset.old")
+            self.assertLess(self.glow()[2], 100)
+
+    def test_with_reduce_motion_it_is_a_still_empty_track(self):
+        self.show("starting_upload")  # the harness asks for reduced motion by default
+        opacity = self.page.evaluate(
+            "getComputedStyle(document.querySelector('#hero .bar > div')).opacity"
+        )
+        self.assertEqual((self.glow()[1], opacity), (None, "0"))
+
+    def test_the_bar_fills_and_stops_glowing_once_there_is_something_to_measure(self):
+        self.show("copying", reduced_motion="no-preference")
+        share, animation, _ = self.glow()
+        self.assertLess(share, 1)
+        self.assertIsNone(animation)
 
 
 class TestStepStrip(PageTestCase):
@@ -203,9 +261,6 @@ class TestStepStrip(PageTestCase):
         "finishing_import": ["done", "done", "done", "done", "pending"],
         "starting_upload": ["done", "done", "done", "done", "active"],
         "uploading": ["done", "done", "done", "done", "active"],
-        "finished": ["done", "done", "done", "done", "done"],
-        "failed": ["done", "done", "error", "skipped", "skipped"],
-        "failed_on_usb": ["done", "done", "done", "error", "skipped"],
     }
 
     def test_each_state_marks_the_right_steps(self):
@@ -233,19 +288,20 @@ class TestStepStrip(PageTestCase):
         )
         self.open_page()
         self.assertEqual(self.steps(), ["done", "done", "active", "skipped", "skipped"])
+        expect(self.page.locator(".stages span[data-state=skipped]").first).to_have_css(
+            "text-decoration-line", "line-through"
+        )
 
     def test_each_step_state_looks_different(self):
         look = """() => Object.fromEntries([...document.querySelectorAll('.stages span')].map(s => {
             const c = getComputedStyle(s);
             return [s.dataset.state, [c.borderTopColor, c.textDecorationLine].join(' ')]; }))"""
-        self.show("failed")
-        failed = self.page.evaluate(look)
-        self.show("scan")
-        running = self.page.evaluate(look)
-        looks = {**failed, **running}
-        self.assertEqual(sorted(looks), ["active", "done", "error", "pending", "skipped"])
-        self.assertIn("line-through", looks["skipped"])
-        self.assertEqual(len({looks[s] for s in ("active", "done", "error", "pending")}), 4, looks)
+        sandbox = self.load("idle")
+        sandbox.transfer(state="copying", phase="usb-backup", stage="usb")
+        self.open_page()
+        looks = self.page.evaluate(look)
+        self.assertEqual(sorted(looks), ["active", "done", "pending"])
+        self.assertEqual(len(set(looks.values())), 3, looks)
 
 
 class TestNothingTruncated(PageTestCase):
@@ -498,6 +554,602 @@ class TestCardTextIsNeverMarkup(PageTestCase):
         expect(self.page.locator("#history .s")).to_contain_text(HOSTILE)
 
 
+class TestReadmeScreenshot(PageTestCase):
+    """The README's picture has to read like a real import, so its numbers must agree."""
+
+    def test_the_numbers_on_the_panel_agree_with_each_other(self):
+        self.show("readme_import")
+        status = json.loads(self.sandbox.paths.status_file.read_text())
+        history = self.sandbox.core.state()["activity"]["speed_history"]
+        copied, expected = status["bytes_transferred"], status["expected_new_bytes"]
+        self.assertAlmostEqual(
+            sum(history) / copied, 1, places=2, msg="the graph adds up to the copies"
+        )
+        self.assertAlmostEqual(copied / status["new_files"] / MB, 25, delta=0.5)
+        self.assertAlmostEqual(expected / status["expected_new_files"] / MB, 25, delta=0.5)
+        self.assertEqual(
+            self.slots(),
+            {
+                "Progress": "58% · 18.0 of 31.2 GB",
+                "Speed": "155.3 MB/s",
+                "Files": "737 of 1,278 new",
+                "Elapsed": "2m 06s",
+                "Remaining": "1m 27s",
+            },
+        )
+        self.assertIn("1,278 new files of 2,478", self.page.locator("#pipeline").inner_text())
+
+    def test_its_card_could_follow_the_imports_listed_below_it(self):
+        self.show("readme_import")
+        status = json.loads(self.sandbox.paths.status_file.read_text())
+        rows = catalog.list_import_history(limit=3)  # newest first
+        for newer, older in zip(rows, rows[1:]):
+            self.assertEqual(newer["files"], older["files"] + newer["copied"])
+        self.assertEqual(status["files_total"] - rows[0]["files"], status["expected_new_files"])
+
+    def test_it_shows_a_believable_install(self):
+        self.show("readme_import")
+        self.assertGreaterEqual(self.page.locator("#history > *").count(), 3)
+        self.assertNotIn("Nothing uploaded yet", self.page.locator("#pipeline").inner_text())
+
+
+class TestReports(PageTestCase):
+    """A finished run's report, in the panel and from Recent activity, in either style."""
+
+    def cards(self):
+        return self.page.evaluate("""() => [...document.querySelectorAll('.place')]
+            .map(c => [...c.children].map(e => e.textContent))""")
+
+    def table(self, within="#hero"):
+        return self.page.evaluate(
+            """within => [...document.querySelectorAll(within + ' .report-table tr')]
+                .map(r => [...r.children].map(c => c.textContent))""",
+            within,
+        )
+
+    def choose(self, style):
+        self.page.click("#menu-button")
+        self.click_action(f"[data-report-choice={style}]", "set_report_style")
+        self.page.click("#menu-button")
+
+    def test_basic_is_the_default(self):
+        self.show("finished")
+        self.assertEqual(
+            self.cards(),
+            [
+                ["Mac archive", "18 files · 412.0 MB", "1m 12s at 5.7 MB/s"],
+                ["USB backup", "18 files · 412.0 MB", "28s at 14.7 MB/s"],
+                ["Google Photos", "9 files · 130.0 MB", "47s at 2.8 MB/s"],
+            ],
+        )
+        self.assertEqual(self.table(), [])
+
+    def test_basic_shows_where_the_time_went(self):
+        self.show("finished")
+        widths = self.page.evaluate(
+            "[...document.querySelectorAll('.timebar > div')].map(s => parseFloat(s.style.width))"
+        )
+        self.assertEqual([round(w) for w in widths], [49, 19, 32])
+        legend = self.page.locator(".legend").inner_text()
+        for part in ("Copy 1m 12s", "USB backup 28s", "Upload 47s", "Total 2m 27s"):
+            self.assertIn(part, legend)
+
+    def test_advanced_is_a_table_of_the_steps(self):
+        self.show("finished")
+        self.choose("advanced")
+        expect(self.page.locator("#hero .report-table")).to_be_visible()
+        self.assertEqual(self.cards(), [])
+        self.assertEqual(
+            self.table(),
+            [
+                ["Step", "Result", "Size", "Time", "Speed"],
+                [
+                    "Scan and read photo info",
+                    "2,378 on card · 2,360 already saved",
+                    "80.0 GB",
+                    "<1s",
+                    "—",
+                ],
+                ["Copy to Mac", "18 new: 9 photos, 9 RAW", "412.0 MB", "1m 12s", "5.7 MB/s"],
+                ["Back up to USB", "18 files copied", "412.0 MB", "28s", "14.7 MB/s"],
+                [
+                    "Upload to Google Photos",
+                    "9 files to Photo Offloader",
+                    "130.0 MB",
+                    "47s",
+                    "2.8 MB/s",
+                ],
+                ["Total", "Start to finish", "", "2m 27s", ""],
+            ],
+        )
+
+    def test_the_choice_is_kept_after_reopening_the_page(self):
+        self.show("finished")
+        self.choose("advanced")
+        self.assertEqual(self.sandbox.core.report_style(), "advanced")
+        self.open_page()
+        expect(self.page.locator("#hero .report-table")).to_be_visible()
+        expect(self.page.locator("[data-report-choice=advanced]")).to_have_attribute(
+            "aria-checked", "true"
+        )
+
+    def test_a_failed_step_stands_out_and_says_so(self):
+        self.show("failed_on_usb")
+        failed = self.page.locator("#hero .place[data-state=error]")
+        expect(failed).to_have_count(1)
+        expect(failed.locator(".main")).to_have_text("Stopped")
+
+    def test_a_step_under_half_a_second_does_not_read_as_no_time_at_all(self):
+        sandbox = self.load("idle")
+        sandbox.record(details={"copy_seconds": 0.2, "new_bytes": 5})
+        self.open_page()
+        self.assertIn("<1s", self.page.locator(".place").first.inner_text())
+
+    def test_an_older_run_shows_dashes_for_what_was_not_saved(self):
+        sandbox = self.load("idle")
+        sandbox.record(usb=False, details={"new": {"JPG": 1}, "new_bytes": 5})
+        self.open_page()
+        self.assertEqual(self.cards()[0], ["Mac archive", "1 file · 5 B", "—"])
+        self.assertEqual(self.cards()[1], ["USB backup", "Skipped", "—"])
+
+    def rows(self):
+        return self.page.locator("#history .row")
+
+    def test_clicking_a_past_run_expands_its_report_under_it(self):
+        self.show("readme_import")
+        self.assertEqual(self.page.locator(".run-report").count(), 0)
+        self.rows().nth(2).click()
+        expect(
+            self.page.locator("#history .run").nth(2).locator(".run-report .place")
+        ).to_have_count(3)
+        self.assertEqual(self.rows().nth(2).get_attribute("aria-expanded"), "true")
+        self.assertEqual(self.rows().nth(0).get_attribute("aria-expanded"), "false")
+        self.assertEqual(self.page.locator("dialog[open]").count(), 0)
+
+    def row_top(self, index):
+        return self.rows().nth(index).bounding_box()["y"]
+
+    def test_an_open_report_pushes_the_runs_below_it_down_until_it_closes(self):
+        self.show("readme_import", **NATIVE_WINDOW)
+        above, below = self.row_top(0), self.row_top(1)
+        self.rows().first.click()
+        height = self.page.locator(".run-report").bounding_box()["height"]
+        self.assertEqual(self.row_top(0), above)
+        self.assertAlmostEqual(self.row_top(1), below + height, delta=1)
+        self.rows().first.click()
+        expect(self.page.locator(".run-report")).to_have_count(0)
+        self.assertEqual(self.row_top(1), below)
+
+    def _report_heights_over(self, milliseconds):
+        return self.page.evaluate(
+            """ms => new Promise(done => {
+                const seen = [], end = performance.now() + ms;
+                const look = () => {
+                    const report = document.querySelector('.run-report');
+                    seen.push(report ? report.getBoundingClientRect().height : 0);
+                    if (performance.now() < end) requestAnimationFrame(look); else done(seen);
+                };
+                look();
+            })""",
+            milliseconds,
+        )
+
+    def test_a_report_unfolds_and_folds_instead_of_jumping(self):
+        self.load("readme_import")
+        self.open_page(reduced_motion="no-preference")
+        self.rows().first.click()
+        opening = self._report_heights_over(300)
+        self.assertGreater(len({round(h) for h in opening}), 3, opening)
+        self.assertEqual(opening, sorted(opening))
+        self.rows().first.click()
+        closing = self._report_heights_over(300)
+        self.assertGreater(len({round(h) for h in closing}), 3, closing)
+        self.assertEqual(closing, sorted(closing, reverse=True))
+        self.assertEqual(closing[-1], 0)
+
+    def run_opacities(self):
+        return self.page.evaluate(
+            "[...document.querySelectorAll('#history .run')].map(r => +getComputedStyle(r).opacity)"
+        )
+
+    def test_the_other_runs_dim_while_a_report_is_open(self):
+        self.show("readme_import")
+        self.page.mouse.move(0, 0)
+        self.assertEqual(self.run_opacities(), [1, 1, 1])
+        self.rows().nth(1).click()
+        self.page.mouse.move(0, 0)
+        opacities = self.run_opacities()
+        self.assertEqual(opacities[1], 1)
+        self.assertLess(opacities[0], 0.7)
+        self.assertLess(opacities[2], 0.7)
+        self.rows().nth(1).click()
+        self.page.mouse.move(0, 0)
+        self.assertEqual(self.run_opacities(), [1, 1, 1])
+
+    def test_a_dimmed_run_comes_back_when_it_is_pointed_at_or_focused(self):
+        self.show("readme_import")
+        self.rows().nth(1).click()
+        self.rows().nth(0).hover()
+        self.assertEqual(self.run_opacities()[0], 1)
+        self.page.mouse.move(0, 0)
+        self.rows().nth(2).focus()
+        self.assertEqual(self.run_opacities()[2], 1)
+
+    def test_clearing_the_list_forgets_the_open_report(self):
+        self.show("readme_import")
+        self.rows().first.click()
+        expect(self.page.locator("#history.has-open")).to_have_count(1)
+        self.page.click("#clear-history")
+        self.click_action("#clear-history", "clear_history")
+        expect(self.page.locator("#history.has-open")).to_have_count(0)
+
+    def test_a_mouse_click_leaves_no_focus_ring_on_the_row(self):
+        self.show("readme_import")
+        self.rows().first.click()
+        self.assertFalse(self.page.evaluate("document.activeElement.matches('.row')"))
+
+    def test_a_focus_ring_stays_inside_the_row(self):
+        self.show("readme_import")
+        self.page.keyboard.press("Tab")
+        self.rows().first.focus()
+        self.page.keyboard.press("Enter")
+        expect(self.rows().first).to_be_focused()
+        self.assertLess(
+            self.page.evaluate(
+                "parseFloat(getComputedStyle(document.activeElement).outlineOffset)"
+            ),
+            0,
+        )
+
+    def test_clicking_it_again_closes_it(self):
+        self.show("readme_import")
+        self.rows().first.click()
+        self.rows().first.click()
+        expect(self.page.locator(".run-report")).to_have_count(0)
+
+    def test_only_one_report_is_open_at_a_time(self):
+        self.show("readme_import")
+        self.rows().nth(0).click()
+        self.rows().nth(1).click()
+        expect(self.page.locator(".run-report")).to_have_count(1)
+        expect(self.page.locator("#history .run").nth(1).locator(".run-report")).to_have_count(1)
+
+    def test_an_open_report_stays_open_when_the_page_refreshes(self):
+        self.show("readme_import")
+        self.rows().first.focus()
+        self.page.keyboard.press("Enter")
+        self.sandbox.advance(120)  # the list is drawn again as its "ago" times change
+        self.refresh()
+        expect(self.page.locator(".run-report")).to_have_count(1)
+        expect(self.rows().first).to_be_focused()
+
+    def test_an_open_report_uses_the_chosen_style_and_follows_a_change(self):
+        self.show("readme_import")
+        self.rows().first.click()
+        expect(self.page.locator(".run-report .place")).to_have_count(3)
+        self.choose("advanced")
+        expect(self.page.locator(".run-report .report-table")).to_be_visible()
+        self.assertGreater(len(self.table(".run-report")), 3)
+
+    def test_opening_a_report_leaves_the_rest_of_the_page_alone(self):
+        self.show("readme_import", **NATIVE_WINDOW)
+        where = """() => ['#hero', '#pipeline', '#history'].map(s => {
+            const r = document.querySelector(s).getBoundingClientRect(); return [r.top, r.height]; })"""
+        before, text = self.page.evaluate(where), self.page.locator("#hero").inner_text()
+        self.rows().first.click()
+        expect(self.page.locator(".run-report")).to_have_count(1)
+        self.assertEqual(self.page.evaluate(where), before)
+        self.assertEqual(self.page.locator("#hero").inner_text(), text)
+
+    def test_a_report_low_in_a_long_list_scrolls_into_view(self):
+        sandbox = self.load("idle")
+        for _ in range(12):
+            sandbox.record()
+        self.open_page(**NATIVE_WINDOW)
+        self.rows().last.click()
+        inside = """() => { const list = document.querySelector('#history').getBoundingClientRect(),
+            report = document.querySelector('.run-report').getBoundingClientRect();
+            return report.bottom <= list.bottom + 1 && report.top >= list.top - 1; }"""
+        self.assertTrue(self.page.evaluate(inside))
+
+    def test_a_past_run_can_be_opened_from_the_keyboard(self):
+        self.show("readme_import")
+        self.rows().first.focus()
+        self.page.keyboard.press("Enter")
+        expect(self.page.locator(".run-report")).to_have_count(1)
+        self.page.keyboard.press("Enter")
+        expect(self.page.locator(".run-report")).to_have_count(0)
+
+    def test_a_report_treats_card_text_as_text(self):
+        sandbox = self.load("idle")
+        sandbox.record(details={"upload": {"outcome": "complete", "files": 0, "album": HOSTILE}})
+        self.open_page()
+        self.rows().first.click()
+        expect(self.page.locator(".run-report")).to_contain_text(HOSTILE)
+        self.assertIsNone(self.page.evaluate("window.__pwned || null"))
+
+    def test_both_styles_fit_the_panel_at_both_widths(self):
+        overflow = """() => { const hero = document.querySelector('#hero').getBoundingClientRect();
+            return [...document.querySelectorAll('#hero *')].filter(e => {
+                const r = e.getBoundingClientRect();
+                return r.bottom > hero.bottom + 0.5 || r.right > hero.right + 0.5; }).length; }"""
+        for style in ("basic", "advanced"):
+            for window in (NATIVE_WINDOW, NARROW):
+                for state in SUMMARY_STATES:
+                    with self.subTest(style=style, state=state, width=window["width"]):
+                        sandbox = self.load(state)
+                        sandbox.core.act("set_report_style", {"report_style": style})
+                        self.open_page(**window)
+                        self.assertEqual(self.page.evaluate(overflow), 0)
+
+
+class TestSpeedGraph(PageTestCase):
+    """The graph fills its width for a run of any length, and shows the trend, not each poll."""
+
+    def setUp(self):
+        super().setUp()
+        self.show("idle")
+
+    def points(self, values, progress=1):
+        """The (x, y) pairs of the drawn line, control points included."""
+        line = self.page.evaluate("([v, p]) => sparkPaths(v, 600, 44, p).line", [values, progress])
+        numbers = [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", line)]
+        return list(zip(numbers[::2], numbers[1::2]))
+
+    def on_the_line(self, values, progress=1):
+        """Only the points the line passes through: each curve segment has two control points first."""
+        return self.points(values, progress)[::3]
+
+    def height(self, values):
+        """How tall the line is once it has settled, leaving out its first few seconds."""
+        heights = [y for _, y in self.points(values)[15:]]
+        return max(heights) - min(heights)
+
+    def test_a_short_run_starts_at_the_left_edge_and_grows_to_the_right(self):
+        points = self.points([100] * 4)
+        self.assertEqual(points[0][0], 0)
+        self.assertLess(points[-1][0], 300)
+
+    def test_ten_seconds_is_enough_to_fill_the_width(self):
+        self.assertLess(self.points([100] * 9)[-1][0], 600)
+        self.assertEqual(self.points([100] * 10)[-1][0], 600)
+
+    def test_a_longer_run_fills_the_whole_width(self):
+        for samples in (10, 30, 60, 90, 300):
+            with self.subTest(samples=samples):
+                points = self.points([100] * samples)
+                self.assertEqual((points[0][0], points[-1][0]), (0, 600))
+
+    def test_a_very_long_run_shows_only_the_latest_ninety_seconds(self):
+        points = self.points([10**9] * 100 + [100] * 300)
+        self.assertEqual(
+            {y for _, y in points}, {points[0][1]}, "the old spike still sets the scale"
+        )
+        self.assertEqual((points[0][0], points[-1][0]), (0, 600))
+
+    def test_a_jagged_speed_is_drawn_as_a_calm_line(self):
+        jagged = [100, 200] * 20
+        self.assertLess(self.height(jagged), 19 / 2)  # 19 is the height of the raw zigzag
+
+    def test_a_real_slowdown_still_shows(self):
+        self.assertGreater(self.height([200] * 20 + [20] * 20), 25)
+
+    def test_a_long_run_is_smoothed_as_much_for_its_width_as_a_short_one(self):
+        # Eight-second swings: a fixed five-second average would leave most of this in a full graph.
+        swings = ([100] * 4 + [200] * 4) * 12
+        self.assertLess(self.height(swings), 19 / 2)
+
+    def test_a_half_minute_slowdown_still_shows_on_a_full_graph(self):
+        self.assertGreater(self.height([200] * 30 + [20] * 30 + [200] * 30), 25)
+
+    def test_the_curve_stays_inside_the_graph(self):
+        for _, y in self.points([0, 500, 0, 900, 10, 700, 0] * 5):
+            self.assertTrue(0 <= y <= 44, y)
+
+    def test_a_full_graph_holds_ninety_seconds(self):
+        self.assertEqual(len(self.on_the_line([100] * 300)), 89)  # 88 one-second gaps
+
+    def test_a_new_speed_cannot_reshape_the_line_already_drawn(self):
+        speeds = [100 + (i * 37) % 90 for i in range(60)]
+        before = self.page.evaluate("v => smoothedSpeeds(v)", speeds)
+        after = self.page.evaluate("v => smoothedSpeeds(v)", speeds + [900])
+        self.assertEqual(after[:-1], before)
+
+    def test_the_tip_glides_from_the_last_speed_to_the_newest(self):
+        speeds = [100] * 5 + [200]
+        start, middle, end = (self.on_the_line(speeds, p)[-1] for p in (0, 0.5, 1))
+        self.assertLess(start[0], middle[0])
+        self.assertLess(middle[0], end[0])
+        self.assertGreater(start[1], middle[1], "a higher speed is further up the graph")
+        self.assertGreater(middle[1], end[1])
+
+    def test_a_glide_ends_where_the_next_one_begins(self):
+        speeds = [100 + (i * 37) % 90 for i in range(40)]
+        for label, values in (("stretching", speeds), ("scrolling", speeds * 6)):
+            with self.subTest(label):
+                ended = self.on_the_line(values, 1)
+                # 900 would rescale the graph, so the next speed stays inside the old peak.
+                begun = self.on_the_line(values + [120], 0)
+                for was, now in zip(ended[-20:], begun[-20:]):
+                    self.assertAlmostEqual(was[0], now[0], delta=2.5)
+                    self.assertAlmostEqual(was[1], now[1], delta=0.5)
+
+    def test_while_scrolling_the_line_always_fills_the_width(self):
+        values = [100 + (i * 37) % 90 for i in range(240)]
+        for progress in (0, 0.25, 0.5, 1):
+            with self.subTest(progress=progress):
+                points = self.points(values, progress)
+                self.assertEqual((points[0][0], points[-1][0]), (0, 600))
+
+    def test_a_graph_with_nothing_to_draw_draws_nothing(self):
+        self.assertIsNone(self.page.evaluate("sparkPaths([], 600, 44)"))
+        self.assertIsNone(self.page.evaluate("sparkPaths([100], 600, 44, 0)"))
+
+    def test_the_line_rises_from_the_bottom_at_the_left_edge(self):
+        points = self.points([100])
+        self.assertEqual(points[0], (0, 42), "zero speed")
+        self.assertEqual(points[-1][1], 4, "the first speed is the top of the scale")
+
+    def _tip_heights_while_gliding(self, script):
+        """Run ``script`` on the graph, then how far up the tip is (0 to 1) on each frame, with
+        the fraction of the glide done by that frame."""
+        return self.page.evaluate(
+            """script => new Promise(done => {
+                const line = speedGraph.svg.querySelector('path.line'), seen = [];
+                (0, eval)(script);
+                const began = performance.now();
+                const look = () => {
+                    const at = (performance.now() - began) / POLL_MS;
+                    const y = Number((line.getAttribute('d') || '').trim().split(' ').pop());
+                    if (line.getAttribute('d')) seen.push([(42 - y) / 38, at]);
+                    if (at < 1.2) requestAnimationFrame(look); else done(seen);
+                };
+                requestAnimationFrame(look);
+            })""",
+            script,
+        )
+
+    def assert_rises_with_the_glide(self, script):
+        self.open_page(reduced_motion="no-preference")
+        frames = self._tip_heights_while_gliding(script)
+        self.assertGreater(len(frames), 5)
+        for height, done in frames:
+            self.assertLess(height, done + 0.25, f"jumped ahead of the glide: {frames[:6]}")
+        self.assertAlmostEqual(frames[-1][0], 1, places=1)
+
+    def test_the_first_speed_rises_smoothly_instead_of_jumping(self):
+        self.assert_rises_with_the_glide("speedGraph.update([]); speedGraph.update([150000000])")
+
+    def test_speed_after_nothing_but_zeros_rises_smoothly_too(self):
+        self.assert_rises_with_the_glide(
+            "speedGraph.update([0, 0, 0]); speedGraph.update([0, 0, 0, 150000000])"
+        )
+
+    def _drawn_after(self, *histories):
+        """The heights (0 to 1) of the points on the line once each history has been shown."""
+        self.open_page()  # reduced motion: each update draws at once
+        line = self.page.evaluate(
+            """histories => {
+                histories.forEach(h => speedGraph.update(h));
+                return speedGraph.svg.querySelector('path.line').getAttribute('d');
+            }""",
+            list(histories),
+        )
+        numbers = [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", line)]
+        return [(42 - y) / 38 for y in numbers[1::2][::3]]
+
+    def test_a_long_stall_does_not_blow_up_the_tail_of_the_speed_before_it(self):
+        fast = 150 * MB
+        before = [fast] * 60
+        # The server keeps 130 samples, so the fast part has scrolled off and the tail is all
+        # that is left to scale by.
+        during = [fast] * 20 + [0] * 110
+        heights = self._drawn_after(before, during)
+        self.assertLess(max(heights), 0.5, heights[:5])
+
+    def test_speed_after_a_long_stall_is_back_at_the_same_height(self):
+        fast = 150 * MB
+        heights = self._drawn_after([fast] * 60, [fast] * 20 + [0] * 110, [0] * 90 + [fast] * 40)
+        self.assertGreater(heights[-1], 0.9)
+
+    def test_a_new_graph_does_not_keep_the_old_runs_scale(self):
+        heights = self._drawn_after([500 * MB] * 30, [], [10 * MB] * 5)
+        self.assertGreater(heights[-1], 0.9)
+
+    def _a_new_speed_arrives(self):
+        self.sandbox.advance(1)
+        status = json.loads(self.sandbox.paths.status_file.read_text())
+        status["bytes_transferred"] += 150 * MB
+        self.sandbox.paths.status_file.write_text(json.dumps(status))
+
+    def _animation_frames_asked_for_over(self, milliseconds):
+        return self.page.evaluate(
+            """ms => new Promise(done => {
+                const real = window.requestAnimationFrame;
+                let asked = 0;
+                window.requestAnimationFrame = (f) => { asked++; return real.call(window, f); };
+                setTimeout(() => { window.requestAnimationFrame = real; done(asked); }, ms);
+            })""",
+            milliseconds,
+        )
+
+    def _changes_over(self, milliseconds):
+        return self.page.evaluate(
+            """ms => new Promise(done => {
+                const line = document.querySelector('.spark path.line');
+                let last = line.getAttribute('d'), changes = 0;
+                const end = performance.now() + ms;
+                const look = () => {
+                    const now = line.getAttribute('d');
+                    if (now !== last) { changes++; last = now; }
+                    if (performance.now() < end) requestAnimationFrame(look); else done(changes);
+                };
+                requestAnimationFrame(look);
+            })""",
+            milliseconds,
+        )
+
+    def test_the_line_glides_when_a_new_speed_arrives_then_stops(self):
+        self.load("readme_import")
+        self.open_page(reduced_motion="no-preference")
+        self.page.wait_for_timeout(1200)  # the glide from opening the page has finished
+        self.assertEqual(self._changes_over(300), 0, "nothing new, so nothing should move")
+        self._a_new_speed_arrives()
+        self.refresh()
+        self.assertGreater(self._changes_over(500), 5, "it should move on many frames, not once")
+        self.page.wait_for_timeout(800)
+        self.assertEqual(self._changes_over(300), 0, "it should stop once it has caught up")
+        self.page.wait_for_timeout(50)
+        self.assertEqual(self._animation_frames_asked_for_over(300), 0, "idle should cost nothing")
+
+    def test_a_refresh_with_nothing_new_does_not_start_a_glide(self):
+        self.load("readme_import")
+        self.open_page(reduced_motion="no-preference")
+        self.page.wait_for_timeout(1200)
+        before = self.page.evaluate("document.querySelector('.spark path.line').getAttribute('d')")
+        history = self.sandbox.core.state()["activity"]["speed_history"]
+        asked = self.page.evaluate(
+            """history => new Promise(done => {
+                const real = window.requestAnimationFrame;
+                let asked = 0;
+                window.requestAnimationFrame = (f) => { asked++; return real.call(window, f); };
+                speedGraph.update(history);
+                setTimeout(() => { window.requestAnimationFrame = real; done(asked); }, 100);
+            })""",
+            history,
+        )
+        self.assertEqual(asked, 0)
+        self.assertEqual(
+            self.page.evaluate("document.querySelector('.spark path.line').getAttribute('d')"),
+            before,
+        )
+
+    def test_reduce_motion_draws_a_new_speed_without_gliding(self):
+        self.show("readme_import")  # the harness asks for reduced motion by default
+        self._a_new_speed_arrives()
+        self.page.evaluate(
+            "window.__before = document.querySelector('.spark path.line').getAttribute('d')"
+        )
+        self.refresh()
+        self.page.wait_for_function(
+            "document.querySelector('.spark path.line').getAttribute('d') !== window.__before"
+        )
+        self.assertEqual(self._changes_over(300), 0)
+
+    def test_a_refresh_keeps_the_same_graph_on_the_page(self):
+        self.show("readme_import")
+        self.page.evaluate("document.querySelector('.spark').dataset.mark = 'kept'")
+        self._a_new_speed_arrives()
+        self.refresh()
+        self.page.wait_for_timeout(100)
+        self.assertEqual(self.page.get_attribute(".spark", "data-mark"), "kept")
+
+    def test_the_area_closes_under_the_line_it_fills(self):
+        area = self.page.evaluate("sparkPaths([100, 100, 100], 600, 44).area")
+        self.assertTrue(area.endswith(" L0 44 Z"), area)
+        self.assertNotIn("L600 44", area)
+
+
 @unittest.skipUnless(
     os.environ.get("PHOTO_OFFLOADER_TEST_SCREENSHOTS"),
     "set PHOTO_OFFLOADER_TEST_SCREENSHOTS to a folder to save screenshots",
@@ -506,6 +1158,11 @@ class TestScreenshots(PageTestCase):
     def test_save_every_state(self):
         folder = Path(os.environ["PHOTO_OFFLOADER_TEST_SCREENSHOTS"])
         folder.mkdir(parents=True, exist_ok=True)
+        self.show("readme_import", color_scheme="dark", **NATIVE_WINDOW)
+        self.page.locator("#history .row").first.click()
+        self.page.screenshot(path=str(folder / "report-from-history-dark.png"))
+        self.page.click("#menu-button")
+        self.page.screenshot(path=str(folder / "menu-dark.png"))
         for state in SCENARIOS:
             for scheme in ("light", "dark"):
                 self.show(state, color_scheme=scheme, **NATIVE_WINDOW)
