@@ -313,6 +313,16 @@ class TestActivity(Fixture):
         fields.update(extra)
         self.copying(**fields)
 
+    def test_the_mac_archive_box_agrees_with_the_panel_about_checking_or_copying(self):
+        # User feedback 2026-11-06: the box said Copying while the panel said it was still checking.
+        self.checking(new_files=0)
+        self.assertEqual(self.core.state()["activity"]["title"], "Checking for new files")
+        self.assertEqual(self.pipeline("archive")["headline"], "Checking")
+        # Once a file has been copied, both hold still on Copying between files.
+        self.checking(new_files=3)
+        self.assertEqual(self.core.state()["activity"]["title"], "Copying new files")
+        self.assertEqual(self.pipeline("archive")["headline"], "Copying")
+
     def test_activity_tells_what_it_is_actually_doing(self):
         # User feedback 2026-11-04: "Activity is too generic".
         expectations = [
@@ -481,6 +491,7 @@ class TestActivity(Fixture):
                     {
                         "kind": "import",
                         "stage": "copy",
+                        "title": "Copying new files",
                         "detail": "",
                         "percent": 10.0,
                         "files_total": 2,
