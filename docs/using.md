@@ -106,6 +106,15 @@ open it, because that can be an early sign of a failing card or reader. The file
 data folder: the latest 20 runs with problems and the latest 20 without, so clean runs can't push out a
 failure's report. Saving one never changes an import's result.
 
+### Notifications
+
+macOS notifications go out only when nothing else would tell you: while the service is running and no dashboard
+is showing. A minimized window doesn't count as showing, but one behind other windows may. Whatever isn't sent is
+still in Recent activity and the import log. The menu bar still confirms what you choose from it.
+
+When you install, macOS itself shows *App Background Activity: "trigger.sh" can run in the background*. That's the
+system, and Photo Offloader can't turn it off.
+
 ### Recent activity
 
 This lists past imports, USB backups and catalog updates, with what each one copied. The history

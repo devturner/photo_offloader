@@ -26,8 +26,8 @@ from photo_offloader import catalog, google_photos, jsonfile, logs, run_report
 from photo_offloader.dashboard import display
 from photo_offloader.dashboard.paths import Paths
 from photo_offloader.google_photos import parse_rclone_stats_line
+from photo_offloader.presence import SERVICE_LABEL
 
-SERVICE_LABEL = "com.user.photooffloader"
 LAST_TRANSFER_TTL_SECONDS = 10 * 60  # completed/canceled results fade after this
 STALE_STATUS_SECONDS = 20  # an "active" status this old, with no importer, is stale
 # The graph shows 90 of these (SPARK_MAX_POINTS in web/index.html); the rest settle its smoothing.

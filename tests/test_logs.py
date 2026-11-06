@@ -9,8 +9,9 @@ REAL_NOTIFY = logs.notify  # isolate_config replaces it during each test
 
 
 class TestLogs(support.CardFixtureTestCase):
+    @patch.object(logs, "_notification_needed", return_value=True)
     @patch("subprocess.run")
-    def test_notify_nonfatal(self, run):
+    def test_notify_nonfatal(self, run, _needed):
         run.return_value = MagicMock(returncode=0, stderr="")
         REAL_NOTIFY("T", "B")
         run.return_value = MagicMock(returncode=1, stderr="bad")
