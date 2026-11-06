@@ -92,42 +92,31 @@ def conflict_free_path(path: Path) -> Path:
         counter += 1
 
 
-def copy_one_to_destination(
-    source: Path, dcim_folder: Path, destination_base: Path,
-    card_manifest: Optional[Dict[str, dict]] = None,
+def _skip_if_already_copied(
+    source: Path, dcim_folder: Path, destination_base: Path, final_path: Path,
+    manifest: Dict[str, dict], size: int,
+) -> Optional[DestinationResult]:
+    """The "skipped" result when ``final_path`` holds the same bytes as ``source``, otherwise None."""
+    try:
+        source_hash, destination_hash = hash_for_copy_decision(
+            source, final_path, dcim_folder, manifest
+        )
+        if source_hash == destination_hash:
+            progress.add_progress_bytes(size)
+            card.update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
+            progress.update_status(state="copying", phase="copy", message="Existing file verified; continuing")
+            return DestinationResult(destination_base, "skipped", final_path,
+                                     "already exists and matches cached/verified hash")
+    except OSError as exc:
+        logger.warning("Could not verify existing file %s: %s", final_path, exc)
+    return None
+
+
+def _copy_and_verify(
+    source: Path, dcim_folder: Path, destination_base: Path, final_path: Path,
+    manifest: Dict[str, dict], before: fileops.FileFingerprint, replace_existing: bool,
 ) -> DestinationResult:
-    before = fileops.file_fingerprint(source)
-    manifest = card_manifest if card_manifest is not None else card.load_card_manifest(dcim_folder)
-    progress.update_status(state="scanning", phase="copy-decision", current_file=source.name,
-                  current_path=str(source), message=f"Checking existing file: {source.name}",
-                  decision_files_checked=int(progress._PROGRESS.get("decision_files_checked", 0)),
-                  decision_files_total=int(progress._PROGRESS.get("decision_files_total", 0)))
-    final_path = media_info.build_destination_path(source, dcim_folder, destination_base)
-    final_path.parent.mkdir(parents=True, exist_ok=True)
-    replace_existing = False
-
-    if final_path.exists() and final_path.is_file():
-        try:
-            source_hash, destination_hash = hash_for_copy_decision(
-                source, final_path, dcim_folder, manifest
-            )
-            if source_hash == destination_hash:
-                progress.add_progress_bytes(before.size)
-                card.update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
-                progress.update_status(state="copying", phase="copy", message="Existing file verified; continuing")
-                return DestinationResult(destination_base, "skipped", final_path,
-                                         "already exists and matches cached/verified hash")
-        except OSError as exc:
-            logger.warning("Could not verify existing file %s: %s", final_path, exc)
-        if fileops.is_camera_index_file(source):
-            replace_existing = True
-            logger.info("Camera index file changed; replacing the previous copy: %s", final_path)
-        else:
-            final_path = conflict_free_path(final_path)
-            logger.warning("Filename conflict for %s; using %s", source, final_path.name)
-
-    progress.update_status(state="copying", phase="copy", current_file=source.name,
-                  current_path=str(source), message=f"Copying {source.name}")
+    """Copy through a temporary file and install it only once its hash has been verified."""
     temp_path: Optional[Path] = None
     try:
         fd, temp_name = tempfile.mkstemp(prefix=".photo-copy-", suffix=".tmp", dir=final_path.parent)
@@ -175,6 +164,36 @@ def copy_one_to_destination(
                 temp_path.unlink(missing_ok=True)
             except OSError as exc:
                 logger.warning("Could not remove temporary file %s: %s", temp_path, exc)
+
+
+def copy_one_to_destination(
+    source: Path, dcim_folder: Path, destination_base: Path,
+    card_manifest: Optional[Dict[str, dict]] = None,
+) -> DestinationResult:
+    before = fileops.file_fingerprint(source)
+    manifest = card_manifest if card_manifest is not None else card.load_card_manifest(dcim_folder)
+    progress.update_status(state="scanning", phase="copy-decision", current_file=source.name,
+                  current_path=str(source), message=f"Checking existing file: {source.name}",
+                  decision_files_checked=int(progress._PROGRESS.get("decision_files_checked", 0)),
+                  decision_files_total=int(progress._PROGRESS.get("decision_files_total", 0)))
+    final_path = media_info.build_destination_path(source, dcim_folder, destination_base)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    replace_existing = False
+
+    if final_path.exists() and final_path.is_file():
+        skipped = _skip_if_already_copied(source, dcim_folder, destination_base, final_path, manifest, before.size)
+        if skipped:
+            return skipped
+        if fileops.is_camera_index_file(source):
+            replace_existing = True
+            logger.info("Camera index file changed; replacing the previous copy: %s", final_path)
+        else:
+            final_path = conflict_free_path(final_path)
+            logger.warning("Filename conflict for %s; using %s", source, final_path.name)
+
+    progress.update_status(state="copying", phase="copy", current_file=source.name,
+                  current_path=str(source), message=f"Copying {source.name}")
+    return _copy_and_verify(source, dcim_folder, destination_base, final_path, manifest, before, replace_existing)
 
 
 def _count_session_file(category: str, source: Path, copied: bool) -> None:

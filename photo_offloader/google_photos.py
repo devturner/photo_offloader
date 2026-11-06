@@ -274,29 +274,8 @@ def list_upload_candidates() -> List[str]:
     return pending
 
 
-def _sync() -> int:
-    rclone = find_rclone()
-    if not rclone:
-        publish_status(
-            "not_configured",
-            "rclone is not installed. Install it and configure a Google Photos remote named 'gphotos'.",
-        )
-        return 2
-
-    if not config.LOCAL_DEST_ROOT.is_dir():
-        publish_status("failed", f"Local photo archive does not exist: {config.LOCAL_DEST_ROOT}")
-        return 1
-
-    pending = list_upload_candidates()
-    if not pending:
-        # Sync is launched after every import; skip rclone (and the network) when
-        # there is nothing new to send.
-        log_sync_event("Google Photos sync skipped: no new JPG/video files to upload.")
-        publish_status("complete", f"Google Photos is up to date for album '{ALBUM_NAME}'.")
-        return 0
-    # Say so before the slower rclone checks, so the dashboard shows the upload straight away.
-    publish_status("running", f"Preparing to upload {len(pending):,} JPG/video file(s).", new_run=True)
-
+def _check_remote(rclone: str) -> Optional[int]:
+    """The exit code if the configured remote can't be used, otherwise None."""
     try:
         remotes = subprocess.run(
             [rclone, "listremotes"],
@@ -315,8 +294,11 @@ def _sync() -> int:
             f"rclone remote '{REMOTE_NAME}:' is not configured. Run: rclone config",
         )
         return 2
+    return None
 
-    destination = f"{REMOTE_NAME}:album/{ALBUM_NAME}"
+
+def _ensure_album(rclone: str, destination: str) -> Optional[int]:
+    """The exit code if the album can't be created or checked, otherwise None."""
     try:
         album = subprocess.run(
             [rclone, "mkdir", destination],
@@ -332,16 +314,15 @@ def _sync() -> int:
     if album.returncode != 0:
         publish_status("failed", _album_failure_message(album.stderr))
         return album.returncode or 1
+    return None
 
-    try:
-        remember_google_photos_connection(REMOTE_NAME)
-    except (OSError, ValueError) as exc:
-        # A preferences-file failure must not block a working upload.
-        log_sync_event(f"Could not persist Google Photos connection preference: {exc}")
 
-    logs.rotate_log_file(config.GOOGLE_LOG_PATH, SYNC_LOG_MAX_BYTES, SYNC_LOG_BACKUPS)
-    # Upload exactly the snapshot taken above. Files imported while the upload is
-    # running are neither sent nor recorded, so the next sync picks them up.
+def _upload_snapshot(rclone: str, destination: str, pending: List[str]) -> Optional[int]:
+    """Run rclone on exactly ``pending``. Its exit code, or None if it could not start.
+
+    Files imported while the upload is running are neither sent nor recorded, so the next
+    sync picks them up.
+    """
     list_fd, list_name = tempfile.mkstemp(prefix=".upload-list-", suffix=".txt", dir=config.INSTALL_DIR)
     try:
         with os.fdopen(list_fd, "w", encoding="utf-8") as handle:
@@ -367,41 +348,86 @@ def _sync() -> int:
             f"Uploading {len(pending):,} JPG/video file(s) to Google Photos album '{ALBUM_NAME}'.",
         )
         try:
-            result = subprocess.run(command, check=False)
+            return subprocess.run(command, check=False).returncode
         except OSError as exc:
             publish_status("failed", f"Could not start rclone: {exc}")
-            return 1
+            return None
     finally:
         try:
             os.unlink(list_name)
         except OSError as exc:
             log_sync_event(f"Could not remove the upload list {list_name}: {exc}")
 
-    if result.returncode == 0:
-        try:
-            catalog.mark_google_photos_uploaded_many(
-                [config.LOCAL_DEST_ROOT / name for name in pending], REMOTE_NAME, ALBUM_NAME
-            )
-        except (OSError, sqlite3.Error) as exc:
-            publish_status(
-                "failed",
-                f"Upload completed, but per-file catalog status could not be saved: {exc}",
-            )
-            return 1
 
-        log_sync_event(
-            f"Google Photos sync completed successfully for album '{ALBUM_NAME}'; "
-            f"{len(pending):,} file(s) uploaded and recorded in the catalog."
+def _record_upload(pending: List[str]) -> int:
+    """Mark a finished upload in the catalog and report it. Returns the exit code."""
+    try:
+        catalog.mark_google_photos_uploaded_many(
+            [config.LOCAL_DEST_ROOT / name for name in pending], REMOTE_NAME, ALBUM_NAME
         )
+    except (OSError, sqlite3.Error) as exc:
         publish_status(
-            "complete",
-            f"Google Photos upload finished for {len(pending):,} file(s) in '{ALBUM_NAME}'; "
-            "per-file status saved in the catalog.",
+            "failed",
+            f"Upload completed, but per-file catalog status could not be saved: {exc}",
         )
-        return 0
+        return 1
 
-    publish_status("failed", f"rclone exited with status {result.returncode}. See {config.GOOGLE_LOG_PATH}")
-    return result.returncode or 1
+    log_sync_event(
+        f"Google Photos sync completed successfully for album '{ALBUM_NAME}'; "
+        f"{len(pending):,} file(s) uploaded and recorded in the catalog."
+    )
+    publish_status(
+        "complete",
+        f"Google Photos upload finished for {len(pending):,} file(s) in '{ALBUM_NAME}'; "
+        "per-file status saved in the catalog.",
+    )
+    return 0
+
+
+def _sync() -> int:
+    rclone = find_rclone()
+    if not rclone:
+        publish_status(
+            "not_configured",
+            "rclone is not installed. Install it and configure a Google Photos remote named 'gphotos'.",
+        )
+        return 2
+
+    if not config.LOCAL_DEST_ROOT.is_dir():
+        publish_status("failed", f"Local photo archive does not exist: {config.LOCAL_DEST_ROOT}")
+        return 1
+
+    pending = list_upload_candidates()
+    if not pending:
+        # Sync is launched after every import; skip rclone (and the network) when
+        # there is nothing new to send.
+        log_sync_event("Google Photos sync skipped: no new JPG/video files to upload.")
+        publish_status("complete", f"Google Photos is up to date for album '{ALBUM_NAME}'.")
+        return 0
+    # Say so before the slower rclone checks, so the dashboard shows the upload straight away.
+    publish_status("running", f"Preparing to upload {len(pending):,} JPG/video file(s).", new_run=True)
+
+    destination = f"{REMOTE_NAME}:album/{ALBUM_NAME}"
+    problem = _check_remote(rclone)
+    if problem is None:
+        problem = _ensure_album(rclone, destination)
+    if problem is not None:
+        return problem
+
+    try:
+        remember_google_photos_connection(REMOTE_NAME)
+    except (OSError, ValueError) as exc:
+        # A preferences-file failure must not block a working upload.
+        log_sync_event(f"Could not persist Google Photos connection preference: {exc}")
+
+    logs.rotate_log_file(config.GOOGLE_LOG_PATH, SYNC_LOG_MAX_BYTES, SYNC_LOG_BACKUPS)
+    returncode = _upload_snapshot(rclone, destination, pending)
+    if returncode is None:
+        return 1
+    if returncode == 0:
+        return _record_upload(pending)
+    publish_status("failed", f"rclone exited with status {returncode}. See {config.GOOGLE_LOG_PATH}")
+    return returncode
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

@@ -15,6 +15,67 @@ from photo_offloader.logs import logger
 _CATALOG_INITIALIZED_PATH: Optional[str] = None
 
 
+def _create_schema(connection: sqlite3.Connection) -> None:
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS file_locations (
+            path TEXT PRIMARY KEY,
+            root TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            inode INTEGER NOT NULL,
+            sha256 TEXT,
+            capture_month TEXT,
+            camera_model TEXT,
+            media_folder TEXT,
+            indexed_at REAL NOT NULL
+        )
+    """)
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS google_photos_uploads (
+            path TEXT PRIMARY KEY,
+            size INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            inode INTEGER NOT NULL,
+            uploaded_at REAL NOT NULL,
+            remote TEXT NOT NULL,
+            album TEXT NOT NULL
+        )
+    """)
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS catalog_refreshes (
+            root TEXT PRIMARY KEY,
+            last_updated REAL NOT NULL,
+            files_scanned INTEGER NOT NULL,
+            status TEXT NOT NULL
+        )
+    """)
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS import_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at REAL NOT NULL,
+            finished_at REAL NOT NULL,
+            kind TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT '',
+            outcome TEXT NOT NULL,
+            files INTEGER NOT NULL DEFAULT 0,
+            copied INTEGER NOT NULL DEFAULT 0,
+            skipped INTEGER NOT NULL DEFAULT 0,
+            failed INTEGER NOT NULL DEFAULT 0,
+            bytes INTEGER NOT NULL DEFAULT 0,
+            usb INTEGER NOT NULL DEFAULT 0,
+            message TEXT NOT NULL DEFAULT ''
+        )
+    """)
+    history_columns = {row[1] for row in connection.execute("PRAGMA table_info(import_history)")}
+    if "details" not in history_columns:
+        # Per-session breakdown (new files by type, bytes, USB copies) as JSON.
+        connection.execute("ALTER TABLE import_history ADD COLUMN details TEXT NOT NULL DEFAULT '{}'")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_root ON file_locations(root)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_relative ON file_locations(root, relative_path)")
+    connection.commit()
+
+
 def catalog_connection() -> sqlite3.Connection:
     """Open the persistent media/location catalog, initializing its schema once per path."""
     global _CATALOG_INITIALIZED_PATH
@@ -38,64 +99,7 @@ def catalog_connection() -> sqlite3.Connection:
             connection.execute("PRAGMA journal_mode=WAL")  # persistent per database file
         except sqlite3.Error as exc:  # e.g. a filesystem without shared-memory support
             logger.debug("Could not enable WAL for the catalog: %s", exc)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS file_locations (
-                path TEXT PRIMARY KEY,
-                root TEXT NOT NULL,
-                relative_path TEXT NOT NULL,
-                size INTEGER NOT NULL,
-                mtime_ns INTEGER NOT NULL,
-                inode INTEGER NOT NULL,
-                sha256 TEXT,
-                capture_month TEXT,
-                camera_model TEXT,
-                media_folder TEXT,
-                indexed_at REAL NOT NULL
-            )
-        """)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS google_photos_uploads (
-                path TEXT PRIMARY KEY,
-                size INTEGER NOT NULL,
-                mtime_ns INTEGER NOT NULL,
-                inode INTEGER NOT NULL,
-                uploaded_at REAL NOT NULL,
-                remote TEXT NOT NULL,
-                album TEXT NOT NULL
-            )
-        """)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS catalog_refreshes (
-                root TEXT PRIMARY KEY,
-                last_updated REAL NOT NULL,
-                files_scanned INTEGER NOT NULL,
-                status TEXT NOT NULL
-            )
-        """)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS import_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                started_at REAL NOT NULL,
-                finished_at REAL NOT NULL,
-                kind TEXT NOT NULL,
-                source TEXT NOT NULL DEFAULT '',
-                outcome TEXT NOT NULL,
-                files INTEGER NOT NULL DEFAULT 0,
-                copied INTEGER NOT NULL DEFAULT 0,
-                skipped INTEGER NOT NULL DEFAULT 0,
-                failed INTEGER NOT NULL DEFAULT 0,
-                bytes INTEGER NOT NULL DEFAULT 0,
-                usb INTEGER NOT NULL DEFAULT 0,
-                message TEXT NOT NULL DEFAULT ''
-            )
-        """)
-        history_columns = {row[1] for row in connection.execute("PRAGMA table_info(import_history)")}
-        if "details" not in history_columns:
-            # Per-session breakdown (new files by type, bytes, USB copies) as JSON.
-            connection.execute("ALTER TABLE import_history ADD COLUMN details TEXT NOT NULL DEFAULT '{}'")
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_root ON file_locations(root)")
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_file_locations_relative ON file_locations(root, relative_path)")
-        connection.commit()
+        _create_schema(connection)
         _CATALOG_INITIALIZED_PATH = catalog_path
     return connection
 
