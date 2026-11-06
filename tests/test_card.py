@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import errno
+import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from photo_offloader import card, config, fileops
 from tests import support
@@ -196,6 +198,82 @@ class TestCard(support.CardFixtureTestCase):
         self.assertEqual([p.name for p in found["JPG"]], ["photo.jpg"])
         self.assertEqual([p.name for p in found["RAW"]], ["photo.nef"])
         self.assertEqual([p.name for p in found["VIDEO"]], ["clip.mp4"])
+
+    def unreadable_folder(self, name="101NIKON"):
+        if os.geteuid() == 0:
+            self.skipTest("root can read every folder")
+        folder = self.dcim / name
+        folder.mkdir()
+        (folder / "lost.jpg").write_bytes(b"x")
+        folder.chmod(0)  # TemporaryDirectory restores this when it cleans up
+        return folder
+
+    def test_a_folder_that_cannot_be_read_is_reported_and_the_rest_still_found(self):
+        media = self.media()
+        folder = self.unreadable_folder()
+        unreadable = []
+        found = card.find_media_files(self.dcim, unreadable)
+        self.assertEqual(unreadable, [folder])
+        self.assertEqual(found["JPG"], [media["JPG"]])
+
+    def test_a_top_level_folder_that_cannot_be_checked_is_reported(self):
+        private = self.card / "PRIVATE"
+        real_stat = os.stat
+
+        def failing_stat(path, *args, **kwargs):
+            if str(path) == str(private):
+                raise OSError(errno.EIO, "disk error")
+            return real_stat(path, *args, **kwargs)
+
+        unreadable = []
+        with patch.object(card.os, "stat", failing_stat):
+            card.find_media_files(self.dcim, unreadable)
+        self.assertEqual(unreadable, [private])
+
+    def test_a_card_without_the_optional_folders_has_nothing_unreadable(self):
+        self.media()
+        unreadable = []
+        card.find_media_files(self.dcim, unreadable)
+        self.assertEqual(unreadable, [])
+
+    def test_an_entry_that_cannot_be_inspected_is_reported(self):
+        class BadEntry:
+            name = "bad.jpg"
+            path = str(self.dcim / "bad.jpg")
+
+            def is_symlink(self):
+                raise OSError(errno.EIO, "disk error")
+
+        scan = MagicMock()
+        scan.return_value.__enter__.return_value = [BadEntry()]
+        unreadable = []
+        with patch.object(card.os, "scandir", scan):
+            card.find_media_files(self.dcim, unreadable)
+        self.assertEqual(unreadable, [self.dcim / "bad.jpg"])
+
+    def test_a_retried_scan_reports_only_what_the_last_attempt_could_not_read(self):
+        folder = self.dcim / "100NIKON"
+        results = iter(
+            [
+                ({}, [folder]),
+                ({"JPG": [folder / "x.jpg"]}, []),
+            ]
+        )
+
+        def scan(_dcim, unreadable):
+            found, problems = next(results)
+            unreadable.extend(problems)
+            return found
+
+        config.WAIT_SECONDS = 30
+        unreadable = []
+        with (
+            patch.object(card, "find_media_files", scan),
+            patch("time.monotonic", side_effect=[0, 1]),
+            patch("time.sleep"),
+        ):
+            card.scan_with_retry(self.dcim, unreadable)
+        self.assertEqual(unreadable, [])
 
     @patch("photo_offloader.card.find_media_files")
     def test_scan_retry(self, scan):

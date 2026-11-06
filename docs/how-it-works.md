@@ -9,6 +9,8 @@
   match. The Mac-to-USB copy works the same way.
 - **The source is watched during the copy.** If a file changes or disappears mid-copy, that copy
   counts as failed.
+- **A card that can't be fully read isn't called complete.** What can be read is copied, but an
+  unreadable folder fails the import. The card stays mounted, and no USB backup or upload starts.
 - **Free space is checked first.** Every destination needs room for the files plus a 100 MiB buffer.
 - **Each stage stands alone.** A USB or Google Photos failure never invalidates a verified copy on
   the Mac.

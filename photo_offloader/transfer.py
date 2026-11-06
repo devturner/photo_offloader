@@ -23,6 +23,13 @@ class ImportStats:
     verified_copies: int = 0
     failed: int = 0
     errors: List[Tuple[str, str]] = field(default_factory=list)
+    unreadable_on_card: int = 0
+
+    def add_unreadable(self, paths: Sequence[Path]) -> None:
+        """Count what the card scan couldn't read: its files were never even considered."""
+        self.unreadable_on_card += len(paths)
+        self.failed += len(paths)
+        self.errors.extend((str(path), "could not be read") for path in paths)
 
     @property
     def copied(self) -> int:
