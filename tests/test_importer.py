@@ -323,6 +323,93 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         self.assertEqual(result.returncode, 130, result.stdout + result.stderr)
         self.assertEqual(json.loads(status_path.read_text())["state"], "canceled")
 
+    def card_with_sizes(self, jpg=600, raw=600):
+        folder = self.dcim / "100NIKON"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "A.JPG").write_bytes(b"j" * jpg)
+        (folder / "A.NEF").write_bytes(b"r" * raw)
+        return card.find_media_files(self.dcim)
+
+    def test_the_space_check_adds_up_archives_on_the_same_disk(self):
+        # Reproduced: 1,200 bytes needed with 1,000 free passed, because each archive folder was
+        # checked alone. The copy then ran out of space partway through.
+        files = self.card_with_sizes()
+        with (
+            patch("photo_offloader.volumes.available_bytes", return_value=1000),
+            self.assertRaisesRegex(RuntimeError, "Insufficient free space"),
+        ):
+            app._check_local_space(files, self.dcim)
+
+    def test_the_space_check_treats_archives_on_different_disks_separately(self):
+        files = self.card_with_sizes()
+        real_stat = os.stat
+
+        class OnItsOwnDisk:
+            def __init__(self, info):
+                self.st_mode = info.st_mode
+                self.st_dev = 999
+
+        def stat_with_raw_elsewhere(path, *args, **kwargs):
+            info = real_stat(path, *args, **kwargs)
+            return OnItsOwnDisk(info) if str(path) == str(config.LOCAL_RAW_DEST_ROOT) else info
+
+        with (
+            patch("photo_offloader.volumes.available_bytes", return_value=1000),
+            patch("photo_offloader.volumes.os.stat", stat_with_raw_elsewhere),
+        ):
+            app._check_local_space(files, self.dcim)
+
+    def test_the_space_check_only_counts_files_that_look_new(self):
+        # Reproduced: 10 new bytes with 500 free was refused, because a 1,210-byte card counted
+        # files already imported.
+        files = self.card_with_sizes()
+        manifest = {}
+        for path in files["JPG"] + files["RAW"]:
+            card.update_card_manifest_entry(manifest, path, self.dcim, "verified-hash")
+        card.save_card_manifest(self.dcim, manifest)
+        (self.dcim / "100NIKON" / "B.JPG").write_bytes(b"n" * 10)
+        files = card.find_media_files(self.dcim)
+        with patch("photo_offloader.volumes.available_bytes", return_value=500):
+            app._check_local_space(files, self.dcim)
+
+    def test_new_files_alone_can_still_be_too_big_for_the_disk(self):
+        files = self.card_with_sizes()
+        with (
+            patch("photo_offloader.volumes.available_bytes", return_value=500),
+            self.assertRaisesRegex(RuntimeError, "Insufficient free space"),
+        ):
+            app._check_local_space(files, self.dcim)
+
+    def test_a_changed_file_counts_as_new_even_with_a_saved_hash(self):
+        files = self.card_with_sizes()
+        manifest = {}
+        for path in files["JPG"] + files["RAW"]:
+            card.update_card_manifest_entry(manifest, path, self.dcim, "verified-hash")
+        card.save_card_manifest(self.dcim, manifest)
+        (self.dcim / "100NIKON" / "A.JPG").write_bytes(b"j" * 900)
+        files = card.find_media_files(self.dcim)
+        with (
+            patch("photo_offloader.volumes.available_bytes", return_value=500),
+            self.assertRaisesRegex(RuntimeError, "Insufficient free space"),
+        ):
+            app._check_local_space(files, self.dcim)
+
+    def test_the_space_check_works_before_the_archive_folders_exist(self):
+        files = self.card_with_sizes()
+        config.LOCAL_RAW_DEST_ROOT.rmdir()
+        app._check_local_space(files, self.dcim)
+        self.assertTrue(config.LOCAL_RAW_DEST_ROOT.is_dir())
+
+    def test_a_full_disk_stops_the_import_before_anything_is_copied(self):
+        self.card_with_sizes()
+        with (
+            patch("time.sleep"),
+            patch("photo_offloader.logs.notify"),
+            patch("photo_offloader.volumes.available_bytes", return_value=500),
+        ):
+            self.assertEqual(app.main(["--source", str(self.card), "--no-usb"]), 1)
+        self.assertEqual([p for p in self.local.rglob("*") if p.is_file()], [])
+
     def unreadable_card_folder(self):
         if os.geteuid() == 0:
             self.skipTest("root can read every folder")

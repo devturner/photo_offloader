@@ -455,17 +455,23 @@ def _scan_card(
     return dcim_folder, card_volume, files, unreadable
 
 
-def _check_local_space(files: Dict[str, List[Path]]) -> None:
-    required = {
-        config.LOCAL_DEST_ROOT: sum(
-            path.stat().st_size
-            for category in ("JPG", "VIDEO", "OTHER")
-            for path in files[category]
-        ),
-        config.LOCAL_RAW_DEST_ROOT: sum(path.stat().st_size for path in files["RAW"]),
-    }
-    for destination, needed in required.items():
-        volumes.validate_destinations([destination], needed)
+def _check_local_space(files: Dict[str, List[Path]], dcim_folder: Path) -> None:
+    """Make sure the files that look new fit, before anything is copied.
+
+    A file already saved takes no space, so it doesn't count. The list of saved files is only an
+    estimate: if it's wrong and the disk fills up, the copy of that file fails and is reported.
+    """
+    manifest = card.load_card_manifest(dcim_folder)
+    volumes.validate_space(
+        {
+            config.LOCAL_DEST_ROOT: card.bytes_to_copy(
+                [path for category in ("JPG", "VIDEO", "OTHER") for path in files[category]],
+                manifest,
+                dcim_folder,
+            ),
+            config.LOCAL_RAW_DEST_ROOT: card.bytes_to_copy(files["RAW"], manifest, dcim_folder),
+        }
+    )
     logger.info(
         "Stage 1 destinations: %s and %s", config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT
     )
@@ -612,7 +618,7 @@ def _import_card(args: argparse.Namespace) -> int:
     usb_expected = not args.no_usb and volumes.usb_is_mounted()
     usb_identity = volumes.get_volume_identity(config.USB_DEST_VOLUME) if usb_expected else None
     local_destinations = [config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT]
-    _check_local_space(files)
+    _check_local_space(files, dcim_folder)
     if usb_expected:
         logger.info("USB backup is mounted; it will be synchronized after the local SSD import.")
     else:

@@ -11,7 +11,8 @@
   counts as failed.
 - **A card that can't be fully read isn't called complete.** What can be read is copied, but an
   unreadable folder fails the import. The card stays mounted, and no USB backup or upload starts.
-- **Free space is checked first.** Every destination needs room for the files plus a 100 MiB buffer.
+- **Free space is checked first.** Each disk needs room for the files that look new, plus a 100 MiB
+  buffer. If that estimate is wrong and a disk fills up, the affected copies fail and are reported.
 - **Each stage stands alone.** A USB or Google Photos failure never invalidates a verified copy on
   the Mac.
 - **Only one import runs at a time.** Mounting a card can fire several events, so the trigger
@@ -25,7 +26,8 @@ destinations after installing or upgrading, before you format a card.
 When a file with the same name already exists, the size and SHA-256 are compared:
 
 - **Identical:** the file is skipped.
-- **Different:** the new file is kept next to the old one, as `DSC_1234__conflict-1.NEF`.
+- **Different:** the new file is kept next to the old one, as `DSC_1234__conflict-1.NEF`. It's also
+  compared with any conflict copies already there, so importing a card again doesn't add another.
 
 The one exception is the index files that cameras rewrite on every shoot (`NC_FLLST.DAT`,
 `MEDIAPRO.XML`). The newest version replaces the old one, on the Mac and on USB. They aren't photos,

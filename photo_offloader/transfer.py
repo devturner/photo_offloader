@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import tempfile
 import time
@@ -101,6 +102,12 @@ def conflict_free_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
+
+
+def _existing_conflict_copies(path: Path) -> List[Path]:
+    """The ``name__conflict-N.ext`` files next to ``path``, whatever numbers they have."""
+    pattern = re.compile(rf"{re.escape(path.stem)}__conflict-\d+{re.escape(path.suffix)}")
+    return sorted(item for item in path.parent.iterdir() if pattern.fullmatch(item.name))
 
 
 def _skip_if_already_copied(
@@ -234,6 +241,14 @@ def copy_one_to_destination(
             replace_existing = True
             logger.info("Camera index file changed; replacing the previous copy: %s", final_path)
         else:
+            # This file may be a conflict copy from an earlier import. Without this check, every
+            # re-insert of the card would add another copy, and send it to USB and Google Photos.
+            for copy in _existing_conflict_copies(final_path):
+                skipped = _skip_if_already_copied(
+                    source, dcim_folder, destination_base, copy, manifest, before.size
+                )
+                if skipped:
+                    return skipped
             final_path = conflict_free_path(final_path)
             logger.warning("Filename conflict for %s; using %s", source, final_path.name)
 
