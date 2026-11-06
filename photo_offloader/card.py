@@ -222,10 +222,34 @@ def reconcile_card_manifest(
     history = dict(history) if isinstance(history, dict) else {}
     history.update(counts)
     history["last_seen"] = now
+    history["intact"] = bool(prior_paths) and not changed_files and not prior_paths - current_paths
     # This is an inventory observation, not a completed import.
     save_card_manifest(dcim_folder, manifest, history)
     _forget_old_manifests()
     return counts
+
+
+def card_is_intact(dcim_folder: Path) -> bool:
+    """Whether the last scan found every file in the manifest, unchanged, on this volume ID.
+
+    Cameras only add files. A format would have removed these, and new photos can't match them
+    all, so their cached hashes still describe them without reading anything. A missing or changed
+    file makes this False until an import completes, which is what removes it from the manifest.
+    """
+    return load_card_manifest_payload(dcim_folder)["history"].get("intact") is True
+
+
+def _without_files_that_left_the_card(
+    manifest: Dict[str, dict], files: Dict[str, List[Path]], dcim_folder: Path
+) -> Dict[str, dict]:
+    try:
+        on_card = {
+            card_relative_key(path, dcim_folder) for paths in files.values() for path in paths
+        }
+    except (OSError, ValueError) as exc:
+        logger.debug("Keeping the card's manifest as it is: %s", exc)
+        return manifest
+    return {relative: entry for relative, entry in manifest.items() if relative in on_card}
 
 
 def expected_new_files(
@@ -235,15 +259,12 @@ def expected_new_files(
 
     Only for showing progress: each file is still checked when it is reached. A file counts as
     saved only with a verified hash, because reconciling lists every file before any copying,
-    so after an interrupted import being listed proves nothing. Camera index files are left out:
-    the camera rewrites them, so they would be "new" on every import without being new photos.
+    so after an interrupted import being listed proves nothing.
     """
     manifest = load_card_manifest(dcim_folder)
     new_files = new_bytes = verified = 0
     for category_paths in discovered.values():
         for source in category_paths:
-            if fileops.is_camera_index_file(source):
-                continue
             if card_manifest_entry(manifest, source, dcim_folder):
                 verified += 1
                 continue
@@ -287,7 +308,11 @@ def update_card_scan_history(
     if status == "complete":
         history["last_scan_completed"] = now
         history["last_successful_import"] = now
-    return save_card_manifest(dcim_folder, load_card_manifest(dcim_folder), history)
+    manifest = load_card_manifest(dcim_folder)
+    if status == "complete":
+        # Only now: until an import completes, a missing file must keep the next run checking.
+        manifest = _without_files_that_left_the_card(manifest, files, dcim_folder)
+    return save_card_manifest(dcim_folder, manifest, history)
 
 
 def card_manifest_entry(
@@ -424,7 +449,7 @@ def find_media_files(
     files: Dict[str, List[Path]] = {category: [] for category in MEDIA_CATEGORIES}
     for root in [dcim_folder, *_optional_card_folders(dcim_folder.parent, problems)]:
         for path in _walk_card_files(root, problems):
-            if path.name.lower() in IGNORED_CARD_FILENAMES:
+            if path.name.lower() in IGNORED_CARD_FILENAMES or fileops.is_camera_index_file(path):
                 continue
             files[MEDIA_EXTENSIONS.get(path.suffix.lower(), "OTHER")].append(path)
     for category in files:

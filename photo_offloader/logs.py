@@ -6,7 +6,10 @@ import logging
 import logging.handlers
 import os
 import subprocess
+import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Dict, Iterator
 
 LOG_MAX_BYTES = 5 * 1024 * 1024
 
@@ -15,6 +18,34 @@ LOG_BACKUP_COUNT = 3
 
 
 logger = logging.getLogger("camera_offloader")
+
+
+_TIMINGS: Dict[str, float] = {}
+
+
+@contextmanager
+def timed(section: str) -> Iterator[None]:
+    """Add the time spent here to ``section``. Also works as a function decorator."""
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        _TIMINGS[section] = _TIMINGS.get(section, 0.0) + time.perf_counter() - started
+
+
+def reset_timings() -> None:
+    _TIMINGS.clear()
+
+
+def timing_summary(total_seconds: float) -> str:
+    """The sections since the last reset, slowest first, then whatever they don't account for.
+
+    Status writes during a copy are counted in both, so "other" can read lower than it is.
+    """
+    sections = sorted(_TIMINGS.items(), key=lambda item: item[1], reverse=True)
+    other = max(total_seconds - sum(seconds for _, seconds in sections), 0.0)
+    parts = [f"{name} {seconds:.1f} s" for name, seconds in [*sections, ("other", other)]]
+    return f"{total_seconds:.1f} s: " + ", ".join(parts)
 
 
 def rotate_log_file(

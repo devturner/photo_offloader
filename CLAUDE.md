@@ -8,8 +8,13 @@ app sit on top. Open work and its reasons are in `scratch/ai_tasks.md` (gitignor
 first when asked to "continue". What only the user can do is in `scratch/human_todo.md`.
 
 ## Commands
-- Tests: `.venv/bin/python -m unittest discover` (about 540 tests, about 2 min). Use the
-  project `.venv`, not the system `python3`, which has no Pillow.
+- Tests: `tools/test.sh full` (about 650 tests, about 2.5 min) or `tools/test.sh fast` (about 35 s,
+  without `test_trigger`, `test_service_control` and the browser tests). Use the project `.venv`,
+  not the system `python3`, which has no Pillow.
+- Which tests when: only the affected modules while working; `fast` before a commit that touches
+  several areas; `full` once before a push; CI always runs everything. Changes to the shell scripts
+  or the dashboard page need the slow modules they affect run directly. Run mutation checks in the
+  background on a temp copy, never chained with a full run.
 - One module or test: `.venv/bin/python -m unittest tests.test_usb_backup`, or add
   `.TestBackupLauncher.test_request_runs_importer_when_lock_is_free`. Filter by name with `-k`.
 - Browser tests: `.venv/bin/python -m unittest tests.browser.test_dashboard_page` (about 45 s). They
@@ -49,11 +54,12 @@ Two consequences:
 
 ## Safety invariants
 - Never delete from a card and never overwrite a destination file. A differing file with the
-  same name becomes `name__conflict-N`. The exceptions are index files the camera rewrites
-  (`NC_FLLST.DAT`, `MEDIAPRO.XML`).
+  same name becomes `name__conflict-N`. The one exception is the USB copy of an index file the
+  camera rewrites (`NC_FLLST.DAT`, `MEDIAPRO.XML`); imports leave those files out.
 - The catalog and the card manifests are caches. The filesystem is the source of truth, and a
   missing or stale cache must fall back to hashing. Both outlive a format, so a cached hash only
-  skips a file after `fileops.ends_match` agrees with the saved copy.
+  skips a file after `fileops.ends_match` agrees with the saved copy, unless `card.card_is_intact`
+  shows the card wasn't formatted, which only covers hashes from that card's manifest.
 - Cards are read-only to this tool: nothing is ever written to one (macOS adds `.fseventsd` itself).
 - A USB or Google Photos failure never invalidates a verified local import.
 - The trigger locks and the importer's session lock overlap on purpose. Keep all of them.

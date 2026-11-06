@@ -1,13 +1,25 @@
 #!/usr/bin/env python3
 import errno
+import json
 import os
 import pathlib
+import sqlite3
 import stat
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import card, catalog, config, fileops, media_info, progress, transfer, volumes
+from photo_offloader import (
+    card,
+    catalog,
+    config,
+    fileops,
+    logs,
+    media_info,
+    progress,
+    transfer,
+    volumes,
+)
 from photo_offloader.transfer import DestinationResult, ImportStats
 from photo_offloader.volumes import VolumeIdentity
 from tests import support
@@ -142,6 +154,33 @@ class TestTransfer(support.CardFixtureTestCase):
         self.assertEqual((result.status, result.path), ("skipped", copy))
         self.assertEqual(catalog.catalog_row(source)[3], fileops.sha256_file(source))
 
+    def test_an_intact_card_skips_the_end_check_for_a_hash_from_its_manifest(self):
+        source, _, digest = self.saved_photo()
+        manifest = {}
+        card.update_card_manifest_entry(manifest, source, self.dcim, digest)
+        with patch.object(fileops, "ends_match", side_effect=AssertionError("must not read")):
+            result = transfer.copy_one_to_destination(
+                source, self.dcim, self.local, manifest, trust_manifest=True
+            )
+        self.assertEqual(result.status, "skipped")
+
+    def test_a_hash_from_the_catalog_is_always_checked_even_on_an_intact_card(self):
+        # The catalog isn't per card, so an intact manifest says nothing about its rows.
+        source, destination, digest = self.saved_photo()
+        catalog.catalog_record(source, sha256=digest)
+        content = self.replace_keeping_details(source)
+        result = transfer.copy_one_to_destination(
+            source, self.dcim, self.local, {}, trust_manifest=True
+        )
+        self.assert_new_photo_was_saved(destination, result, content)
+
+    def test_a_skipped_file_is_not_reported_as_copying(self):
+        # Dashboard log 2026-11-06: the panel flipped to Copying on a card with nothing to copy.
+        source, _, digest = self.saved_photo()
+        result = transfer.copy_one_to_destination(source, self.dcim, self.local)
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(progress._PROGRESS["state"], "scanning")
+
     def test_a_damaged_archive_copy_is_not_taken_for_the_card_file(self):
         source, destination, digest = self.saved_photo()
         manifest = {}
@@ -179,25 +218,53 @@ class TestTransfer(support.CardFixtureTestCase):
         self.assertEqual(destination.read_bytes(), b"xxx")
         self.assertEqual(result.path.read_bytes(), b"raw")
 
-    def camera_index_file(self, content):
-        source = self.dcim / "104NCZ_8" / "NC_FLLST.DAT"
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_bytes(content)
-        return source
+    def test_a_category_opens_the_catalog_once_however_many_files_it_has(self):
+        # Measured on a real 2,722-file card: reopening it for each lookup took about 5 s of 7 s.
+        catalog.catalog_connection().close()
+        files = [self.dcim / "100NIKON" / f"photo{number}.jpg" for number in range(5)]
+        files[0].parent.mkdir(parents=True)
+        for number, path in enumerate(files):
+            path.write_bytes(b"photo %d" % number)
+        real_connect = sqlite3.connect
+        with patch("sqlite3.connect", side_effect=real_connect) as connect:
+            transfer.copy_category(files, self.dcim, [self.local], "JPG", ImportStats())
+        self.assertEqual(connect.call_count, 1)
+        self.assertEqual(len(list(self.local.rglob("photo*.jpg"))), 5)
 
-    def test_camera_index_file_is_replaced_not_conflict_copied(self):
-        # User log 2026-11-04: Nikon rewrites NC_FLLST.DAT on every shoot, so each
-        # import left another NC_FLLST__conflict-N.DAT in Other.
-        first = transfer.copy_one_to_destination(
-            self.camera_index_file(b"index v1"), self.dcim, self.local
-        )
-        second = transfer.copy_one_to_destination(
-            self.camera_index_file(b"index v2 longer"), self.dcim, self.local
-        )
-        self.assertEqual(second.status, "copied")
-        self.assertEqual(second.path, first.path)
-        self.assertEqual(first.path.read_bytes(), b"index v2 longer")
-        self.assertEqual(sorted(p.name for p in first.path.parent.iterdir()), ["NC_FLLST.DAT"])
+    def test_a_category_logs_where_its_time_went(self):
+        source = self.media()["JPG"]
+        with self.assertLogs("camera_offloader", "INFO") as logged:
+            transfer.copy_category([source], self.dcim, [self.local], "JPG", ImportStats())
+        line = next(message for message in logged.output if "Time for JPG" in message)
+        self.assertRegex(line, r"Time for JPG, 1 file\(s\): [\d.]+ s: ")
+        for part in ("catalog ", "status ", "other "):
+            self.assertIn(part, line)
+
+    def test_checking_saved_files_does_not_rewrite_the_status_for_each_file(self):
+        # Measured on a real 2,722-file card: 4 writes per file took 8.8 s of a 25.7 s check.
+        files = [self.dcim / "100NIKON" / f"photo{number}.jpg" for number in range(20)]
+        files[0].parent.mkdir(parents=True)
+        for number, path in enumerate(files):
+            path.write_bytes(b"photo %d" % number)
+        transfer.copy_category(files, self.dcim, [self.local], "JPG", ImportStats())
+        real_write = progress.jsonfile.write_json
+        with (
+            patch.object(progress.jsonfile, "write_json", side_effect=real_write) as write,
+            patch.object(progress.time, "monotonic", return_value=progress.time.monotonic()),
+        ):
+            transfer.copy_category(files, self.dcim, [self.local], "JPG", ImportStats())
+        status_writes = [c for c in write.call_args_list if c.args[0] == config.STATUS_FILE_PATH]
+        self.assertEqual(len(status_writes), 2)  # as it starts and as it ends
+        status = json.loads(config.STATUS_FILE_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(status["decision_files_checked"], 20)
+
+    def test_each_category_times_only_its_own_work(self):
+        source = self.media()["JPG"]
+        with logs.timed("left over from the last category"):
+            pass
+        with self.assertLogs("camera_offloader", "INFO") as logged:
+            transfer.copy_category([source], self.dcim, [self.local], "JPG", ImportStats())
+        self.assertNotIn("left over", "".join(logged.output))
 
     def test_conflict_counter_advances(self):
         source = self.media()["RAW"]

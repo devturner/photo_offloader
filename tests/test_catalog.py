@@ -7,6 +7,71 @@ from photo_offloader import catalog, config, fileops
 from tests import support
 
 
+class TestReusedConnection(support.CardFixtureTestCase):
+    def setUp(self):
+        super().setUp()
+        self.path = self.root / "photo.jpg"
+        self.path.write_bytes(b"photo")
+        catalog.catalog_connection().close()
+
+    def test_lookups_and_saves_share_one_connection_and_saves_are_committed(self):
+        real_connect = sqlite3.connect
+        with patch("sqlite3.connect", side_effect=real_connect) as connect:
+            with catalog.reuse_connection():
+                catalog.catalog_record(self.path, sha256="abc")
+                self.assertEqual(catalog.catalog_row(self.path)[3], "abc")
+                self.assertEqual(connect.call_count, 1)
+                # Another process, such as the dashboard, sees the save straight away.
+                other = real_connect(config.CATALOG_DB_PATH)
+                self.addCleanup(other.close)
+                self.assertEqual(
+                    other.execute("SELECT COUNT(*) FROM file_locations").fetchone()[0], 1
+                )
+
+    def test_the_connection_is_closed_afterwards_even_after_an_error(self):
+        with self.assertRaises(ValueError), catalog.reuse_connection():
+            with catalog.catalog_db() as db:
+                shared = db
+            raise ValueError("the copy failed")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            shared.execute("SELECT 1")
+        with catalog.catalog_db() as db:
+            self.assertIsNot(db, shared)
+
+    def test_a_failed_save_is_rolled_back_and_the_connection_still_works(self):
+        with catalog.reuse_connection():
+            with self.assertRaises(sqlite3.Error), catalog.catalog_db() as db:
+                db.execute("INSERT INTO catalog_refreshes VALUES ('root', 1, 1, 'x')")
+                db.execute("INSERT INTO no_such_table VALUES (1)")
+            with catalog.catalog_db() as db:
+                self.assertEqual(
+                    db.execute("SELECT COUNT(*) FROM catalog_refreshes").fetchone()[0], 0
+                )
+
+    def test_a_catalog_that_will_not_open_does_not_stop_the_work(self):
+        with patch.object(
+            catalog, "catalog_connection", side_effect=sqlite3.OperationalError("no")
+        ):
+            with catalog.reuse_connection():
+                self.assertIsNone(catalog.catalog_row(self.path))
+
+    def test_an_error_closing_the_connection_is_only_logged(self):
+        with patch.object(catalog, "catalog_connection") as connection:
+            connection.return_value.close.side_effect = sqlite3.OperationalError("disk")
+            with catalog.reuse_connection():
+                pass
+        connection.return_value.close.assert_called_once()
+
+    def test_nested_use_keeps_the_outer_connection_open(self):
+        with catalog.reuse_connection():
+            with catalog.reuse_connection():
+                with catalog.catalog_db() as inner:
+                    pass
+            with catalog.catalog_db() as outer:
+                self.assertIs(outer, inner)
+                outer.execute("SELECT 1")
+
+
 class TestCatalog(support.CardFixtureTestCase):
     @patch("photo_offloader.catalog.catalog_connection")
     def test_catalog_db_closes_connection_after_transaction(self, connect):

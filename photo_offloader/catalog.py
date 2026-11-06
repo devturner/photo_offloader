@@ -10,10 +10,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
-from photo_offloader import config, fileops
+from photo_offloader import config, fileops, logs
 from photo_offloader.logs import logger
 
 _CATALOG_INITIALIZED_PATH: Optional[str] = None
+_SHARED_CONNECTION: Optional[sqlite3.Connection] = None
 
 
 def _create_schema(connection: sqlite3.Connection) -> None:
@@ -117,12 +118,44 @@ def catalog_connection() -> sqlite3.Connection:
 @contextmanager
 def catalog_db() -> Iterator[sqlite3.Connection]:
     """Use a catalog connection for one transaction and always close its file handles."""
+    if _SHARED_CONNECTION is not None:
+        with _SHARED_CONNECTION:
+            yield _SHARED_CONNECTION
+        return
     connection = catalog_connection()
     try:
         with connection:
             yield connection
     finally:
         connection.close()
+
+
+@contextmanager
+def reuse_connection() -> Iterator[None]:
+    """Keep one connection open for many lookups; opening one for each is the slow part.
+
+    Each save is still committed straight away, and no lock is held between them. If the catalog
+    won't open, the work goes on and each lookup deals with that as usual.
+    """
+    global _SHARED_CONNECTION
+    if _SHARED_CONNECTION is not None:
+        yield
+        return
+    try:
+        connection = catalog_connection()
+    except (OSError, sqlite3.Error) as exc:
+        logger.debug("Could not keep the catalog open: %s", exc)
+        yield
+        return
+    _SHARED_CONNECTION = connection
+    try:
+        yield
+    finally:
+        _SHARED_CONNECTION = None
+        try:
+            connection.close()
+        except sqlite3.Error as exc:
+            logger.debug("Could not close the catalog: %s", exc)
 
 
 IMPORT_HISTORY_MAX_ROWS = 500
@@ -365,6 +398,7 @@ def row_matches(row: Optional[tuple], fingerprint: fileops.FileFingerprint) -> b
     )
 
 
+@logs.timed("catalog")
 def catalog_row(
     path: Path, fingerprint: Optional[fileops.FileFingerprint] = None
 ) -> Optional[tuple]:
@@ -469,6 +503,7 @@ def _catalog_upsert(
     )
 
 
+@logs.timed("catalog")
 def catalog_record(
     path: Path,
     *,
@@ -486,6 +521,7 @@ def catalog_record(
         logger.debug("Could not update file catalog for %s: %s", path, exc)
 
 
+@logs.timed("catalog")
 def catalog_record_many(entries: Sequence[Tuple[Path, Dict[str, Optional[str]]]]) -> int:
     """Record many files in one transaction; files that vanished are skipped."""
     written = 0

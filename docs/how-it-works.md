@@ -29,9 +29,10 @@ When a file with the same name already exists, the size and SHA-256 are compared
 - **Different:** the new file is kept next to the old one, as `DSC_1234__conflict-1.NEF`. It's also
   compared with any conflict copies already there, so importing a card again doesn't add another.
 
-The one exception is the index files that cameras rewrite on every shoot (`NC_FLLST.DAT`,
-`MEDIAPRO.XML`). The newest version replaces the old one, on the Mac and on USB. They aren't photos,
-and keeping every version would create a new conflict copy on every import.
+Index files that cameras keep for themselves (`NC_FLLST.DAT`, `MEDIAPRO.XML`) aren't imported. A card
+has one per folder and they aren't photos. Copies left in the archive by older versions stay there,
+and if a USB copy differs from the Mac's, the Mac's replaces it: that's the one exception to the rule
+above.
 
 ## Archive layout
 
@@ -93,6 +94,13 @@ the saved copy. If they differ, both files are hashed in full, and a new photo g
 `__conflict-N` copy. The Nikon Z 8 gave an SD card a new volume ID when it was formatted, which makes
 this rarer still. The comparison isn't proof that the files are identical; it only rules out a wrong
 cache entry. The full check happens when a file is copied.
+
+**An unchanged card isn't read again.** Cameras only add files. If every file in a card's manifest is
+still on the card with the same path, size and time, the card can't have been formatted, so that
+comparison is skipped and a re-insert reads no photos. New files are copied and verified as usual. If
+a file is missing or changed, that import does the comparison, and files that have left the card drop
+out of the manifest only once an import completes. This also means a saved copy that changed on disk
+without its size or time changing goes unnoticed here.
 
 **Daylight saving and time zones.** Cameras store file times in local time, so after a clock change
 every file on a card can appear to have moved by exactly an hour. A shift of a whole number of hours,

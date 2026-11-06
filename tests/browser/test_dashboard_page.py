@@ -729,7 +729,7 @@ class TestReports(PageTestCase):
                     seen.push(report ? report.getBoundingClientRect().height : 0);
                     if (performance.now() < end) requestAnimationFrame(look); else done(seen);
                 };
-                look();
+                requestAnimationFrame(look);  // drawn frames only, which is what a person sees
             })""",
             milliseconds,
         )

@@ -92,6 +92,58 @@ class TestManifestOnTheMac(support.CardFixtureTestCase):
         self.assertIn("OLD-004.json", kept)
 
 
+class TestCardIsIntact(support.CardFixtureTestCase):
+    def saved_card(self):
+        """A card whose files all have a verified hash in the manifest."""
+        media = self.media()
+        manifest = {}
+        for path in media.values():
+            card.update_card_manifest_entry(manifest, path, self.dcim, "verified-hash")
+        card.save_card_manifest(self.dcim, manifest, {})
+        return media
+
+    def check(self, media):
+        card.reconcile_card_manifest(self.dcim, {"ALL": list(media.values())})
+        return card.card_is_intact(self.dcim)
+
+    def test_every_listed_file_unchanged_means_intact(self):
+        self.assertTrue(self.check(self.saved_card()))
+
+    def test_new_files_are_what_cameras_do_so_it_stays_intact(self):
+        media = self.saved_card()
+        extra = self.dcim / "100NIKON" / "new.jpg"
+        extra.write_bytes(b"new photo")
+        self.assertTrue(self.check({**media, "extra": extra}))
+
+    def test_a_missing_file_means_not_intact(self):
+        media = self.saved_card()
+        del media["JPG"]
+        self.assertFalse(self.check(media))
+
+    def test_a_changed_file_means_not_intact(self):
+        media = self.saved_card()
+        media["JPG"].write_bytes(b"different size")
+        self.assertFalse(self.check(media))
+
+    def test_a_card_with_no_manifest_is_not_intact(self):
+        self.assertFalse(self.check(self.media()))
+        self.assertFalse(card.card_is_intact(self.dcim / "elsewhere"))
+
+    def test_a_completed_import_forgets_files_that_left_the_card(self):
+        media = self.saved_card()
+        files = {"JPG": [media["JPG"]]}
+        card.update_card_scan_history(self.dcim, files, "complete")
+        self.assertEqual(list(card.load_card_manifest(self.dcim)), ["100NIKON/photo.jpg"])
+
+    def test_an_unfinished_import_keeps_them_so_the_next_run_still_checks(self):
+        media = self.saved_card()
+        files = {"JPG": [media["JPG"]]}
+        for status in ("scanning", "failed"):
+            card.update_card_scan_history(self.dcim, files, status)
+        self.assertGreater(len(card.load_card_manifest(self.dcim)), 1)
+        self.assertFalse(self.check({"JPG": media["JPG"]}))
+
+
 class TestCardVolumeId(support.CardFixtureTestCase):
     def setUp(self):
         super().setUp()
@@ -251,15 +303,14 @@ class TestCard(support.CardFixtureTestCase):
             card.expected_new_files(self.dcim, {"JPG": [saved], "RAW": [changed]})[0], 1
         )
 
-    def test_camera_index_files_are_not_new_photos(self):
-        media = self.media()
-        saved = media["JPG"]
-        index = saved.parent / "NC_FLLST.DAT"
-        index.write_bytes(b"rewritten by the camera")
-        card.save_card_manifest(self.dcim, {"100NIKON/photo.jpg": self._verified_entry(saved)}, {})
-        self.assertEqual(
-            card.expected_new_files(self.dcim, {"JPG": [saved], "OTHER": [index]}), (0, 0)
-        )
+    def test_camera_index_files_are_left_out_of_the_scan(self):
+        # A card has one per folder, all filed under one archive path, so each overwrote the last.
+        folder = self.media()["JPG"].parent
+        for name in ("NC_FLLST.DAT", "nc_fllst.dat", "MEDIAPRO.XML"):
+            (folder / name).write_bytes(b"camera index")
+        (folder / "NOTES.DAT").write_bytes(b"not an index")
+        found = card.find_media_files(self.dcim)
+        self.assertEqual([path.name for path in found["OTHER"]], ["NOTES.DAT"])
 
     def test_no_estimate_without_a_verified_file_to_trust(self):
         media = self.media()

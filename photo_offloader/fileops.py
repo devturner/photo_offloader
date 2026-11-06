@@ -10,7 +10,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from photo_offloader import config, progress
+from photo_offloader import config, logs, progress
 from photo_offloader.logs import logger
 
 COPY_CHUNK_BYTES = 4 * 1024 * 1024
@@ -78,6 +78,7 @@ def flush_to_disk(fd: int) -> None:
     os.fsync(fd)
 
 
+@logs.timed("hashing")
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024, nocache: bool = False) -> str:
     """SHA-256 of a file. ``nocache`` reads from the disk when the file was written with
     the page cache skipped, as copies are; see _skip_page_cache."""
@@ -106,6 +107,7 @@ def files_match(source: Path, destination: Path, force_sha256: bool = False) -> 
         return False
 
 
+@logs.timed("end checks")
 def ends_match(first: Path, second: Path) -> bool:
     """Whether two files have the same size and the same first and last ``ENDS_CHECK_BYTES``.
 
@@ -131,9 +133,9 @@ def _same_file(first: Path, second: Path) -> bool:
         return False
 
 
-# Index/database files the camera itself rewrites on every shoot. They never match
-# the previous copy, so keeping conflict copies would pile up one per import; the
-# newest version replaces the old one instead (locally and on USB).
+# Index/database files the camera itself rewrites. A card has one per folder, and they would all be
+# filed under one archive path, so a copy would never be a backup: imports leave them out. The USB
+# backup still replaces one that differs, because older imports left them in the archive.
 CAMERA_INDEX_FILE_NAMES = frozenset(
     {
         "NC_FLLST.DAT",  # Nikon file list
@@ -200,6 +202,7 @@ def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
     return True
 
 
+@logs.timed("copying")
 def copy_file_with_progress(source: Path, destination: Path) -> str:
     """Copy in chunks so progress and ETA update even for large video files.
 

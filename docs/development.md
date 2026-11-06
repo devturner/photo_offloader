@@ -37,7 +37,8 @@ install.sh        installs the same layout into ~/Library/Application Support/Ph
 ## Running the tests
 
 ```bash
-.venv/bin/python -m unittest discover                 # everything
+tools/test.sh fast                                    # about 35 s, without the slowest modules
+tools/test.sh full                                    # everything, about 2.5 min, as CI runs it
 .venv/bin/python -m unittest tests.test_usb_backup    # one module
 .venv/bin/python -m ruff format .                     # format; CI fails on unformatted code
 .venv/bin/python -m ruff check .                      # lint; maximum complexity is 15

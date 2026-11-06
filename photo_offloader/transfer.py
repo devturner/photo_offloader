@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-from photo_offloader import card, catalog, config, fileops, media_info, progress, volumes
+from photo_offloader import card, catalog, config, fileops, logs, media_info, progress, volumes
 from photo_offloader.logs import logger
 
 
@@ -62,12 +62,15 @@ def hash_for_copy_decision(
     destination: Path,
     dcim_folder: Path,
     manifest: Dict[str, dict],
+    trust_manifest: bool = False,
 ) -> Tuple[str, str]:
     """Reuse trustworthy cached hashes and avoid database writes on cache hits."""
     # The card manifest is the cheapest source of truth. Only query SQLite when
     # its fingerprint is absent or stale.
     source_hash = card.card_manifest_entry(manifest, source, dcim_folder)
     source_hash_was_cached = source_hash is not None
+    # card.card_is_intact covers this card's manifest only, not the catalog's rows.
+    needs_end_check = not (trust_manifest and source_hash_was_cached)
     source_row = None
     if source_hash is None:
         source_row = catalog.catalog_row(source)
@@ -85,9 +88,10 @@ def hash_for_copy_decision(
         destination_hash = fileops.sha256_file(destination)
 
     # Both caches outlive a format, so a new photo with an old one's path, size and time could look
-    # saved. Before skipping a file on a cached hash, look at the files themselves.
+    # saved. Unless the card is known not to have been formatted, look at the files themselves.
     if (
-        source_hash_was_cached
+        needs_end_check
+        and source_hash_was_cached
         and source_hash == destination_hash
         and not fileops.ends_match(source, destination)
     ):
@@ -130,17 +134,20 @@ def _skip_if_already_copied(
     final_path: Path,
     manifest: Dict[str, dict],
     size: int,
+    trust_manifest: bool,
 ) -> Optional[DestinationResult]:
     """The "skipped" result when ``final_path`` holds the same bytes as ``source``, otherwise None."""
     try:
         source_hash, destination_hash = hash_for_copy_decision(
-            source, final_path, dcim_folder, manifest
+            source, final_path, dcim_folder, manifest, trust_manifest
         )
         if source_hash == destination_hash:
             progress.add_progress_bytes(size)
             card.update_card_manifest_entry(manifest, source, dcim_folder, source_hash)
-            progress.update_status(
-                state="copying", phase="copy", message="Existing file verified; continuing"
+            progress.note_status(
+                state="scanning",
+                phase="copy-decision",
+                message="Existing file verified; continuing",
             )
             return DestinationResult(
                 destination_base,
@@ -160,7 +167,6 @@ def _copy_and_verify(
     final_path: Path,
     manifest: Dict[str, dict],
     before: fileops.FileFingerprint,
-    replace_existing: bool,
 ) -> DestinationResult:
     """Copy through a temporary file and install it only once its hash has been verified."""
     temp_path: Optional[Path] = None
@@ -180,7 +186,7 @@ def _copy_and_verify(
         # from the card (cache-bypassing read where the OS supports it).
         if fileops.sha256_file(temp_path, nocache=True) != source_hash:
             raise IOError(f"Verification failed for temporary copy: {source}")
-        if not fileops.install_file(temp_path, final_path, replace=replace_existing):
+        if not fileops.install_file(temp_path, final_path):
             if fileops.files_match(source, final_path, force_sha256=True):
                 return DestinationResult(
                     destination_base,
@@ -228,10 +234,11 @@ def copy_one_to_destination(
     dcim_folder: Path,
     destination_base: Path,
     card_manifest: Optional[Dict[str, dict]] = None,
+    trust_manifest: bool = False,
 ) -> DestinationResult:
     before = fileops.file_fingerprint(source)
     manifest = card_manifest if card_manifest is not None else card.load_card_manifest(dcim_folder)
-    progress.update_status(
+    progress.note_status(
         state="scanning",
         phase="copy-decision",
         current_file=source.name,
@@ -242,28 +249,23 @@ def copy_one_to_destination(
     )
     final_path = media_info.build_destination_path(source, dcim_folder, destination_base)
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    replace_existing = False
 
     if final_path.exists() and final_path.is_file():
         skipped = _skip_if_already_copied(
-            source, dcim_folder, destination_base, final_path, manifest, before.size
+            source, dcim_folder, destination_base, final_path, manifest, before.size, trust_manifest
         )
         if skipped:
             return skipped
-        if fileops.is_camera_index_file(source):
-            replace_existing = True
-            logger.info("Camera index file changed; replacing the previous copy: %s", final_path)
-        else:
-            # This file may be a conflict copy from an earlier import. Without this check, every
-            # re-insert of the card would add another copy, and send it to USB and Google Photos.
-            for copy in _existing_conflict_copies(final_path):
-                skipped = _skip_if_already_copied(
-                    source, dcim_folder, destination_base, copy, manifest, before.size
-                )
-                if skipped:
-                    return skipped
-            final_path = conflict_free_path(final_path)
-            logger.warning("Filename conflict for %s; using %s", source, final_path.name)
+        # This file may be a conflict copy from an earlier import. Without this check, every
+        # re-insert of the card would add another copy, and send it to USB and Google Photos.
+        for copy in _existing_conflict_copies(final_path):
+            skipped = _skip_if_already_copied(
+                source, dcim_folder, destination_base, copy, manifest, before.size, trust_manifest
+            )
+            if skipped:
+                return skipped
+        final_path = conflict_free_path(final_path)
+        logger.warning("Filename conflict for %s; using %s", source, final_path.name)
 
     progress.update_status(
         state="copying",
@@ -272,9 +274,7 @@ def copy_one_to_destination(
         current_path=str(source),
         message=f"Copying {source.name}",
     )
-    return _copy_and_verify(
-        source, dcim_folder, destination_base, final_path, manifest, before, replace_existing
-    )
+    return _copy_and_verify(source, dcim_folder, destination_base, final_path, manifest, before)
 
 
 def _count_session_file(category: str, source: Path, copied: bool) -> None:
@@ -282,10 +282,9 @@ def _count_session_file(category: str, source: Path, copied: bool) -> None:
     progress._PROGRESS["files_done"] = int(progress._PROGRESS.get("files_done", 0) or 0) + 1
     if copied:
         progress._PROGRESS["new_files"] = int(progress._PROGRESS.get("new_files", 0) or 0) + 1
-        if not fileops.is_camera_index_file(source):
-            progress._PROGRESS["new_media_files"] = (
-                int(progress._PROGRESS.get("new_media_files", 0) or 0) + 1
-            )
+        progress._PROGRESS["new_media_files"] = (
+            int(progress._PROGRESS.get("new_media_files", 0) or 0) + 1
+        )
         by_category = dict(progress._PROGRESS.get("new_by_category") or {})
         by_category[category] = int(by_category.get(category, 0)) + 1
         progress._PROGRESS["new_by_category"] = by_category
@@ -316,9 +315,13 @@ def copy_category(
         message=f"Checking {len(files)} {label} file(s)",
     )
     card_manifest = card.load_card_manifest(dcim_folder)
-    with progress.progress_bar(len(files), label) as bar:
+    trust_manifest = card.card_is_intact(dcim_folder)
+    logger.info("%s: every file from the last import is on the card: %s", label, trust_manifest)
+    logs.reset_timings()
+    started = time.perf_counter()
+    with catalog.reuse_connection(), progress.progress_bar(len(files), label) as bar:
         for file_index, source in enumerate(files, start=1):
-            progress.update_status(
+            progress.note_status(
                 state="scanning",
                 phase="copy-decision",
                 current_file=source.name,
@@ -332,7 +335,7 @@ def copy_category(
             for destination in destinations:
                 try:
                     result = copy_one_to_destination(
-                        source, dcim_folder, destination, card_manifest
+                        source, dcim_folder, destination, card_manifest, trust_manifest
                     )
                     results.append(result)
                     if result.status == "copied":
@@ -352,7 +355,7 @@ def copy_category(
             if len(results) != len(destinations):
                 logger.error("One or more destinations failed for %s", source)
             _count_session_file(label, source, any(r.status == "copied" for r in results))
-            progress.update_status(
+            progress.note_status(
                 state="scanning",
                 phase="copy-decision",
                 decision_files_checked=file_index,
@@ -360,6 +363,13 @@ def copy_category(
                 message=f"Checked {file_index} of {len(files)} {label} files",
             )
             bar()
+    progress.update_status()
+    logger.info(
+        "Time for %s, %d file(s): %s",
+        label,
+        len(files),
+        logs.timing_summary(time.perf_counter() - started),
+    )
     card.save_card_manifest(dcim_folder, card_manifest)
 
 
