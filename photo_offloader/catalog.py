@@ -299,6 +299,35 @@ def list_import_history(limit: int = 20) -> List[Dict[str, object]]:
     ]
 
 
+def update_run(run_id: int, outcome: str, message: str, details: Dict[str, object]) -> bool:
+    """Change what a finished run says, when something later settles it. Returns whether it worked."""
+    try:
+        with catalog_db() as db:
+            changed = db.execute(
+                "UPDATE import_history SET outcome = ?, message = ?, details = ? WHERE id = ?",
+                (outcome, message, json.dumps(details), int(run_id)),
+            ).rowcount
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        logger.warning("Could not update run %s in import history: %s", run_id, exc)
+        return False
+    return bool(changed)
+
+
+def bytes_under(roots: Sequence[Path]) -> int:
+    """How much the catalog says is in these archive roots; 0 if it can't say."""
+    resolved = [str(root.resolve()) for root in roots]
+    try:
+        with catalog_db() as db:
+            total = db.execute(
+                f"SELECT SUM(size) FROM file_locations WHERE root IN ({','.join('?' * len(resolved))})",
+                resolved,
+            ).fetchone()[0]
+    except (OSError, sqlite3.Error) as exc:
+        logger.debug("Could not add up the archive's size: %s", exc)
+        return 0
+    return int(total or 0)
+
+
 def _parse_details(text: object) -> Dict[str, object]:
     try:
         value = json.loads(str(text or "{}"))

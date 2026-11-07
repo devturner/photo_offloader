@@ -4,13 +4,24 @@ import fcntl
 import hashlib
 import io
 import os
+import shutil
 import sqlite3
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import catalog, config, fileops, logs, verify, volumes
+from photo_offloader import (
+    catalog,
+    catalog_refresh,
+    config,
+    fileops,
+    jsonfile,
+    logs,
+    verify,
+    verify_report,
+    volumes,
+)
 from photo_offloader.dashboard import display
 from tests import support
 
@@ -325,6 +336,31 @@ class TestCommand(VerifyTestCase):
         self.assertEqual(report[0]["expected_sha256"], hashlib.sha256(b"photo bytes").hexdigest())
         self.assertEqual(report[0]["actual_sha256"], fileops.sha256_file(mac))
 
+    def test_files_gone_from_the_mac_alone_read_as_one_situation(self):
+        one, _ = self.save("a/one.jpg", b"1")
+        one.unlink()
+        two, _ = self.save("a/two.jpg", b"2")
+        two.unlink()
+        with catalog.catalog_db() as db:
+            db.execute("DELETE FROM file_locations WHERE path = ?", (str(two.resolve()),))
+
+        _code, output = self.run_main()
+
+        self.assertIn(
+            "2 files are missing from the Mac. The USB drive's copy of each is good.", output
+        )
+        self.assertNotIn("problems:", self.last_run()["message"])
+
+    def test_with_any_other_problem_it_lists_them_all(self):
+        one, _ = self.save("a/one.jpg", b"1")
+        one.unlink()
+        two, _ = self.save("a/two.jpg", b"2")
+        self.damage(two)
+
+        _code, output = self.run_main()
+
+        self.assertIn("2 problems: 1 damaged, 1 missing.", output)
+
     def test_a_skipped_drive_is_said_out_loud(self):
         self.save()
         self.usb_is_mounted.return_value = False
@@ -393,15 +429,15 @@ class TestCommand(VerifyTestCase):
 
     def test_old_reports_are_pruned(self):
         config.VERIFY_REPORTS_DIR.mkdir(parents=True)
-        for index in range(verify.REPORTS_KEPT + 3):
+        for index in range(verify_report.REPORTS_KEPT + 3):
             (config.VERIFY_REPORTS_DIR / f"2020010{index:02d}-000000.csv").write_text("old")
         mac, _usb = self.save()
         mac.unlink()
 
         self.run_main()
 
-        reports = sorted(path.name for path in config.VERIFY_REPORTS_DIR.iterdir())
-        self.assertEqual(len(reports), verify.REPORTS_KEPT)
+        reports = sorted(path.name for path in config.VERIFY_REPORTS_DIR.glob("*.csv"))
+        self.assertEqual(len(reports), verify_report.REPORTS_KEPT)
         self.assertNotIn("202001000-000000.csv", reports)
 
     def test_a_second_check_is_refused_and_records_nothing(self):
@@ -427,6 +463,309 @@ class TestCommand(VerifyTestCase):
         self.assertFalse(config.STATUS_FILE_PATH.exists())
 
 
+class TestDeletedOnPurpose(VerifyTestCase):
+    """Clearing space on the Mac and keeping the drive's copies must not fail every check."""
+
+    def setUp(self):
+        super().setUp()
+        self.mac, self.usb_copy = self.save()
+        self.relative = "2026-10/NIKON-Z-8/Photos/a.jpg"
+
+    def _forget_mac_row(self):
+        with catalog.catalog_db() as db:
+            db.execute("DELETE FROM file_locations WHERE path = ?", (str(self.mac.resolve()),))
+
+    def test_a_noted_file_is_no_problem_and_is_counted(self):
+        self.mac.unlink()
+        verify_report.remember_deleted([self.relative])
+
+        check = verify.check_archives()
+
+        self.assertEqual(check.problems, [])
+        self.assertEqual(check.kept_on_drive, 1)
+        self.assertEqual(check.checked, {verify.MAC: 0, verify.USB: 1})
+        self.assertIn("1 file is only on the USB drive", verify.describe(check))
+
+    def test_it_stays_no_problem_after_a_catalog_update_forgets_the_mac_copy(self):
+        self.mac.unlink()
+        self._forget_mac_row()
+        verify_report.remember_deleted([self.relative])
+
+        check = verify.check_archives()
+
+        self.assertEqual(check.problems, [])
+        self.assertEqual(check.kept_on_drive, 1)
+
+    def test_any_other_missing_file_is_still_a_problem(self):
+        other, _ = self.save("2026-10/NIKON-Z-8/Photos/b.jpg", b"other")
+        self.mac.unlink()
+        other.unlink()
+        verify_report.remember_deleted([self.relative])
+
+        check = verify.check_archives()
+
+        self.assertEqual([p.path for p in check.problems], [other.resolve()])
+
+    def test_the_drives_copy_is_still_read_and_can_still_be_damaged(self):
+        self.mac.unlink()
+        verify_report.remember_deleted([self.relative])
+        self.damage(self.usb_copy)
+
+        check = verify.check_archives()
+
+        self.assertEqual(self.kinds(check), [(verify.USB, verify.DAMAGED)])
+        self.assertEqual(check.problems[0].other, verify.OTHER_BAD)
+
+    def test_losing_the_only_copy_raises_the_alarm_once(self):
+        """A catalog update forgets both copies, so this list is the last trace of the file."""
+        self.mac.unlink()
+        self.usb_copy.unlink()
+        self._forget_mac_row()
+        with catalog.catalog_db() as db:
+            db.execute("DELETE FROM file_locations")
+        verify_report.remember_deleted([self.relative])
+
+        first = verify.check_archives()
+        second = verify.check_archives()
+
+        self.assertEqual(self.kinds(first), [(verify.USB, verify.MISSING)])
+        self.assertEqual(first.problems[0].other, verify.OTHER_BAD)
+        self.assertEqual(second.problems, [])
+
+    def test_a_file_back_on_the_mac_is_watched_again(self):
+        """A card re-inserted copies it back. If it goes again, that's news."""
+        verify_report.remember_deleted([self.relative])
+        verify.check_archives()
+        self.assertEqual(verify_report.deleted_files(), set())
+
+        self.mac.unlink()
+
+        self.assertEqual(self.kinds(verify.check_archives()), [(verify.MAC, verify.MISSING)])
+
+    def test_an_absent_drive_never_clears_the_list(self):
+        self.mac.unlink()
+        verify_report.remember_deleted([self.relative])
+        self.usb_is_mounted.return_value = False
+
+        check = verify.check_archives()
+
+        self.assertEqual(check.problems, [])
+        self.assertEqual(verify_report.deleted_files(), {self.relative})
+
+    def test_a_whole_deleted_folder_can_be_noted_too(self):
+        raw, _ = self.save("2026-10/NIKON-Z-8/Raws/a.nef", b"raw", raw=True)
+        shutil.rmtree(config.LOCAL_RAW_DEST_ROOT)
+        with patch.object(
+            catalog_refresh.media_info, "get_exiftool_metadata_batch", return_value={}
+        ):
+            catalog_refresh.update_file_catalog()
+
+        check = verify.check_archives()
+        self.assertEqual(self.kinds(check), [(verify.MAC, verify.MISSING)])
+        self.assertEqual(check.problems[0].path, raw.resolve())
+        self.assertEqual(check.problems[0].other, verify.OTHER_GOOD)
+
+        verify_report.remember_deleted([check.problems[0].relative])
+        self.assertEqual(verify.check_archives().problems, [])
+
+    def test_a_file_only_on_the_drive_is_described_as_the_only_copy(self):
+        self.mac.unlink()
+        self._forget_mac_row()
+
+        check = verify.check_archives()
+
+        self.assertEqual(self.kinds(check), [(verify.USB, verify.ONLY_ON_DRIVE)])
+        self.assertEqual(check.problems[0].other, verify.OTHER_ONLY)
+
+
+class TestMarkingAReport(VerifyTestCase):
+    def failed_row(self):
+        self.run_main()
+        return self.last_run()
+
+    def test_the_row_groups_files_that_can_be_marked_by_folder(self):
+        for index in range(3):
+            mac, _ = self.save(f"2026-10/a/Raws/{index}.nef", b"x" * 10, raw=True)
+            mac.unlink()
+        one, _ = self.save("2026-07/b/Raws/z.nef", b"y" * 5, raw=True)
+        one.unlink()
+
+        details = self.failed_row()["details"]["check"]
+
+        self.assertEqual(details["deleted"]["count"], 4)
+        self.assertEqual(
+            details["deleted"]["folders"],
+            [
+                {"folder": "2026-10/a/Raws", "count": 3, "bytes": 30},
+                {"folder": "2026-07/b/Raws", "count": 1, "bytes": 5},
+            ],
+        )
+        self.assertEqual(details["others"], [])
+
+    def test_damage_and_a_missing_file_with_no_good_copy_cannot_be_marked(self):
+        damaged, _ = self.save("a/damaged.jpg", b"one")
+        self.damage(damaged)
+        gone, gone_usb = self.save("a/gone.jpg", b"two")
+        gone.unlink()
+        gone_usb.unlink()
+
+        details = self.failed_row()["details"]["check"]
+
+        self.assertIsNone(details["deleted"])
+        self.assertEqual(
+            sorted(item["path"] for item in details["others"]),
+            ["a/damaged.jpg", "a/gone.jpg", "a/gone.jpg"],
+        )
+
+    def test_without_the_drive_a_missing_file_cannot_be_marked(self):
+        """Nothing has shown that the drive still has it."""
+        mac, _ = self.save()
+        mac.unlink()
+        self.usb_is_mounted.return_value = False
+
+        details = self.failed_row()["details"]["check"]
+
+        self.assertIsNone(details["deleted"])
+        self.assertEqual(details["others"][0]["other"], "Not checked")
+
+    def test_without_a_saved_report_nothing_can_be_marked(self):
+        """Marking reads the saved report, so offering it here would be a button that fails."""
+        mac, _ = self.save()
+        mac.unlink()
+        with patch.object(verify, "_save_report", side_effect=OSError("disk full")):
+            details = self.failed_row()["details"]["check"]
+
+        self.assertIsNone(details["deleted"])
+        self.assertEqual(details["others"][0]["kind"], "Missing")
+
+    def test_a_long_list_stops_at_20_and_says_how_many_more(self):
+        for index in range(25):
+            mac, _ = self.save(f"a/{index}.jpg", b"%d" % index)
+            self.damage(mac)
+
+        details = self.failed_row()["details"]["check"]
+
+        self.assertEqual(len(details["others"]), verify_report.FILES_SHOWN)
+        self.assertEqual(details["others_more"], 5)
+
+    def test_marking_notes_only_the_files_that_qualify_and_keeps_the_other_problems(self):
+        gone, _ = self.save("a/gone.jpg", b"one")
+        gone.unlink()
+        damaged, _ = self.save("a/damaged.jpg", b"two")
+        self.damage(damaged)
+        details = self.failed_row()["details"]["check"]
+
+        marked, left = verify_report.mark_deleted(details["report"])
+
+        self.assertEqual(marked, ["a/gone.jpg"])
+        self.assertEqual([row["relative_path"] for row in left], ["a/damaged.jpg"])
+        self.assertEqual(verify_report.deleted_files(), {"a/gone.jpg"})
+
+    def test_a_name_that_looks_like_a_formula_is_noted_as_it_really_is(self):
+        """The spreadsheet copy guards such names, so marking must not read it from there."""
+        mac, _ = self.save("=cmd.jpg")
+        mac.unlink()
+        details = self.failed_row()["details"]["check"]
+
+        verify_report.mark_deleted(details["report"])
+
+        self.assertEqual(verify_report.deleted_files(), {"=cmd.jpg"})
+        self.assertEqual(verify.check_archives().problems, [])
+
+    def test_a_report_name_cannot_leave_the_reports_folder(self):
+        config.VERIFY_REPORTS_DIR.mkdir(parents=True)
+        outside = config.VERIFY_REPORTS_DIR.parent
+        row = {"where": verify_report.USB, "problem": verify.ONLY_ON_DRIVE, "relative_path": "x"}
+        jsonfile.write_json(outside / "secrets.json", {"rows": [row]})
+        (outside / "secrets.csv").write_text("private")
+
+        self.assertEqual(verify_report.mark_deleted("../secrets"), ([], []))
+        self.assertIsNone(verify_report.report_csv("../secrets"))
+
+    def test_pruning_a_report_removes_both_of_its_files(self):
+        mac, _ = self.save()
+        mac.unlink()
+        config.VERIFY_REPORTS_DIR.mkdir(parents=True)
+        for index in range(verify_report.REPORTS_KEPT + 2):
+            for suffix in (".csv", ".json"):
+                (config.VERIFY_REPORTS_DIR / f"2020010{index:02d}-000000{suffix}").write_text("{}")
+
+        self.run_main()
+
+        names = [path.name for path in config.VERIFY_REPORTS_DIR.iterdir()]
+        self.assertEqual(sum(name.endswith(".csv") for name in names), verify_report.REPORTS_KEPT)
+        self.assertEqual(sum(name.endswith(".json") for name in names), verify_report.REPORTS_KEPT)
+
+
+class TestProgressFile(VerifyTestCase):
+    def test_it_says_where_the_check_has_got_to_and_goes_away_at_the_end(self):
+        self.save("a/one.jpg", b"1" * 100)
+        self.save("a/two.jpg", b"2" * 100)
+        seen = []
+        real_hash = fileops.sha256_file
+
+        def hashed(path, *args, **kwargs):
+            seen.append(jsonfile.read_object(config.VERIFY_STATUS_PATH))
+            return real_hash(path, *args, **kwargs)
+
+        with (
+            patch.object(fileops, "sha256_file", side_effect=hashed),
+            patch.object(verify, "STATUS_SECONDS", 0),
+        ):
+            self.run_main()
+
+        self.assertEqual(seen[0]["where"], verify.MAC)
+        self.assertEqual((seen[0]["files_done"], seen[0]["files_total"]), (0, 4))
+        self.assertEqual(seen[0]["bytes_total"], 400)
+        self.assertTrue(seen[0]["usb"])
+        self.assertEqual(seen[-1]["where"], verify.USB)
+        self.assertEqual((seen[-1]["files_done"], seen[-1]["bytes_done"]), (3, 300))
+        self.assertFalse(config.VERIFY_STATUS_PATH.exists())
+
+    def test_it_shows_at_once_before_the_archives_have_been_listed(self):
+        with patch.object(
+            verify,
+            "check_archives",
+            side_effect=lambda check: self.assertEqual(
+                jsonfile.read_object(config.VERIFY_STATUS_PATH)["where"], ""
+            ),
+        ):
+            self.run_main()
+
+    def test_it_goes_away_after_a_cancel_too(self):
+        with patch.object(verify, "check_archives", side_effect=KeyboardInterrupt):
+            self.run_main()
+        self.assertFalse(config.VERIFY_STATUS_PATH.exists())
+
+    def test_a_full_disk_does_not_stop_the_check(self):
+        self.save()
+        with patch.object(jsonfile, "write_json", side_effect=OSError("disk full")):
+            code, _output = self.run_main()
+        self.assertEqual(code, 0)
+
+    def test_the_saved_time_left_counts_the_drive_while_the_mac_is_being_read(self):
+        """The Mac is quick, so without the drive the row would promise far too little."""
+        mac = verify._Location(verify.MAC, {"a": verify._Entry(Path("a"), size=1000)})
+        drive_bytes = int(verify_report.USB_BYTES_PER_SECOND * 600)
+        usb = verify._Location(verify.USB, {"a": verify._Entry(Path("a"), size=drive_bytes)})
+
+        with redirect_stdout(io.StringIO()):
+            verify._Progress(mac, usb, True).start(verify.MAC)
+
+        self.assertEqual(jsonfile.read_object(config.VERIFY_STATUS_PATH)["seconds_left"], 600)
+
+    def test_time_left_uses_the_speed_so_far_once_there_is_one(self):
+        # 10 GB done in 100 s, 10 GB left, and nothing still to come.
+        self.assertEqual(verify.seconds_left(10e9, 10e9, 100.0, 1e9, 0), 100)
+
+    def test_time_left_uses_the_measured_speed_before_that(self):
+        self.assertEqual(verify.seconds_left(0, 10e9, 0.0, 1e9, 0), 10)
+
+    def test_time_left_allows_for_the_drive_while_the_mac_is_being_read(self):
+        left = verify.seconds_left(0, 1e9, 0.0, 1e9, verify_report.USB_BYTES_PER_SECOND * 60)
+        self.assertEqual(left, 61)
+
+
 class TestDashboardRow(unittest.TestCase):
     @staticmethod
     def row(outcome, message):
@@ -444,16 +783,51 @@ class TestDashboardRow(unittest.TestCase):
         }
 
     def test_a_clean_check_says_what_it_found(self):
-        described = display.describe_run(self.row("complete", "All 6,300 copies match."))
-        self.assertEqual(described["title"], "Archive check passed")
+        row = {**self.row("complete", "All 6,300 copies match."), "bytes": 138_800_000_000}
+        described = display.describe_run({**row, "duration_seconds": 1090.0})
+        self.assertEqual(described["title"], "Saved copies checked")
         self.assertEqual(described["tone"], "success")
-        self.assertEqual(described["summary"], "All 6,300 copies match.")
+        self.assertEqual(described["summary"], "All 6,300 copies match · 129.3 GB · 18 min")
 
     def test_a_failed_check_says_so(self):
         described = display.describe_run(self.row("failed", "1 problem: 1 damaged."))
-        self.assertEqual(described["title"], "Archive check failed")
+        self.assertEqual(described["title"], "Saved copies need attention")
         self.assertEqual(described["tone"], "error")
         self.assertEqual(described["summary"], "1 problem: 1 damaged.")
+
+    def test_a_stopped_check_says_so(self):
+        described = display.describe_run(self.row("canceled", "Canceled after 12 copies."))
+        self.assertEqual(described["title"], "Check of saved copies stopped")
+        self.assertEqual(described["tone"], "warning")
+
+    def test_its_report_is_about_the_check_not_a_catalog_update(self):
+        row = {**self.row("complete", "All match."), "duration_seconds": 60.0, "bytes": 0}
+        step = display.run_report(row)["steps"][0]
+        self.assertEqual(step["label"], "Check saved copies")
+
+
+class TestWarningText(unittest.TestCase):
+    def test_the_time_comes_from_the_last_check_when_there_was_one(self):
+        warning = display.verify_warning(True, 1090.0, 69e9, 69e9)
+        self.assertEqual(warning["time"], "About 18 minutes, going by your last check.")
+        self.assertTrue(warning["drive"])
+
+    def test_a_first_check_estimates_from_the_measured_speed(self):
+        warning = display.verify_warning(True, None, 69.4e9, 69.4e9)
+        self.assertEqual(
+            warning["time"],
+            "This can take a while: about 25 minutes for every 100 GB on the USB drive, "
+            "so roughly 18 minutes for yours.",
+        )
+
+    def test_without_the_drive_it_says_only_the_mac_is_checked(self):
+        warning = display.verify_warning(False, None, 69.4e9, 69.4e9)
+        self.assertEqual(
+            warning["time"],
+            "About a minute. The USB drive isn't connected, so only the Mac will be checked.",
+        )
+        self.assertFalse(warning["drive"])
+        self.assertNotIn("USB", warning["what"])
 
 
 if __name__ == "__main__":

@@ -120,6 +120,14 @@ class Paths:
         return self.install_dir / config.GOOGLE_SYNC
 
     @property
+    def verify_script(self) -> Path:
+        return self.install_dir / config.VERIFY
+
+    @property
+    def verify_status_file(self) -> Path:
+        return self.data_dir / config.VERIFY_STATUS_PATH.name
+
+    @property
     def service_script(self) -> Path:
         return self.install_dir / config.SERVICE
 

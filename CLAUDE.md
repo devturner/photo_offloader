@@ -82,6 +82,8 @@ Two consequences:
 - `photo_offloader/verify.py`: rechecks saved copies against the catalog. It reports only and is a
   separate program, without the session lock or `status.json`, because the trigger and dashboard take
   a running `photo-offloader-import` to mean an import, and a check takes many minutes.
+  `verify_report.py` holds what it shares with the dashboard, which can't import it: the saved
+  report and the files someone has said they deleted from the Mac.
 - `bin/` launchers, `scripts/` (trigger, import_supervisor, service), `tools/`, `tests/`.
 - `docs/` holds the user documentation, one topic per page, linked from a short `README.md`.
 - The root `index.html` is the GitHub Pages landing page, not the dashboard page. It links to

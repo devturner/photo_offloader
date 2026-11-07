@@ -55,6 +55,8 @@ def _test_locations(root: Path) -> dict:
         "RUN_REPORTS_DIR": data / "run-reports",
         "VERIFY_REPORTS_DIR": data / "verify-reports",
         "VERIFY_LOCK_PATH": root / "verify.lock",
+        "VERIFY_STATUS_PATH": data / "verify_status.json",
+        "DELETED_FROM_MAC_PATH": data / "deleted_from_mac.json",
         "LEGACY_CATALOG_DB_PATH": install / "catalog.sqlite3",
         "BUILD_INFO_PATH": root / "build_info.json",
         "VERSION_PATH": root / "VERSION",

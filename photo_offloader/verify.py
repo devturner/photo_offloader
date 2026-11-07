@@ -2,11 +2,11 @@
 
 A copy is verified once, when it's made. This finds what happens to it afterwards: a failing disk,
 a deleted file, a copy that has quietly stopped matching the other one. It only reports. Nothing
-here changes a file or the catalog, because which copy is right is for a person to decide.
+here changes a saved file or the catalog, because which copy is right is for a person to decide.
 
 It's its own program, without the import session lock or status.json, because a check takes many
 minutes: a card inserted meanwhile must still import, and the trigger and the dashboard take any
-running importer to mean an import is under way.
+running importer to mean an import is under way. Its progress has a file of its own.
 """
 
 from __future__ import annotations
@@ -27,40 +27,33 @@ from photo_offloader import (
     config,
     fileops,
     importer,
+    jsonfile,
     logs,
-    run_report,
+    verify_report,
     volumes,
 )
 from photo_offloader.logs import logger
-
-MAC = "Mac"
-USB = "USB drive"
-BOTH = "Both"
-
-DAMAGED = "damaged"  # the contents changed, but not the size or date: nothing meant to do that
-CHANGED = "changed"  # the contents differ, and something has also touched the file
-MISSING = "missing"
-UNREADABLE = "unreadable"
-ONLY_ON_DRIVE = "only on the drive"
-COPIES_DIFFER = "copies differ"
-KINDS_IN_ORDER = (DAMAGED, CHANGED, MISSING, UNREADABLE, ONLY_ON_DRIVE, COPIES_DIFFER)
-
-OTHER_GOOD = "good"
-OTHER_BAD = "no good copy"
-OTHER_UNKNOWN = "not checked"
-OTHER_UNSURE = "can't tell which is right"
-
-REPORTS_KEPT = 20
-REPORT_COLUMNS = (
-    "where",
-    "problem",
-    "other_copy",
-    "path",
-    "relative_path",
-    "expected_sha256",
-    "actual_sha256",
+from photo_offloader.verify_report import (
+    BOTH,
+    CHANGED,
+    COPIES_DIFFER,
+    DAMAGED,
+    MAC,
+    MISSING,
+    ONLY_ON_DRIVE,
+    OTHER_BAD,
+    OTHER_GOOD,
+    OTHER_ONLY,
+    OTHER_UNKNOWN,
+    OTHER_UNSURE,
+    UNREADABLE,
+    USB,
+    plural,
 )
-PROGRESS_SECONDS = 5.0
+
+PROGRESS_SECONDS = 5.0  # between lines in the terminal
+STATUS_SECONDS = 1.0  # between updates of the progress file
+MEASURED_SPEED_AFTER_SECONDS = 3.0  # before this, a location's own speed is mostly noise
 EXIT_OK, EXIT_PROBLEMS, EXIT_CANCELED = 0, 1, 130
 
 
@@ -73,6 +66,7 @@ class Problem:
     expected: str = ""
     actual: str = ""
     other: str = ""
+    size: int = 0
 
 
 @dataclass
@@ -89,6 +83,7 @@ class _Location:
     files: Dict[str, _Entry] = field(default_factory=dict)
     actual: Dict[str, str] = field(default_factory=dict)  # read, and not found to be wrong
     unverified: Set[str] = field(default_factory=set)  # read, but with nothing to compare it to
+    gone: Set[str] = field(default_factory=set)  # noted as deleted, and it is
     finished: bool = False
 
 
@@ -98,6 +93,7 @@ class ArchiveCheck:
     checked: Dict[str, int] = field(default_factory=lambda: {MAC: 0, USB: 0})
     not_checked: int = 0
     waiting_for_backup: int = 0
+    kept_on_drive: int = 0
     bytes_read: int = 0
     usb_skipped: bool = False
     drive_gone: bool = False
@@ -152,26 +148,77 @@ def _drive_still_there(identity: Optional[volumes.VolumeIdentity]) -> bool:
     )
 
 
-class _Progress:
-    """A line every few seconds: a full check runs for many minutes."""
+def seconds_left(
+    done_here: float, left_here: float, elapsed: float, usual_speed: float, later_bytes: float
+) -> int:
+    """Time left: this location at its own speed if there's one yet, and the drive still to come."""
+    measured = done_here / elapsed if elapsed >= MEASURED_SPEED_AFTER_SECONDS and done_here else 0
+    here = left_here / (measured or usual_speed)
+    return round(here + later_bytes / verify_report.USB_BYTES_PER_SECOND)
 
-    def __init__(self, location: _Location) -> None:
-        self.name = location.name
-        self.files = len(location.files)
-        self.total = sum(entry.size for entry in location.files.values())
+
+def _write_status(**fields: object) -> None:
+    try:
+        jsonfile.write_json(config.VERIFY_STATUS_PATH, fields)
+    except OSError as exc:  # only the dashboard's progress: the check itself goes on
+        logger.debug("Could not save the check's progress: %s", exc)
+
+
+class _Progress:
+    """A line every few seconds in the terminal and a file for the dashboard: this takes minutes."""
+
+    def __init__(self, mac: _Location, usb: _Location, usb_planned: bool) -> None:
+        self.sizes = {location.name: _total(location) for location in (mac, usb)}
+        self.counts = {location.name: len(location.files) for location in (mac, usb)}
+        self.usb_planned = usb_planned
+        self.where = MAC
+        self.files = sum(self.counts.values())
+        self.total = sum(self.sizes.values())
         self.done_files = 0
         self.done_bytes = 0
-        self.last = time.monotonic()
+        self.done_here = 0
+        self.started_here = self.printed = self.saved = time.monotonic()
+
+    def start(self, name: str) -> None:
+        self.where = name
+        self.done_here = 0
+        self.started_here = time.monotonic()
         print(
-            f"Checking {_plural(self.files, 'file')} on the {self.name} ({self.total / 1e9:.1f} GB)"
+            f"Checking {plural(self.counts[name], 'file')} on the {name} "
+            f"({self.sizes[name] / 1e9:.1f} GB)"
+        )
+        self._save()
+
+    def _save(self) -> None:
+        on_mac = self.where == MAC
+        _write_status(
+            where=self.where,
+            usb=self.usb_planned,
+            files_done=self.done_files,
+            files_total=self.files,
+            bytes_done=self.done_bytes,
+            bytes_total=self.total,
+            seconds_left=seconds_left(
+                self.done_here,
+                self.sizes[self.where] - self.done_here,
+                time.monotonic() - self.started_here,
+                verify_report.MAC_BYTES_PER_SECOND
+                if on_mac
+                else verify_report.USB_BYTES_PER_SECOND,
+                self.sizes[USB] if on_mac else 0,
+            ),
         )
 
     def advance(self, entry: _Entry) -> None:
         self.done_files += 1
         self.done_bytes += entry.size
+        self.done_here += entry.size
         now = time.monotonic()
-        if now - self.last >= PROGRESS_SECONDS:
-            self.last = now
+        if now - self.saved >= STATUS_SECONDS:
+            self.saved = now
+            self._save()
+        if now - self.printed >= PROGRESS_SECONDS:
+            self.printed = now
             print(
                 f"  {self.done_files:,} of {self.files:,} files, "
                 f"{self.done_bytes / 1e9:.1f} of {self.total / 1e9:.1f} GB",
@@ -179,19 +226,29 @@ class _Progress:
             )
 
 
+def _total(location: _Location) -> int:
+    return sum(entry.size for entry in location.files.values())
+
+
 def _check_location(
     check: ArchiveCheck,
     location: _Location,
     other: _Location,
+    shown: _Progress,
+    noted: Set[str] = frozenset(),  # type: ignore[assignment]
     identity: Optional[volumes.VolumeIdentity] = None,
 ) -> None:
     on_drive = location.name == USB
-    shown = _Progress(location)
+    shown.start(location.name)
     for relative in sorted(location.files):
         entry = location.files[relative]
         other_entry = other.files.get(relative)
         expected = entry.sha256 or (other_entry.sha256 if other_entry else None)
         kind, actual = _problem_with(entry, expected)
+        if kind == MISSING and relative in noted:
+            location.gone.add(relative)
+            shown.advance(entry)
+            continue
         if kind and on_drive and not _drive_still_there(identity):
             # Everything left would look missing or different, and none of it would be true.
             logger.error("The USB drive went away during the check.")
@@ -202,7 +259,17 @@ def _check_location(
         shown.advance(entry)
         if kind:
             _add_problem(
-                check, Problem(location.name, kind, entry.path, relative, expected or "", actual)
+                check,
+                Problem(
+                    location.name,
+                    kind,
+                    entry.path,
+                    relative,
+                    expected or "",
+                    actual,
+                    "",
+                    entry.size,
+                ),
             )
             continue
         location.actual[relative] = actual
@@ -217,7 +284,7 @@ def _add_problem(check: ArchiveCheck, problem: Problem) -> None:
     logger.error("%s, %s: %s", problem.where, problem.kind, problem.path)
 
 
-def _compare_copies(check: ArchiveCheck, mac: _Location, usb: _Location) -> None:
+def _compare_copies(check: ArchiveCheck, mac: _Location, usb: _Location, noted: Set[str]) -> None:
     """Each copy can match its own hash and still differ: a backup records a differing file's hash."""
     for relative in sorted(mac.actual.keys() & usb.actual.keys()):
         if mac.actual[relative] != usb.actual[relative]:
@@ -231,13 +298,33 @@ def _compare_copies(check: ArchiveCheck, mac: _Location, usb: _Location) -> None
                     mac.actual[relative],
                     usb.actual[relative],
                     OTHER_UNSURE,
+                    mac.files[relative].size,
                 ),
             )
-    for relative in sorted(usb.actual.keys() - mac.files.keys()):
+    for relative in sorted(usb.actual.keys() - mac.files.keys() - noted):
         # A catalog update forgets a deleted file, so this may be all that's left to say about it.
+        entry = usb.files[relative]
         _add_problem(
-            check, Problem(USB, ONLY_ON_DRIVE, usb.files[relative].path, relative, other=OTHER_BAD)
+            check,
+            Problem(USB, ONLY_ON_DRIVE, entry.path, relative, other=OTHER_ONLY, size=entry.size),
         )
+
+
+def _settle_deleted(check: ArchiveCheck, mac: _Location, usb: _Location, noted: Set[str]) -> None:
+    """Count the noted files, and drop the ones the note no longer describes."""
+    back = {name for name in noted if name in mac.files and name not in mac.gone}
+    # A catalog update forgets a file gone from both places, so this is the last trace of the only
+    # copy. Say so once: no drive is ever going to bring it back on its own.
+    lost = sorted(name for name in noted - back if usb.finished and name not in usb.files)
+    for relative in lost:
+        path = config.USB_DEST_ROOT.resolve() / relative
+        _add_problem(check, Problem(USB, MISSING, path, relative, other=OTHER_BAD))
+    check.kept_on_drive = len(noted) - len(back) - len(lost)
+    if back or lost:
+        try:
+            verify_report.forget_deleted(back.union(lost))
+        except OSError as exc:  # the same files are looked at again next time
+            logger.warning("Could not update the list of deleted files: %s", exc)
 
 
 def _other_copy(problem: Problem, mac: _Location, usb: _Location) -> str:
@@ -250,6 +337,7 @@ def _other_copy(problem: Problem, mac: _Location, usb: _Location) -> str:
 def check_archives(check: Optional[ArchiveCheck] = None) -> ArchiveCheck:
     """Read every saved copy, filling in ``check`` as it goes so a cancel keeps what was found."""
     check = check if check is not None else ArchiveCheck()
+    noted = verify_report.deleted_files()
     mac = _load_location(MAC, (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT))
     usb = _Location(USB)
     identity = None
@@ -259,11 +347,13 @@ def check_archives(check: Optional[ArchiveCheck] = None) -> ArchiveCheck:
     else:
         check.usb_skipped = True
         logger.info("The USB drive isn't connected, so only the Mac's copies are being checked.")
-    _check_location(check, mac, usb)
+    shown = _Progress(mac, usb, not check.usb_skipped)
+    _check_location(check, mac, usb, shown, noted)
     if not check.usb_skipped:
-        _check_location(check, usb, mac, identity)
-        check.waiting_for_backup = len(mac.files.keys() - usb.files.keys())
-        _compare_copies(check, mac, usb)
+        _check_location(check, usb, mac, shown, identity=identity)
+        check.waiting_for_backup = len(mac.actual.keys() - usb.files.keys())
+        _compare_copies(check, mac, usb, noted)
+    _settle_deleted(check, mac, usb, noted)
     for problem in check.problems:
         problem.other = problem.other or _other_copy(problem, mac, usb)
     return check
@@ -272,21 +362,8 @@ def check_archives(check: Optional[ArchiveCheck] = None) -> ArchiveCheck:
 # ---- saying what it found ---------------------------------------------------------------------
 
 
-def _plural(count: int, noun: str) -> str:
-    return f"{count:,} {noun}" + ("" if count == 1 else "s")
-
-
 def _copies(count: int) -> str:
     return f"{count:,} " + ("copy" if count == 1 else "copies")
-
-
-def _problems_text(check: ArchiveCheck) -> str:
-    counts = [
-        f"{sum(1 for problem in check.problems if problem.kind == kind):,} {kind}"
-        for kind in KINDS_IN_ORDER
-        if any(problem.kind == kind for problem in check.problems)
-    ]
-    return f"{_plural(len(check.problems), 'problem')}: {', '.join(counts)}."
 
 
 def _clean_text(check: ArchiveCheck, total: int) -> str:
@@ -311,51 +388,49 @@ def describe(check: ArchiveCheck) -> str:
             f"The USB drive was disconnected or replaced, so the check stopped after {_copies(total)}."
         )
     if check.problems:
-        parts.append(_problems_text(check))
+        parts.append(verify_report.message_for(_report_rows(check)))
     elif not (check.canceled or check.drive_gone):
         parts.append(_clean_text(check, total))
     if check.usb_skipped:
         parts.append("The USB drive wasn't connected, so only the Mac was checked.")
     if check.not_checked:
-        parts.append(f"{_plural(check.not_checked, 'file')} had no saved hash to compare with.")
+        parts.append(f"{plural(check.not_checked, 'file')} had no saved hash to compare with.")
+    if check.kept_on_drive:
+        verb = "is" if check.kept_on_drive == 1 else "are"
+        parts.append(f"{plural(check.kept_on_drive, 'file')} {verb} only on the USB drive.")
     if check.waiting_for_backup:
-        parts.append(f"{_plural(check.waiting_for_backup, 'file')} still to back up to the drive.")
+        parts.append(f"{plural(check.waiting_for_backup, 'file')} still to back up to the drive.")
     return " ".join(parts)
 
 
-def _save_report(check: ArchiveCheck, started_at: float) -> Path:
-    folder = config.VERIFY_REPORTS_DIR
-    folder.mkdir(parents=True, exist_ok=True)
-    report = folder / (time.strftime("%Y%m%d-%H%M%S", time.localtime(started_at)) + ".csv")
-    run_report.write_csv(
-        report,
-        REPORT_COLUMNS,
-        (
-            {
-                "where": problem.where,
-                "problem": problem.kind,
-                "other_copy": problem.other,
-                "path": problem.path,
-                "relative_path": problem.relative,
-                "expected_sha256": problem.expected,
-                "actual_sha256": problem.actual,
-            }
-            for problem in check.problems
-        ),
-    )
-    for old in sorted(folder.glob("*.csv"))[:-REPORTS_KEPT]:
-        old.unlink(missing_ok=True)
-    return report
+def _report_rows(check: ArchiveCheck) -> List[Dict[str, object]]:
+    return [
+        {
+            "where": problem.where,
+            "problem": problem.kind,
+            "other_copy": problem.other,
+            "path": str(problem.path),
+            "relative_path": problem.relative,
+            "bytes": problem.size,
+            "expected_sha256": problem.expected,
+            "actual_sha256": problem.actual,
+        }
+        for problem in check.problems
+    ]
 
 
-def _saved_report(check: ArchiveCheck, started_at: float) -> Optional[Path]:
+def _save_report(check: ArchiveCheck, started_at: float) -> str:
+    return verify_report.save_report(_report_rows(check), started_at)
+
+
+def _saved_report(check: ArchiveCheck, started_at: float) -> str:
     if not check.problems:
-        return None
+        return ""
     try:
         return _save_report(check, started_at)
     except OSError as exc:  # the log already names each file
         logger.exception("Could not save the check's report: %s", exc)
-        return None
+        return ""
 
 
 def _exit_code(check: ArchiveCheck) -> int:
@@ -364,7 +439,11 @@ def _exit_code(check: ArchiveCheck) -> int:
     return EXIT_PROBLEMS if check.problems or check.drive_gone or check.error else EXIT_OK
 
 
-def _record(check: ArchiveCheck, started_at: float, message: str, code: int) -> None:
+def _record(check: ArchiveCheck, started_at: float, message: str, code: int, report: str) -> None:
+    whole = not (check.canceled or check.drive_gone or check.error)
+    details: Dict[str, object] = {"whole": whole}
+    if check.problems:
+        details["check"] = verify_report.details_for(_report_rows(check), report)
     catalog.record_import_run(
         kind="verify",
         outcome={EXIT_OK: "complete", EXIT_CANCELED: "canceled"}.get(code, "failed"),
@@ -376,6 +455,7 @@ def _record(check: ArchiveCheck, started_at: float, message: str, code: int) -> 
         bytes=check.bytes_read,
         usb=bool(check.checked[USB]),
         message=message,
+        details=details,
     )
 
 
@@ -383,6 +463,8 @@ def _run() -> int:
     started_at = time.time()
     check = ArchiveCheck()
     logger.info("Starting a check of the saved copies.")
+    # Before the archives are listed, so a check started from the dashboard shows straight away.
+    _write_status(where="", usb=False)
     try:
         check_archives(check)
     except KeyboardInterrupt:
@@ -390,19 +472,21 @@ def _run() -> int:
     except (OSError, sqlite3.Error) as exc:  # never mistake a broken catalog for an empty one
         logger.exception("The check could not finish: %s", exc)
         check.error = str(exc)
+    finally:
+        config.VERIFY_STATUS_PATH.unlink(missing_ok=True)
     message, code = describe(check), _exit_code(check)
     logger.info("Check finished: %s", message)
     print(f"\n{message}")
     report = _saved_report(check, started_at)
     if report:
-        print(f"Every problem is listed in {report}")
+        print(f"Every problem is listed in {verify_report.report_csv(report)}")
     if check.problems:
         print(
             "Nothing was changed. Each problem says whether the other copy is good: restore from "
             "that copy by hand, or from the card if it still has the photo."
         )
-        logs.notify("Archive Check Found Problems", message)
-    _record(check, started_at, message, code)
+        logs.notify("Saved Copies Need Attention", message)
+    _record(check, started_at, message, code, report)
     return code
 
 

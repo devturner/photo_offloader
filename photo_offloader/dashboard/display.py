@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from photo_offloader import verify_report
+
 CATEGORY_LABELS = {"JPG": "JPG", "RAW": "RAW", "VIDEO": "Video", "OTHER": "Other"}
 IMPORT_STAGES = (
     ("scan", "Scan card"),
@@ -250,10 +252,17 @@ def _archive_step(activity: Optional[Dict[str, Any]], local: Optional[int]) -> D
 
 
 def _usb_step(
-    activity: Optional[Dict[str, Any]], usb_mounted: bool, usb: Optional[int], busy: bool
+    activity: Optional[Dict[str, Any]],
+    usb_mounted: bool,
+    usb: Optional[int],
+    busy: bool,
+    drive_in_use: bool = False,
 ) -> Dict[str, Any]:
     if activity and activity["kind"] == "usb_backup":
         return _step("usb", "USB backup", "active", "Backing up", activity["detail"])
+    if usb_mounted and drive_in_use:
+        actions = [] if busy else [_action("usb_backup", "Back up now")]
+        return _step("usb", "USB backup", "ok", "Connected", "In use by the check", actions)
     if usb_mounted:
         return _step(
             "usb",
@@ -322,12 +331,13 @@ def pipeline(
     can_reimport: bool,
     setup_step: str,
     card_unsaved: bool = False,
+    drive_in_use: bool = False,
 ) -> List[Dict[str, Any]]:
     """The four steps a photo moves through (card, Mac, USB, Google) and what each can do now."""
     return [
         _card_step(card, activity, busy, can_reimport, card_unsaved),
         _archive_step(activity, counts["local"] if counts else None),
-        _usb_step(activity, usb_mounted, counts["usb"] if counts else None, busy),
+        _usb_step(activity, usb_mounted, counts["usb"] if counts else None, busy, drive_in_use),
         _cloud_step(
             google,
             counts["uploaded"] if counts else 0,
@@ -537,12 +547,28 @@ def _single_step(row: Dict[str, Any], kind: str) -> Dict[str, Any]:
             "usb", "Back up to USB", "USB backup", state, result, files=copied, seconds=seconds
         )
     result = "Completed" if state == "done" else str(row.get("message") or "Stopped")
+    if kind == "verify":
+        return _report_step(
+            "verify",
+            "Check saved copies",
+            "Saved copies",
+            state,
+            result,
+            files=int(row["files"]),
+            seconds=seconds,
+        )
     return _report_step(
         "catalog", "Update file catalog", "File catalog", state, result, seconds=seconds
     )
 
 
-SEGMENT_LABELS = {"scan": "Scan", "copy": "Copy", "usb": "USB backup", "upload": "Upload"}
+SEGMENT_LABELS = {
+    "scan": "Scan",
+    "copy": "Copy",
+    "usb": "USB backup",
+    "upload": "Upload",
+    "verify": "Check",
+}
 
 
 def _segments(steps: List[Dict[str, Any]], duration: float) -> List[Dict[str, Any]]:
@@ -591,27 +617,85 @@ def run_report(row: Dict[str, Any], upload_state: Optional[str] = None) -> Dict[
     }
 
 
+def _clean_check_parts(row: Dict[str, Any]) -> List[str]:
+    parts = [str(row.get("message") or "").rstrip(".")]
+    if row.get("bytes"):
+        parts.append(format_bytes(int(row["bytes"])))
+    if row.get("duration_seconds"):
+        seconds = float(row["duration_seconds"])
+        parts.append(f"{round(seconds / 60)} min" if seconds >= 60 else f"{round(seconds)} s")
+    return parts
+
+
+def _time_text(seconds: float) -> str:
+    return "a minute" if seconds < 90 else f"{round(seconds / 60)} minutes"
+
+
+def verify_warning(
+    usb_mounted: bool, last_seconds: Optional[float], mac_bytes: int, usb_bytes: int
+) -> Dict[str, Any]:
+    """What the page says before a check starts. A person's own last check beats any estimate."""
+    where = "on the Mac and the USB drive" if usb_mounted else "on the Mac"
+    what = f"It rereads every photo {where} from the disk and compares it with the hash saved when it was copied."
+    expected = mac_bytes / verify_report.MAC_BYTES_PER_SECOND
+    if usb_mounted:
+        expected += usb_bytes / verify_report.USB_BYTES_PER_SECOND
+    if last_seconds is not None:
+        time_text = f"About {_time_text(last_seconds)}, going by your last check."
+    elif usb_mounted:
+        time_text = (
+            "This can take a while: about 25 minutes for every 100 GB on the USB drive, "
+            f"so roughly {_time_text(expected)} for yours."
+        )
+    else:
+        time_text = f"About {_time_text(expected)}."
+    if not usb_mounted:
+        time_text += " The USB drive isn't connected, so only the Mac will be checked."
+    return {"time": time_text, "what": what, "drive": usb_mounted}
+
+
+def verify_progress(status: Dict[str, Any]) -> Dict[str, Any]:
+    """The running check's row. It shows at once, before the first figures are known."""
+    total = int(status.get("bytes_total", 0) or 0)
+    if not status.get("where") or not total:
+        return {"percent": 0, "text": "Getting ready", "usb": bool(status.get("usb"))}
+    percent = round(int(status.get("bytes_done", 0) or 0) / total * 100)
+    left = float(status.get("seconds_left", 0) or 0)
+    parts = [
+        f"{percent}%",
+        str(status["where"]),
+        f"{int(status.get('files_done', 0) or 0):,} of {int(status.get('files_total', 0) or 0):,} copies",
+        f"about {round(left / 60)} min left" if left >= 90 else "about a minute left",
+    ]
+    return {"percent": percent, "text": " · ".join(parts), "usb": bool(status.get("usb"))}
+
+
+def _run_title(kind: str, outcome: str, source: str) -> Tuple[str, str]:
+    """A finished run's title and tone."""
+    if kind == "verify":
+        title = {
+            "failed": "Saved copies need attention",
+            "canceled": "Check of saved copies stopped",
+        }.get(outcome, "Saved copies checked")
+    else:
+        noun = {
+            "import": f"Import from {source}" if source else "Import",
+            "usb_backup": "USB backup",
+            "catalog": "Catalog update",
+        }.get(kind, "Transfer")
+        done = {
+            "import": f"Imported from {source}" if source else "Import complete",
+            "usb_backup": "USB backup complete",
+            "catalog": "Catalog updated",
+        }.get(kind, "Transfer complete")
+        title = {"failed": f"{noun} failed", "canceled": f"{noun} canceled"}.get(outcome, done)
+    return title, {"failed": "error", "canceled": "warning"}.get(outcome, "success")
+
+
 def describe_run(row: Dict[str, Any]) -> Dict[str, Any]:
     kind, outcome = str(row["kind"]), str(row["outcome"])
     source = str(row.get("source") or "")
-    noun = {
-        "import": f"Import from {source}" if source else "Import",
-        "usb_backup": "USB backup",
-        "catalog": "Catalog update",
-        "verify": "Archive check",
-    }.get(kind, "Transfer")
-    done = {
-        "import": f"Imported from {source}" if source else "Import complete",
-        "usb_backup": "USB backup complete",
-        "catalog": "Catalog updated",
-        "verify": "Archive check passed",
-    }.get(kind, "Transfer complete")
-    if outcome == "failed":
-        title, tone = f"{noun} failed", "error"
-    elif outcome == "canceled":
-        title, tone = f"{noun} canceled", "warning"
-    else:
-        title, tone = done, "success"
+    title, tone = _run_title(kind, outcome, source)
     parts: List[str] = []
     details = _details(row)
     problems = details.get("problems")
@@ -639,7 +723,9 @@ def describe_run(row: Dict[str, Any]) -> Dict[str, Any]:
             parts.append(f"{int(row['skipped']):,} already there")
         if row["failed"]:
             parts.append(f"{int(row['failed'])} failed")
-    if (outcome != "complete" or kind == "verify") and row.get("message"):
+    elif kind == "verify" and outcome == "complete":
+        parts += _clean_check_parts(row)
+    if outcome != "complete" and row.get("message"):
         parts.append(str(row["message"]))
     return {**row, "title": title, "tone": tone, "summary": " · ".join(parts)}
 
