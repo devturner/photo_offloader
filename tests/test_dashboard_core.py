@@ -59,6 +59,7 @@ class Fixture(unittest.TestCase):
         self.service_up = True
         self.importer_up = False
         self.google_up = False
+        self.verify_up = False
         self.spawned = []
         self.ran = []
 
@@ -67,11 +68,10 @@ class Fixture(unittest.TestCase):
             if "print" in argv:
                 return subprocess.CompletedProcess(argv, 0 if self.service_up else 113, "", "")
             if argv[0].endswith("pgrep"):
-                alive = (
-                    self.google_up
-                    if argv[-1].endswith("photo-offloader-google-sync")
-                    else self.importer_up
-                )
+                alive = {
+                    "photo-offloader-google-sync": self.google_up,
+                    "photo-offloader-verify": self.verify_up,
+                }.get(argv[-1].rsplit("/", 1)[-1], self.importer_up)
                 return subprocess.CompletedProcess(argv, 0, "4242\n" if alive else "", "")
             return subprocess.CompletedProcess(argv, 0, "ok", "")
 

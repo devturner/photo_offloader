@@ -291,5 +291,37 @@ class TestEndsMatch(unittest.TestCase):
             fileops.ends_match(self.first, self.second)
 
 
+class TestForgetCachedPages(support.CardFixtureTestCase):
+    def test_a_file_in_ram_is_no_longer_in_ram(self):
+        path = self.root / "photo.bin"
+        path.write_bytes(os.urandom(1024 * 1024))
+        path.read_bytes()
+        self.assertGreater(pages_in_ram(path), 0)
+
+        self.assertTrue(fileops.forget_cached_pages(path))
+
+        self.assertEqual(pages_in_ram(path), 0)
+
+    def test_the_file_is_unchanged(self):
+        path = self.root / "photo.bin"
+        content = os.urandom(100_000)
+        path.write_bytes(content)
+        before = path.stat().st_mtime_ns
+
+        fileops.forget_cached_pages(path)
+
+        self.assertEqual(path.read_bytes(), content)
+        self.assertEqual(path.stat().st_mtime_ns, before)
+
+    def test_an_empty_file_has_nothing_to_forget(self):
+        path = self.root / "empty.bin"
+        path.write_bytes(b"")
+        self.assertTrue(fileops.forget_cached_pages(path))
+
+    def test_a_missing_file_raises_like_any_other_read(self):
+        with self.assertRaises(FileNotFoundError):
+            fileops.forget_cached_pages(self.root / "gone.bin")
+
+
 if __name__ == "__main__":
     unittest.main()

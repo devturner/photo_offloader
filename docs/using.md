@@ -117,7 +117,7 @@ system, and Photo Offloader can't turn it off.
 
 ### Recent activity
 
-This lists past imports, USB backups and catalog updates, with what each one copied. The history
+This lists past imports, USB backups, catalog updates and [checks of the saved copies](#checking-the-saved-copies), with what each one did. The history
 survives restarts and reinstalls, and the latest 500 runs are kept. **Clear** removes it, after
 you click a second time to confirm. It only deletes the history, not your files.
 
@@ -129,6 +129,7 @@ to fold it away. Runs from before this version show a dash for anything that was
 - **Pause / Resume automatic imports:** see [below](#pause-stop-and-start).
 - **Update file catalog:** rescans the archives. It normally updates itself, so you rarely need this.
 - **Back up to USB now**, **Sync Google Photos now:** run those steps without a card.
+- **Check saved copies…:** rereads every saved copy and reports any that no longer match. See [below](#checking-the-saved-copies).
 - **Eject card after import:** off by default, so a card stays mounted for Finder.
 - **Show Terminal during imports:** off by default. When on, the import runs in a terminal window.
 - **Appearance:** Auto, Light or Dark.
@@ -178,6 +179,43 @@ card even though it has the same name.
 If you take a card out, shoot more, and put it back after more than 20 seconds, a new import
 copies only the new files. Shorter gaps are treated as the card briefly disconnecting. If a card
 stayed mounted and you want to import it again, press **Import now**.
+
+## Checking the saved copies
+
+A copy is verified when it's made, but nothing looks at it again after that. To recheck everything, choose **Check saved copies…** in the **⋯** menu. It tells you how long to expect before it starts: about 25 minutes for every 100 GB on the USB drive, and much less on the Mac.
+
+It rereads every copy on the Mac and the USB drive from the disk and compares it with the hash saved when the copy was made, and with the other copy. It only reports: nothing is changed or repaired. If the drive isn't connected it checks the Mac and says so.
+
+While it runs, a row at the top of **Recent activity** shows how far it has got, with **Stop**; what it found so far is kept. You can close the window, and the Mac stays awake until it finishes. A card inserted during a check still imports, though both run slower, and you can't eject the drive until the check ends.
+
+| Problem | What it means |
+| --- | --- |
+| **damaged** | The contents changed, but not the size or date. Nothing should do that, so suspect the disk |
+| **changed** | The contents differ, and the file's date or size changed too, so something may have edited it |
+| **missing** | The catalog knows this file, but it's gone |
+| **unreadable** | The disk returned an error when reading it |
+| **only on the drive** | It's on the USB drive but not the Mac, so it may have been deleted from the Mac |
+| **copies differ** | Each copy looks fine by itself, but they aren't the same. It can't tell which is right |
+
+If there are problems, the run opens by itself and says whether the other copy of each file is good. Restore from that copy by hand, or from the card if it still has the photo. **Open full list** opens every problem in your spreadsheet app, from `verify-reports` in the data folder.
+
+A file with no saved hash on either side can't be compared, and the summary counts these. It also counts files still waiting for a USB backup, which isn't a problem.
+
+To run it from a terminal instead, where it exits with code 1 if it finds problems:
+
+```bash
+~/Library/Application\ Support/PhotoOffloader/bin/photo-offloader-verify
+```
+
+### Clearing space on the Mac
+
+You can delete files from the Mac's archive and keep them on the USB drive. A backup never deletes anything from the drive. Before you delete, run a check, so you know the drive's copies are good. Afterwards the drive holds the only copy, and RAW files aren't on Google Photos.
+
+The next check can't tell a deliberate delete from an accident, so it lists what's missing from the Mac, by folder, and asks. **I deleted these on purpose** tells it you meant to. This deletes nothing itself. Later checks then pass, still read the drive's copy of those files, and say how many are only on the drive. Anything else that goes missing is still a problem, and so is losing the drive's copy of a file you deleted from the Mac.
+
+The button only appears once the check has read the drive's copy and found it good, so connect the drive first.
+
+If you re-insert a card that still has those photos, they're copied back to the Mac and later checks watch them again.
 
 ## Running an import by hand
 

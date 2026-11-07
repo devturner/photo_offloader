@@ -299,6 +299,35 @@ def list_import_history(limit: int = 20) -> List[Dict[str, object]]:
     ]
 
 
+def update_run(run_id: int, outcome: str, message: str, details: Dict[str, object]) -> bool:
+    """Change what a finished run says, when something later settles it. Returns whether it worked."""
+    try:
+        with catalog_db() as db:
+            changed = db.execute(
+                "UPDATE import_history SET outcome = ?, message = ?, details = ? WHERE id = ?",
+                (outcome, message, json.dumps(details), int(run_id)),
+            ).rowcount
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        logger.warning("Could not update run %s in import history: %s", run_id, exc)
+        return False
+    return bool(changed)
+
+
+def bytes_under(roots: Sequence[Path]) -> int:
+    """How much the catalog says is in these archive roots; 0 if it can't say."""
+    resolved = [str(root.resolve()) for root in roots]
+    try:
+        with catalog_db() as db:
+            total = db.execute(
+                f"SELECT SUM(size) FROM file_locations WHERE root IN ({','.join('?' * len(resolved))})",
+                resolved,
+            ).fetchone()[0]
+    except (OSError, sqlite3.Error) as exc:
+        logger.debug("Could not add up the archive's size: %s", exc)
+        return 0
+    return int(total or 0)
+
+
 def _parse_details(text: object) -> Dict[str, object]:
     try:
         value = json.loads(str(text or "{}"))
@@ -432,6 +461,20 @@ def catalog_rows_under(roots: Sequence[Path]) -> Dict[str, tuple]:
         logger.debug("Bulk catalog lookup failed: %s", exc)
         return {}
     return {row[0]: tuple(row[1:]) for row in rows}
+
+
+def archive_records(root: Path) -> Dict[str, Tuple[int, int, Optional[str]]]:
+    """Size, modified time and hash of everything catalogued under an archive root, by relative path.
+
+    Unlike catalog_rows_under this raises if the catalog can't be read: to something comparing
+    files with it, an unreadable catalog must not look like an empty one.
+    """
+    with catalog_db() as db:
+        rows = db.execute(
+            "SELECT relative_path, size, mtime_ns, sha256 FROM file_locations WHERE root = ?",
+            (str(root.resolve()),),
+        ).fetchall()
+    return {row[0]: (row[1], row[2], row[3] or None) for row in rows}
 
 
 def _catalog_upsert(

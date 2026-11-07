@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from xml.parsers.expat import ExpatError
 
-from photo_offloader import catalog, google_photos, jsonfile, logs, run_report
+from photo_offloader import catalog, google_photos, jsonfile, logs, run_report, verify_report
 from photo_offloader.dashboard import display
 from photo_offloader.dashboard.paths import Paths
 from photo_offloader.google_photos import parse_rclone_stats_line
@@ -113,6 +113,14 @@ class DashboardCore:
 
     def google_running(self) -> bool:
         return self._cached("google", 2.0, lambda: self._script_running(self.paths.google_script))
+
+    def verify_running(self) -> bool:
+        return self._cached("verify", 2.0, lambda: self._script_running(self.paths.verify_script))
+
+    def _verify_progress(self) -> Optional[Dict[str, Any]]:
+        if not self.verify_running():
+            return None  # a progress file with no program is a check that was killed
+        return display.verify_progress(jsonfile.read_object(self.paths.verify_status_file))
 
     def mounted_card(self) -> Optional[Path]:
         def probe() -> Optional[Path]:
@@ -671,6 +679,7 @@ class DashboardCore:
         usb_mounted = self.usb_mounted()
         busy = import_activity is not None  # the importer is working (uploads don't block it)
         activity = import_activity or self._upload_activity(google, latest, now)
+        checking = self._verify_progress()
 
         handled = self.card_handled(card)
         headline = display.headline(
@@ -699,7 +708,9 @@ class DashboardCore:
                 handled and running and not paused,
                 "" if google["configured"] else self._google_setup_step(),
                 self.card_has_unsaved_files(card),
+                bool(checking and checking["usb"]),
             ),
+            "verify": checking,
             "upload": google["progress"],
             "settings": {
                 "auto_eject": self.paths.auto_eject_file.exists(),
@@ -812,6 +823,11 @@ class DashboardCore:
             "eject_card": self._eject_card,
             "eject_usb": self._eject_usb,
             "update_catalog": self._update_catalog,
+            "verify": self._verify_start,
+            "stop_verify": self._verify_stop,
+            "verify_warning": self._verify_warning,
+            "mark_deleted": lambda: self._mark_deleted(params),
+            "open_verify_report": lambda: self._open_verify_report(params),
             "google_sync": self._google_sync,
             "toggle_auto_eject": lambda: self._toggle(self.paths.auto_eject_file, "Auto-eject"),
             "toggle_terminal_output": lambda: self._toggle(
@@ -979,6 +995,12 @@ class DashboardCore:
                 "ok": False,
                 "message": "A transfer is using the drive. Eject it when it has finished.",
             }
+        checking = self._verify_progress()
+        if checking and checking["usb"]:
+            return {
+                "ok": False,
+                "message": "The check of your saved copies is using the drive. Stop it first.",
+            }
         return self._eject(self.paths.usb_volume, "backup drive")
 
     def _import_card(self) -> Dict[str, Any]:
@@ -1005,6 +1027,94 @@ class DashboardCore:
     def _update_catalog(self) -> Dict[str, Any]:
         self._spawn([str(self.paths.python), str(self.paths.importer_script), "--update-catalog"])
         return {"ok": True, "message": "Catalog update started."}
+
+    def _verify_start(self) -> Dict[str, Any]:
+        if self.verify_running():
+            return {"ok": False, "message": "A check is already running."}
+        if self.importer_running():
+            return {"ok": False, "message": "An import is running. Check when it has finished."}
+        # A check takes many minutes, and a sleeping Mac would leave it stuck partway.
+        self._spawn(
+            [
+                "/usr/bin/caffeinate",
+                "-i",
+                str(self.paths.python),
+                str(self.paths.verify_script),
+            ]
+        )
+        self._invalidate("verify")
+        return {"ok": True, "message": "Check started. You can close this window while it runs."}
+
+    def _verify_stop(self) -> Dict[str, Any]:
+        if not self.verify_running():
+            return {"ok": False, "message": "No check is running."}
+        self._run(
+            ["/usr/bin/pkill", "-TERM", "-f", str(self.paths.verify_script)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        self._invalidate("verify")
+        return {"ok": True, "message": "Stopping the check. What it found so far is kept."}
+
+    def _verify_warning(self) -> Dict[str, Any]:
+        mounted = self.usb_mounted()
+        rows = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
+        last = next(
+            (
+                float(row["duration_seconds"])
+                for row in rows
+                if row["kind"] == "verify" and row["details"].get("whole") and row["usb"] == mounted
+            ),
+            None,
+        )
+        return {
+            "ok": True,
+            **display.verify_warning(
+                mounted,
+                last,
+                catalog.bytes_under(self.paths.local_archives),
+                catalog.bytes_under(self.paths.usb_archives),
+            ),
+        }
+
+    def _verify_run(self, run_id: Any) -> Optional[Dict[str, Any]]:
+        rows = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
+        return next((r for r in rows if r["id"] == run_id and r["kind"] == "verify"), None)
+
+    def _mark_deleted(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        row = self._verify_run(params.get("run_id"))
+        check = (row["details"].get("check") or {}) if row else {}
+        marked, left = verify_report.mark_deleted(str(check.get("report") or ""))
+        if not marked:
+            return {"ok": False, "message": "This run's list of files is no longer available."}
+        each = "it" if len(marked) == 1 else "each"
+        text = (
+            f"{verify_report.plural(len(marked), 'file')} deleted from the Mac on purpose. "
+            f"The USB drive has the only copy of {each}."
+        )
+        kinds = [str(item["problem"]) for item in left]
+        whole = bool(row["details"].get("whole"))
+        settled = whole and not left
+        catalog.update_run(
+            int(row["id"]),
+            "complete" if settled else str(row["outcome"]),
+            text + (f" {verify_report.problems_text(kinds)}" if left else ""),
+            {
+                **row["details"],
+                "check": verify_report.details_for(left, str(check["report"])) if left else None,
+            },
+        )
+        return {"ok": True, "message": "Noted. Later checks won't count these as problems."}
+
+    def _open_verify_report(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        row = self._verify_run(params.get("run_id"))
+        check = (row["details"].get("check") or {}) if row else {}
+        path = verify_report.report_csv(str(check.get("report") or ""))
+        if path is None:
+            return {"ok": False, "message": "This run's list of files is no longer available."}
+        self._spawn(["/usr/bin/open", str(path)])
+        return {"ok": True, "message": "Opening the list in your spreadsheet app."}
 
     def _google_sync(self) -> Dict[str, Any]:
         if not self.paths.google_script.is_file():

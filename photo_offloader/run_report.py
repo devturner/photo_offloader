@@ -458,10 +458,10 @@ def _csv_rows(facts: RunFacts) -> Iterable[Dict[str, object]]:
         yield {"type": "USB", "result": f"{FAILED}: {message}", "archive_path": source}
 
 
-def _write_csv(path: Path, rows: Iterable[Mapping[str, object]]) -> None:
+def write_csv(path: Path, columns: Sequence[str], rows: Iterable[Mapping[str, object]]) -> None:
     # The byte-order mark makes Excel read accented names properly; Numbers ignores it.
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, CSV_COLUMNS, restval="")
+        writer = csv.DictWriter(handle, columns, restval="")
         writer.writeheader()
         for row in rows:
             writer.writerow({key: _csv_cell(value) for key, value in row.items()})
@@ -548,7 +548,7 @@ def save_report(facts: RunFacts) -> Tuple[str, Optional[Dict[str, object]]]:
     summary = summarize(facts.outcomes, facts.unreadable, facts.sizes, facts.dcim or Path())
     usb = summarize_usb(facts.usb_outcomes, facts.usb_sizes, facts.archive_roots)
     folder = _new_folder(facts.started_at, facts.problems)
-    _write_csv(folder / FILES_FILE, _csv_rows(facts))
+    write_csv(folder / FILES_FILE, CSV_COLUMNS, _csv_rows(facts))
     (folder / SUMMARY_FILE).write_text(_summary_text(facts, summary, usb), encoding="utf-8")
     (folder / RUN_LOG_FILE).write_text(
         "".join(line + "\n" for line in facts.log_lines), encoding="utf-8"

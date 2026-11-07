@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from unittest.mock import patch
 
-from photo_offloader import catalog, config, run_report
+from photo_offloader import catalog, config, run_report, verify_report
 from photo_offloader.dashboard import core
 from photo_offloader.dashboard.server import DashboardServer
 from tests import support
@@ -65,7 +65,7 @@ class Sandbox:
         self.usb = self.volumes / "Photos"
         for folder in (self.install / "bin", self.install / "scripts", self.data, self.volumes):
             folder.mkdir(parents=True)
-        for program in (config.SERVICE, config.TRIGGER, config.GOOGLE_SYNC):
+        for program in (config.SERVICE, config.TRIGGER, config.GOOGLE_SYNC, config.VERIFY):
             (self.install / program).write_text("")
         support.isolate_config(testcase, root)
 
@@ -73,6 +73,7 @@ class Sandbox:
         self.service_up = True
         self.importer_up = False
         self.google_up = False
+        self.verify_up = False
         self.ran: List[List[str]] = []
         self.spawned: List[List[str]] = []
         self.paths = core.Paths(
@@ -94,7 +95,11 @@ class Sandbox:
         if "print" in argv:
             return subprocess.CompletedProcess(argv, 0 if self.service_up else 113, "", "")
         if argv[0].endswith("pgrep"):
-            alive = self.google_up if argv[-1].endswith(config.GOOGLE_SYNC) else self.importer_up
+            alive = self.importer_up
+            if argv[-1].endswith(config.GOOGLE_SYNC):
+                alive = self.google_up
+            elif argv[-1].endswith(config.VERIFY):
+                alive = self.verify_up
             return subprocess.CompletedProcess(argv, 0, "4242\n" if alive else "", "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
@@ -535,8 +540,119 @@ def _clean_with_report(s: Sandbox) -> None:
     _report_run(s, _outcomes("JPG", "100NIKON", _names(1, 16, "JPG")), outcome="complete")
 
 
+def _check_running(s: Sandbox) -> None:
+    s.add_usb()
+    _past_import(s, 1, 90, 20, 2742)
+    s.verify_up = True
+    config.VERIFY_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    config.VERIFY_STATUS_PATH.write_text(
+        json.dumps(
+            {
+                "where": "USB drive",
+                "usb": True,
+                "files_done": 3490,
+                "files_total": 6300,
+                "bytes_done": 76.4e9,
+                "bytes_total": 138.8e9,
+                "seconds_left": 900,
+            }
+        )
+    )
+
+
+def _check_during_import(s: Sandbox) -> None:
+    _check_running(s)
+    _copying(s)
+
+
+def _record_check(s: Sandbox, **fields: Any) -> None:
+    s.record(
+        **{
+            "kind": "verify",
+            "source": "",
+            "copied": 0,
+            "skipped": 0,
+            "files": 6300,
+            "bytes": 138_800_000_000,
+            "started_at": s.now - 1092,
+            "details": {"whole": True},
+            **fields,
+        }
+    )
+
+
+def _check_row(relative: str, problem: str, where: str, other: str) -> Dict[str, Any]:
+    return {
+        "where": where,
+        "problem": problem,
+        "other_copy": other,
+        "path": f"/Mac/{relative}",
+        "relative_path": relative,
+        "bytes": 34_000_000,
+        "expected_sha256": "aa",
+        "actual_sha256": "",
+    }
+
+
+def _failed_check(s: Sandbox, rows: List[Dict[str, Any]]) -> None:
+    name = verify_report.save_report(rows, s.now)
+    _record_check(
+        s,
+        outcome="failed",
+        failed=len(rows),
+        message=verify_report.message_for(rows),
+        details={"whole": True, "check": verify_report.details_for(rows, name)},
+    )
+
+
+def _check_problems(s: Sandbox) -> None:
+    _failed_check(
+        s,
+        [
+            _check_row(
+                "2026-10/NIKON-Z-8/Raws/_DZ80412.NEF",
+                verify_report.DAMAGED,
+                verify_report.USB,
+                verify_report.OTHER_GOOD,
+            ),
+            _check_row(
+                "2026-07/Canon/Photos/IMG_7255.JPG",
+                verify_report.UNREADABLE,
+                verify_report.MAC,
+                verify_report.OTHER_GOOD,
+            ),
+        ],
+    )
+
+
+def _check_deleted(s: Sandbox) -> None:
+    rows = [
+        _check_row(
+            f"2026-10/NIKON-Z-8/Raws/_DZ8{index:04d}.NEF",
+            verify_report.MISSING,
+            verify_report.MAC,
+            verify_report.OTHER_GOOD,
+        )
+        for index in range(1102)
+    ] + [
+        _check_row(
+            f"2026-07/Canon/Raws/IMG_{index:04d}.CR2",
+            verify_report.ONLY_ON_DRIVE,
+            verify_report.USB,
+            verify_report.OTHER_ONLY,
+        )
+        for index in range(279)
+    ]
+    _failed_check(s, rows)
+
+
 SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "idle": lambda s: s.status(state="idle"),
+    "check_running": _check_running,
+    "check_during_import": _check_during_import,
+    "check_clean": lambda s: _record_check(s, message="All 6,300 copies match."),
+    "check_problems": _check_problems,
+    "check_deleted": _check_deleted,
     "card_mounted": lambda s: s.add_card(),
     "stalled_copy": _stalled_copy,
     "already_imported": _already_imported,

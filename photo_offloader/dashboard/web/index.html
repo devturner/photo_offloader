@@ -224,6 +224,22 @@ dialog h3 { margin: 0 0 6px; font-size: 17px; }
 dialog p { margin: 0 0 18px; color: var(--text-2); }
 dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .lost { background: var(--err-soft); color: var(--err); }
+#verify-dialog p { margin-bottom: 10px; }
+#verify-dialog .verify-time { color: var(--text); font-weight: 600; }
+#verify-dialog ul { margin: 0 0 18px; padding-left: 18px; color: var(--text-2); display: grid; gap: 4px; }
+
+/* a check of the saved copies: its running row, and what it found */
+.run.checking { opacity: 1 !important; }
+.run.checking .row:hover { background: none; }
+.run.checking .bar { height: 4px; margin-top: 6px; }
+.run.checking .ico { background: var(--accent-soft); color: var(--accent); }
+.check-table-wrap { overflow-x: auto; }
+.check-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.check-table th { font-size: 11.5px; font-weight: 550; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); text-align: left; padding: 0 14px 4px 0; white-space: nowrap; }
+.check-table td { padding: 4px 14px 4px 0; border-top: 1px solid var(--border); white-space: nowrap; }
+.check-table td.file { white-space: normal; overflow-wrap: anywhere; min-width: 200px; }
+.check-table .bad { color: var(--err); font-weight: 600; }
+.check-table .good { color: var(--ok); font-weight: 600; }
 
 /* what went wrong in a run: unfolds above its report, in Recent activity */
 .problems-report { display: grid; gap: 12px; margin-bottom: 14px; }
@@ -289,6 +305,8 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
   /* The two long values share the first row; the three short ones share the second. */
   .slots { grid-template-columns: repeat(6, minmax(0, 1fr)); }
   .report-table .speed { display: none; }
+  .check-table th, .check-table td { white-space: normal; padding-right: 10px; }
+  .check-table td.file { min-width: 120px; }
   .report-table .result { white-space: normal; }
   .slot { grid-column: span 2; }
   .slot:nth-child(1), .slot:nth-child(3) { grid-column: span 3; order: -1; }
@@ -310,6 +328,7 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
         <button role="menuitem" id="m-catalog"><svg class="icon" data-icon="refresh"></svg><span class="label">Update file catalog</span></button>
         <button role="menuitem" id="m-usb"><svg class="icon" data-icon="plug"></svg><span class="label">Back up to USB now</span></button>
         <button role="menuitem" id="m-google"><svg class="icon" data-icon="cloud"></svg><span class="label">Sync Google Photos now</span></button>
+        <button role="menuitem" id="m-verify"><svg class="icon" data-icon="shield"></svg><span class="label">Check saved copies…</span></button>
         <hr>
         <button role="menuitemcheckbox" id="m-eject" aria-checked="false" data-keep-open><span class="label">Eject card after import</span><span class="switch"></span></button>
         <button role="menuitemcheckbox" id="m-terminal" aria-checked="false" data-keep-open><span class="label">Show Terminal during imports</span><span class="switch"></span></button>
@@ -377,6 +396,20 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
     <div class="actions"><button class="btn secondary" id="save-reveal">Show in Finder</button><button class="btn" id="save-close">Done</button></div>
   </div>
 </dialog>
+<dialog id="verify-dialog" aria-labelledby="verify-title">
+  <h3 id="verify-title">Check saved copies?</h3>
+  <p id="verify-time" class="verify-time"></p>
+  <p id="verify-what"></p>
+  <ul>
+    <li>Card imports still work, but they run more slowly.</li>
+    <li id="verify-eject">The USB drive can't be ejected until it finishes or you stop it.</li>
+    <li>Nothing is changed. You can close this window while it runs.</li>
+  </ul>
+  <div class="actions">
+    <button class="btn secondary" id="verify-cancel">Not now</button>
+    <button class="btn" id="verify-go">Start check</button>
+  </div>
+</dialog>
 <dialog id="stop-dialog">
   <h3 id="stop-title">Stop Photo Offloader?</h3>
   <p id="stop-text"></p>
@@ -390,6 +423,7 @@ const ICONS = {
   drive: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 14h18"/><path d="M7 17h.01"/>',
   plug: '<path d="M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-10 0V8zM12 16v5"/>',
   cloud: '<path d="M7 18a4 4 0 0 1-.5-7.97A5.5 5.5 0 0 1 17 8.5a4.5 4.5 0 0 1 .5 9.5H7z"/>',
+  shield: '<path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
   check: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.8"/>',
   alert: '<path d="M12 4l9 16H3L12 4z"/><path d="M12 10v4M12 17h.01"/>',
   xcircle: '<circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/>',
@@ -592,6 +626,7 @@ async function run(name, params, quiet) {
 const sigs = {};
 function changed(key, value) { const s = JSON.stringify(value); if (sigs[key] === s) return false; sigs[key] = s; return true; }
 const TONE_ICON = { success: "check", idle: "camera", active: "arrow", warning: "alert", error: "xcircle", stopped: "power" };
+const CHECK_NOTE = "Nothing was changed. Restore each file from its good copy by hand, or from the card if it still has the photo.";
 const KIND_ICON = { import: "arrow", usb_backup: "plug", catalog: "refresh", upload: "up" };
 let LAST = null, HISTORY = [];
 
@@ -709,19 +744,42 @@ function renderPipeline(s) {
     stepActions(st))));
 }
 
+// The running check keeps one row for its whole run: polling updates its text and bar in place,
+// so Stop keeps keyboard focus, and it can't move when the list below it changes.
+let checkRowParts = null;
+function checkRow() {
+  if (checkRowParts) return checkRowParts;
+  const text = h("div", { class: "s" }), fill = h("div", {});
+  const box = h("div", { class: "run checking" },
+    h("div", { class: "row" },
+      h("div", { class: "ico" }, icon("shield")),
+      h("div", { class: "grow" }, h("div", { class: "t", text: "Checking saved copies" }), text,
+        h("div", { class: "bar", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100 }, fill)),
+      h("button", { type: "button", class: "link", id: "check-stop", onclick: () => run("stop_verify") }, "Stop")));
+  return (checkRowParts = { box, text, fill });
+}
+function updateCheckRow(v) {
+  const parts = checkRow();
+  parts.text.textContent = v.text;
+  parts.fill.style.width = Math.max(2, v.percent) + "%";
+  parts.fill.parentElement.setAttribute("aria-valuenow", v.percent);
+}
+
 const OUTCOME_ICON = { success: "check", warning: "alert", error: "xcircle" };
 function renderHistory(now) {
   const rows = HISTORY;
   if (!rows.some(r => r.id === openRun)) openRun = null; // the list was cleared, or the run has aged out of it
   $("#history").classList.toggle("has-open", openRun !== null);
-  if (!changed("history", [rows, Math.floor(now / 60), openRun, reportStyle])) return;
+  const checking = LAST && LAST.verify;
+  if (checking) updateCheckRow(checking);
+  if (!changed("history", [rows, Math.floor(now / 60), openRun, reportStyle, !!checking])) return;
   $("#clear-history").hidden = HISTORY.length === 0;
   const list = $("#history");
-  if (!HISTORY.length) { list.replaceChildren(h("div", { class: "empty", text: "Imports and backups will appear here." })); return; }
+  if (!HISTORY.length && !checking) { list.replaceChildren(h("div", { class: "empty", text: "Imports and backups will appear here." })); return; }
   // Drawing the list again replaces its buttons, so keyboard focus has to be put back.
   const focused = document.activeElement && document.activeElement.closest("#history .row");
   const focusedId = focused ? focused.dataset.run : null;
-  list.replaceChildren(...rows.map(r => {
+  list.replaceChildren(...(checking ? [checkRow().box] : []), ...rows.map(r => {
     const isOpen = r.id === openRun;
     return h("div", { class: "run" + (isOpen ? " open" : "") },
       h("button", { type: "button", class: "row", "data-tone": r.tone, "data-run": r.id, "aria-expanded": String(isOpen), title: isOpen ? "Close this report" : "Open this report", onclick: (e) => toggleRun(r.id, now, e.detail === 0) },
@@ -729,7 +787,7 @@ function renderHistory(now) {
         h("div", { class: "grow" }, h("div", { class: "t", text: r.title }), h("div", { class: "s", text: r.summary || (r.outcome === "complete" ? "Completed" : "") })),
         h("time", { datetime: new Date(r.finished_at * 1000).toISOString(), title: new Date(r.finished_at * 1000).toLocaleString(), text: relTime(r.finished_at, now) }),
         h("span", { class: "chev", "aria-hidden": "true" })),
-      isOpen && h("div", { class: "run-report" }, runProblems(r), reportBody(r.report)));
+      isOpen && h("div", { class: "run-report" }, runProblems(r), !(r.details && r.details.check) && reportBody(r.report)));
   }));
   if (focusedId != null) list.querySelector(`.row[data-run="${focusedId}"]`).focus();
 }
@@ -771,6 +829,7 @@ function renderMenu(s) {
   $("#m-catalog").disabled = busy || !run_;
   $("#m-usb").disabled = busy || usb.state === "off";
   $("#m-google").disabled = busy || cloud.state === "off" || cloud.state === "active";
+  $("#m-verify").disabled = busy || !!s.verify;
   $("#m-eject").setAttribute("aria-checked", String(s.settings.auto_eject));
   $("#m-terminal").setAttribute("aria-checked", String(s.settings.terminal_output));
   set("#m-service", run_ ? "Stop Photo Offloader…" : "Start Photo Offloader", run_ ? "power" : "play", false);
@@ -819,7 +878,9 @@ async function refresh(withHistory) {
     failures = 0; LAST = s;
     renderChrome(s); renderHero(s); renderPipeline(s); renderMenu(s);
     const lastId = s.last_transfer ? s.last_transfer.id : 0;
-    if (withHistory === true || lastId !== refresh.lastId || !refresh.at || Date.now() - refresh.at > 15000) {
+    const checking = !!s.verify, checkEnded = refresh.checking && !checking;
+    refresh.checking = checking;
+    if (withHistory === true || checkEnded || lastId !== refresh.lastId || !refresh.at || Date.now() - refresh.at > 15000) {
       refresh.lastId = lastId; refresh.at = Date.now();
       HISTORY = (await api("/api/history?limit=100")).history;
     }
@@ -850,6 +911,16 @@ $("#m-catalog").onclick = () => run("update_catalog");
 document.querySelectorAll("[data-log]").forEach(b => b.addEventListener("click", () => run("open_log", { log: b.dataset.log })));
 $("#m-usb").onclick = () => run("usb_backup");
 $("#m-google").onclick = () => run("google_sync");
+$("#m-verify").onclick = async () => {
+  const w = await run("verify_warning", {}, true);
+  if (!w) return;
+  $("#verify-time").textContent = w.time;
+  $("#verify-what").textContent = w.what;
+  $("#verify-eject").hidden = !w.drive;
+  $("#verify-dialog").showModal();
+};
+$("#verify-cancel").onclick = () => $("#verify-dialog").close();
+$("#verify-go").onclick = () => { $("#verify-dialog").close(); run("verify"); };
 $("#m-eject").onclick = () => run("toggle_auto_eject");
 $("#m-terminal").onclick = () => run("toggle_terminal_output");
 $("#banner-start").onclick = () => run("service_start");
@@ -905,7 +976,36 @@ function unknownRow(where) {
     h("span", { class: "tsub", text: where + " couldn't be read. Its contents are unknown, so treat everything in it as not saved." }));
 }
 
+function checkTable(heads, rows) {
+  return h("div", { class: "check-table-wrap" }, h("table", { class: "check-table" },
+    h("thead", {}, h("tr", {}, heads.map(text => h("th", { text })))),
+    h("tbody", {}, rows)));
+}
+const cell = (text, cls) => h("td", { text, class: cls || "" });
+
+// Names come from the card, so they only ever reach the page through textContent.
+function checkReport(r) {
+  const c = r.details && r.details.check;
+  if (!c) return null;
+  const d = c.deleted, others = c.others || [];
+  const fileWord = (n) => fmtCount(n) + (n === 1 ? " file" : " files");
+  return h("div", { class: "problems-report check-report" },
+    d && h("div", { class: "pairs", text: fileWord(d.count) + " missing from the Mac. The USB drive's copy of each is good." }),
+    d && checkTable(["Folder", "Missing from the Mac", "USB drive's copy"], d.folders.map(f => h("tr", {},
+      cell(f.folder, "file"), cell(fileWord(f.count) + (f.bytes ? " · " + fmtBytes(f.bytes) : "")), cell("All good", "good")))),
+    d && d.folders_more > 0 && h("p", { class: "report-note", text: "and " + fmtCount(d.folders_more) + " more folders" }),
+    d && h("p", { class: "report-note", text: "If you meant to delete these, the drive holds the only copy of them. If you didn't, restore them from the drive." }),
+    others.length > 0 && checkTable(["File", "On", "Problem", "Other copy"], others.map(o => h("tr", {},
+      cell(o.path, "file"), cell(o.where), cell(o.kind, "bad"), cell(o.other, o.other.startsWith("Good") ? "good" : "")))),
+    c.others_more > 0 && h("p", { class: "report-note", text: "and " + fmtCount(c.others_more) + " more" }),
+    others.length > 0 && h("p", { class: "report-note", text: CHECK_NOTE }),
+    h("div", { class: "report-actions" },
+      d && h("button", { type: "button", class: "btn", id: "check-mark", onclick: () => run("mark_deleted", { run_id: r.id }) }, "I deleted these on purpose"),
+      c.report && h("button", { type: "button", class: "btn secondary", id: "check-list", onclick: () => run("open_verify_report", { run_id: r.id }) }, "Open full list")));
+}
+
 function runProblems(r) {
+  if (r.kind === "verify") return checkReport(r);
   const p = r.details && r.details.problems;
   const save = r.report_saved && h("button", { type: "button", class: "btn secondary", onclick: () => openSave(r.id) }, "Save debug package…");
   const tries = r.details && r.details.second_tries;
@@ -971,7 +1071,7 @@ function openNewFailure(s) {
   const id = s.last_transfer ? s.last_transfer.id : null;
   if (id === null || id === autoOpened) return;
   const r = HISTORY.find(x => x.id === id);
-  if (r && r.details && r.details.problems) { autoOpened = id; openRun = id; }
+  if (r && r.details && (r.details.problems || r.details.check)) { autoOpened = id; openRun = id; }
 }
 
 refresh(true).then(schedule);

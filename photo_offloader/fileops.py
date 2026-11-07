@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import fcntl
 import hashlib
+import mmap
 import os
 import shutil
 from dataclasses import dataclass
@@ -18,6 +20,8 @@ COPY_CHUNK_BYTES = 4 * 1024 * 1024
 # Real neighbouring photos differ within the first 750 bytes (308 pairs). On an SD card, reading
 # 64 KB at each end costs 2.3 ms a file; 1 MB costs 23 ms, over a minute on a full card.
 ENDS_CHECK_BYTES = 64 * 1024
+_MAP_FAILED = ctypes.c_void_p(-1).value
+_MS_INVALIDATE = 0x0002  # sys/mman.h; the mmap module doesn't offer it
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,38 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024, nocache: bool = False
         while chunk := handle.read(chunk_size):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def forget_cached_pages(path: Path) -> bool:
+    """Drop the file's pages from RAM, so the next uncached read has to go to the disk.
+
+    F_NOCACHE alone doesn't do it: a file an upload has just read reads at 14 GB/s from memory with
+    it, and at 2.2 GB/s after this (50 MB, internal SSD). The mapping is read-only and is never
+    touched, so this reads nothing and can't change the file. Returns whether it worked.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mmap.restype = ctypes.c_void_p
+    libc.mmap.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_long,
+    ]
+    libc.msync.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    with path.open("rb") as handle:
+        size = os.fstat(handle.fileno()).st_size
+        if not size:
+            return True
+        address = libc.mmap(None, size, mmap.PROT_READ, mmap.MAP_SHARED, handle.fileno(), 0)
+        if address == _MAP_FAILED:
+            return False
+        try:
+            return libc.msync(address, size, _MS_INVALIDATE) == 0
+        finally:
+            libc.munmap(address, size)
 
 
 def file_fingerprint(path: Path) -> FileFingerprint:

@@ -70,7 +70,7 @@ def _catalog_roots() -> List[Path]:
     return roots
 
 
-def _media_files(root: Path) -> List[Path]:
+def media_files(root: Path) -> List[Path]:
     files = []
     for path in root.rglob("*"):
         try:
@@ -93,7 +93,7 @@ def _refresh_root(root: Path, root_index: int, roots_total: int, totals: Dict[st
         message=f"Scanning location {root_index} of {roots_total}: {root}",
     )
     logger.info("Scanning catalog root %d/%d: %s", root_index, roots_total, root)
-    files = _media_files(root)
+    files = media_files(root)
     rows = catalog.catalog_rows_under([root])
 
     # Files whose catalog entry is missing, stale or lacks month/camera/folder.
