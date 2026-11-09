@@ -464,8 +464,13 @@ def _sync() -> int:
         publish_status("failed", f"Local photo archive does not exist: {config.LOCAL_DEST_ROOT}")
         return 1
 
-    with _timed_step("finding files"):
-        pending = list_upload_candidates()
+    try:
+        with _timed_step("finding files"):
+            pending = list_upload_candidates()
+    except sqlite3.Error as exc:
+        log_sync_event(f"Could not read the upload records: {exc}")
+        publish_status("failed", "Couldn't read the record of past uploads, so nothing was sent.")
+        return 1
     if not pending:
         # Sync is launched after every import; skip rclone (and the network) when
         # there is nothing new to send.

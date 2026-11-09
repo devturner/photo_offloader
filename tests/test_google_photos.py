@@ -3,6 +3,7 @@ import fcntl
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -347,6 +348,27 @@ class TestGooglePhotosSync(unittest.TestCase):
             self.assertIn("I/O error", log)
 
     # --------------------------------------- stale lock (review finding 3)
+    def test_an_unreadable_catalog_sends_nothing(self):
+        # Reading no records as "nothing uploaded yet" would queue the whole archive.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.jpg").write_bytes(b"x")
+            with (
+                patch.object(config, "GOOGLE_LOG_PATH", root / "sync.log"),
+                patch.object(config, "LOCAL_DEST_ROOT", root),
+                patch.object(sync, "find_rclone", return_value="rclone"),
+                patch.object(
+                    sync.catalog,
+                    "catalog_connection",
+                    side_effect=sqlite3.OperationalError("disk I/O error"),
+                ),
+                patch.object(sync, "_send_pending") as send,
+                patch.object(sync, "publish_status") as publish,
+            ):
+                self.assertEqual(sync._sync(), 1)
+        send.assert_not_called()
+        self.assertEqual(publish.call_args[0][0], "failed")
+
     def test_stale_lock_file_from_a_dead_process_does_not_block_sync(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
