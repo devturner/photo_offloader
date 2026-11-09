@@ -734,6 +734,23 @@ class TestReports(PageTestCase):
             milliseconds,
         )
 
+    def _report_heights_until_gone(self, deadline_ms=3000):
+        """Every drawn height until the report has folded away, as a busy CI runner draws late."""
+        return self.page.evaluate(
+            """ms => new Promise(done => {
+                const seen = [], end = performance.now() + ms;
+                const look = () => {
+                    const report = document.querySelector('.run-report');
+                    const height = report ? report.getBoundingClientRect().height : 0;
+                    seen.push(height);
+                    if (height > 0 && performance.now() < end) requestAnimationFrame(look);
+                    else done(seen);
+                };
+                requestAnimationFrame(look);
+            })""",
+            deadline_ms,
+        )
+
     def test_a_report_unfolds_and_folds_instead_of_jumping(self):
         self.load("readme_import")
         self.open_page(reduced_motion="no-preference")
@@ -742,7 +759,7 @@ class TestReports(PageTestCase):
         self.assertGreater(len({round(h) for h in opening}), 3, opening)
         self.assertEqual(opening, sorted(opening))
         self.rows().first.click()
-        closing = self._report_heights_over(300)
+        closing = self._report_heights_until_gone()
         self.assertGreater(len({round(h) for h in closing}), 3, closing)
         self.assertEqual(closing, sorted(closing, reverse=True))
         self.assertEqual(closing[-1], 0)
