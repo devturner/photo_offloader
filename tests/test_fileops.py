@@ -150,6 +150,25 @@ class TestFileops(support.CardFixtureTestCase):
             fileops.install_without_overwrite(temp, final)
         self.assertEqual(final.read_bytes(), b"verified")
 
+    def test_a_failed_close_of_the_claimed_name_leaves_no_empty_file(self):
+        # A failing or disconnecting drive can refuse the close after the file was created.
+        temp, final = self.root / "tmp", self.root / "final"
+        temp.write_bytes(b"verified")
+        real_close = os.close
+
+        def close_then_fail(fd):
+            real_close(fd)
+            raise OSError(errno.EIO, "disk error")
+
+        with (
+            patch("os.link", side_effect=OSError(errno.ENOTSUP, "not supported")),
+            patch("photo_offloader.fileops.os.close", close_then_fail),
+            self.assertRaisesRegex(OSError, "disk error"),
+        ):
+            fileops.install_without_overwrite(temp, final)
+        self.assertFalse(final.exists())
+        self.assertEqual(temp.read_bytes(), b"verified")
+
     def test_install_raises_an_unexpected_link_error_and_installs_nothing(self):
         temp, final = self.root / "tmp", self.root / "final"
         temp.write_bytes(b"new")

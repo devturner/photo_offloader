@@ -240,10 +240,11 @@ def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
     # it. Only the file created here is ever replaced, and no partial copy gets the final name.
     with _cancel_signals_held():
         try:
-            os.close(os.open(final_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666))
+            fd = os.open(final_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
         except FileExistsError:
             return False
         try:
+            os.close(fd)
             os.replace(temp_path, final_path)
         except BaseException:
             try:
