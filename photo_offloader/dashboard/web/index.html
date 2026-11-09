@@ -79,6 +79,7 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 .menu hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
 .menu .danger { color: var(--err); }
 .menu .label { flex: 1; }
+.menu .label small { display: block; color: var(--text-2); font-size: 12px; }
 .switch { width: 34px; height: 20px; border-radius: 999px; background: var(--off-soft); position: relative; flex: none; transition: background .15s; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .15s; }
 button[aria-checked="true"] .switch { background: var(--accent); }
@@ -159,6 +160,8 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .dismiss { position: absolute; top: 12px; right: 12px; width: 28px; height: 28px; border: 0; border-radius: 8px; background: none; color: var(--text-3); display: grid; place-items: center; }
 .dismiss:hover { background: var(--surface-2); color: var(--text); }
 .progress { margin-top: 14px; flex: none; }
+.lane-name { font-size: 13px; font-weight: 600; margin-bottom: 5px; }
+.lane-figures { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
 .bar > div { height: 100%; border-radius: inherit; background: var(--accent); transition: width .6s ease; }
 .bar.waiting > div { opacity: 0; transition: none; animation: glow ease-in-out infinite; }
@@ -178,6 +181,9 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .step[data-state="ok"] .dot { background: var(--ok); }
 .step[data-state="active"] .dot { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
 .step[data-state="error"] .dot { background: var(--err); }
+.step[data-state="warn"] { background: var(--warn-soft); border-color: transparent; }
+.step[data-state="warn"] .dot { background: var(--warn); }
+.step[data-state="warn"] h3 { color: var(--warn); }
 .step h3 { margin: 8px 0 0; font-size: 16px; font-weight: 620; letter-spacing: -.01em; }
 .step[data-state="off"] h3 { color: var(--text-2); font-weight: 560; }
 .step .detail { color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
@@ -331,6 +337,7 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
         <button role="menuitem" id="m-verify"><svg class="icon" data-icon="shield"></svg><span class="label">Check saved copies…</span></button>
         <hr>
         <button role="menuitemcheckbox" id="m-eject" aria-checked="false" data-keep-open><span class="label">Eject card after import</span><span class="switch"></span></button>
+        <button role="menuitemcheckbox" id="m-auto-usb" aria-checked="false" data-keep-open><span class="label">Back up when the drive connects<small>Copies new photos to your backup drive by itself. Only this drive, never another one.</small></span><span class="switch"></span></button>
         <button role="menuitemcheckbox" id="m-terminal" aria-checked="false" data-keep-open><span class="label">Show Terminal during imports</span><span class="switch"></span></button>
         <div class="appearance"><span class="label" id="appearance-label">Appearance</span>
           <div class="segmented" role="radiogroup" aria-labelledby="appearance-label">
@@ -691,6 +698,13 @@ function renderHero(s) {
   if (f) {
     speedGraph.update([]);
     kids.push(reportBody(f));
+  } else if (a && a.lanes) {
+    speedGraph.update([]);
+    a.lanes.forEach(lane => kids.push(h("div", { class: "progress" },
+      h("div", { class: "lane-name", text: lane.label }),
+      h("div", { class: "bar", role: "progressbar", "aria-label": lane.label, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(lane.percent) },
+        h("div", { style: `width:${Math.max(2, lane.percent)}%` })),
+      h("div", { class: "lane-figures" }, h("span", { text: lane.left }), h("span", { text: lane.right })))));
   } else if (a) {
     // Every part below is always present while something runs; values that are not
     // known yet show a dash instead of disappearing, so nothing flashes or moves.
@@ -827,10 +841,11 @@ function renderMenu(s) {
   const set = (id, label, ic, disabled) => { const b = $(id); b.replaceChildren(icon(ic), h("span", { class: "label", text: label })); b.disabled = !!disabled; };
   set("#m-pause", s.service.paused ? "Resume automatic imports" : "Pause automatic imports", s.service.paused ? "play" : "pause", !run_);
   $("#m-catalog").disabled = busy || !run_;
-  $("#m-usb").disabled = busy || usb.state === "off";
+  $("#m-usb").disabled = !usb.actions.some(ac => ac.id === "usb_backup");
   $("#m-google").disabled = busy || cloud.state === "off" || cloud.state === "active";
   $("#m-verify").disabled = busy || !!s.verify;
   $("#m-eject").setAttribute("aria-checked", String(s.settings.auto_eject));
+  $("#m-auto-usb").setAttribute("aria-checked", String(s.settings.auto_usb_backup));
   $("#m-terminal").setAttribute("aria-checked", String(s.settings.terminal_output));
   set("#m-service", run_ ? "Stop Photo Offloader…" : "Start Photo Offloader", run_ ? "power" : "play", false);
   $("#m-service").className = run_ ? "danger" : "";
@@ -922,6 +937,7 @@ $("#m-verify").onclick = async () => {
 $("#verify-cancel").onclick = () => $("#verify-dialog").close();
 $("#verify-go").onclick = () => { $("#verify-dialog").close(); run("verify"); };
 $("#m-eject").onclick = () => run("toggle_auto_eject");
+$("#m-auto-usb").onclick = () => run("toggle_auto_usb_backup");
 $("#m-terminal").onclick = () => run("toggle_terminal_output");
 $("#banner-start").onclick = () => run("service_start");
 $("#m-service").onclick = () => { if (LAST && LAST.service.running) askStop(); else run("service_start"); };

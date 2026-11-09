@@ -51,6 +51,8 @@ def _test_locations(root: Path) -> dict:
         "TRIGGER_LOG_PATH": root / "trigger.log",
         "SESSION_LOCK_PATH": root / "import.lock",
         "STATUS_FILE_PATH": install / "status.json",
+        "USB_YIELD_PATH": install / ".usb-backup-yield",
+        "USB_RESUME_PATH": install / ".usb-backup-resume",
         "CATALOG_DB_PATH": data / "catalog.sqlite3",
         "CARD_MANIFESTS_DIR": data / "card-manifests",
         "RUN_REPORTS_DIR": data / "run-reports",

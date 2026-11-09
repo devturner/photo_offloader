@@ -47,7 +47,7 @@ The USB and Google steps are skipped if the drive isn't connected or Google Phot
 | --- | --- | --- |
 | **Camera card** | The mounted card, or *No card* | **Import now**, **Eject** |
 | **Mac archive** | How many files are indexed | None |
-| **USB backup** | Whether the drive is connected, and files backed up | **Back up now**, **Eject** |
+| **USB backup** | Whether the drive is connected, how many files aren't on it yet, and when a backup is paused or waiting | **Back up now**, **Eject** |
 | **Google Photos** | Setup and upload state | **Sync now**, **Retry**, **Resume** |
 
 Buttons that use a card or drive are hidden while a transfer is running. *Not set up* on the
@@ -179,6 +179,14 @@ card even though it has the same name.
 If you take a card out, shoot more, and put it back after more than 20 seconds, a new import
 copies only the new files. Shorter gaps are treated as the card briefly disconnecting. If a card
 stayed mounted and you want to import it again, press **Import now**.
+
+## Keeping the USB drive up to date
+
+The **USB backup** box turns amber when files aren't on the drive yet, and says how many and how much. While the drive is unplugged it also says when the last backup was. **Back up now** catches up.
+
+To have this happen by itself, turn on **Back up when the drive connects** in the ⋯ menu. It's off by default. The backup runs once each time the drive is plugged in, and only on a drive that already holds your backups. A drive with the right name but no backups on it is left alone, so the first backup is always one you start.
+
+Camera cards go first. Insert a card during any USB backup and the backup stops after the file it's copying, the card imports, and the backup carries on by itself. *Pause automatic imports* also holds automatic backups.
 
 ## Checking the saved copies
 

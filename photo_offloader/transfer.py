@@ -38,6 +38,8 @@ class ImportStats:
     errors: List[Tuple[str, str]] = field(default_factory=list)
     outcomes: List[run_report.FileOutcome] = field(default_factory=list)
     sizes: Dict[str, int] = field(default_factory=dict)  # USB backups; a card's come from its scan
+    paused: bool = False  # a USB backup stopped so a camera card could import
+    to_copy: int = 0  # how many files a USB backup found missing from the drive
 
     def add_unreadable(self, paths: Sequence[Path]) -> None:
         """Count what the card scan couldn't read: its files were never even considered."""
@@ -637,8 +639,12 @@ def _copy_one_to_usb(
 
 def copy_local_archive_to_usb(
     expected_identity: Optional[volumes.VolumeIdentity] = None,
+    may_pause: bool = False,
 ) -> ImportStats:
-    """Copy only missing local archive files to USB; never overwrite mismatches."""
+    """Copy only missing local archive files to USB; never overwrite mismatches.
+
+    With ``may_pause``, a waiting camera card stops it between files, so a copy is never cut short.
+    """
     if not volumes.usb_is_mounted():
         raise RuntimeError(f"USB backup volume is not mounted at {config.USB_DEST_VOLUME}")
     if expected_identity is None:
@@ -659,6 +665,7 @@ def copy_local_archive_to_usb(
         current_file="",
     )
     pending, replace_on_usb = _compare_with_usb(files, source_roots, stats)
+    stats.to_copy = len(pending)
 
     if pending:
         volumes.validate_destinations([config.USB_DEST_ROOT], sum(item[2].size for item in pending))
@@ -673,10 +680,16 @@ def copy_local_archive_to_usb(
             "current_file": "",
             "current_path": "",
             "message": f"Copying {len(pending)} missing file(s) to USB",
+            "files_done": 0,
+            "files_total": len(pending),
         }
     )
     progress.update_status()
     for index, (source, destination, before) in enumerate(pending):
+        if may_pause and config.USB_YIELD_PATH.exists():
+            stats.paused = True
+            logger.info("USB backup stopping for a camera card, %d of %d", index, len(pending))
+            return stats
         if not volumes.usb_is_mounted():
             stats.failed += 1
             message = "USB backup volume was disconnected during the backup."
@@ -688,7 +701,10 @@ def copy_local_archive_to_usb(
                 )
             break
         progress.update_status(
-            current_file=source.name, current_path=str(source), message=f"USB backup: {source.name}"
+            current_file=source.name,
+            current_path=str(source),
+            message=f"USB backup: {source.name}",
+            files_done=index,
         )
         try:
             copied = _copy_one_to_usb(

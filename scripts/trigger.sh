@@ -46,6 +46,16 @@ EJECT_STATE_FILE="${PHOTO_OFFLOADER_EJECT_STATE:-$INSTALL_DIR/.last_camera_eject
 IMPORT_STATUS_FILE="${PHOTO_OFFLOADER_IMPORT_STATUS:-$INSTALL_DIR/.last_camera_import_status}"
 AUTO_EJECT_FILE="${PHOTO_OFFLOADER_AUTO_EJECT_FILE:-$INSTALL_DIR/.auto-eject-enabled}"
 BROKEN_INSTALL_MARK="$INSTALL_DIR/.broken-install-warned"
+USB_VOLUME="${PHOTO_OFFLOADER_USB_VOLUME:-$VOLUMES_ROOT/Photos}"
+USB_ARCHIVE_FOLDER="CameraImports"
+USB_BACKUP="${PHOTO_OFFLOADER_USB_BACKUP:-$INSTALL_DIR/bin/photo-offloader-usb-backup}"
+USB_SUPERVISOR="${PHOTO_OFFLOADER_USB_SUPERVISOR:-$INSTALL_DIR/scripts/usb_backup_supervisor.sh}"
+USB_WORKER_LABEL="com.user.photooffloader.usb-backup"
+AUTO_USB_FILE="$INSTALL_DIR/.auto-usb-backup-enabled"
+AUTO_USB_DONE_FILE="$INSTALL_DIR/.auto-usb-backup-done"  # the drive already backed up this mount
+# The same two paths as config.USB_YIELD_PATH and config.USB_RESUME_PATH.
+USB_YIELD_FILE="$INSTALL_DIR/.usb-backup-yield"
+USB_RESUME_FILE="$INSTALL_DIR/.usb-backup-resume"
 # launchd does not load interactive shell startup files. Keep common Homebrew
 # paths available to ExifTool, ffmpeg, and other optional media helpers.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
@@ -253,9 +263,53 @@ card_is_parked() {
     [[ -f "$PARKED_FILE" ]] && cut -f1 "$PARKED_FILE" | grep -Fxq -- "$1"
 }
 
+usb_backup_is_running() {
+    "$PGREP" -f "$IMPORTER --backup-usb" >/dev/null 2>&1
+}
+
+# A running USB backup doesn't count: it gives way to a card.
 import_is_active() {
-    "$LAUNCHCTL" print "gui/$(id -u)/$IMPORT_WORKER_LABEL" >/dev/null 2>&1 \
-        || "$PGREP" -f "$IMPORTER" >/dev/null 2>&1
+    "$LAUNCHCTL" print "gui/$(id -u)/$IMPORT_WORKER_LABEL" >/dev/null 2>&1 && return 0
+    "$PGREP" -f "$IMPORTER" >/dev/null 2>&1 && ! usb_backup_is_running
+}
+
+# Start a backup if a paused one should carry on, or the option is on and the drive has just
+# connected. Only called when no card is waiting, so a card always goes first.
+start_usb_backup_if_due() {
+    if [[ ! -d "$USB_VOLUME" ]]; then
+        rm -f "$AUTO_USB_DONE_FILE"
+        return 0
+    fi
+    "$PGREP" -f "$IMPORTER" >/dev/null 2>&1 && return 0
+    local domain="gui/$(id -u)"
+    "$LAUNCHCTL" print "$domain/$IMPORT_WORKER_LABEL" >/dev/null 2>&1 && return 0
+    "$LAUNCHCTL" print "$domain/$USB_WORKER_LABEL" >/dev/null 2>&1 && return 0
+
+    local identity paused_on=""
+    [[ -f "$USB_RESUME_FILE" ]] && paused_on="$(head -n 1 "$USB_RESUME_FILE" 2>/dev/null || true)"
+    if [[ -z "$paused_on" ]]; then
+        # Its archive folder shows this is the backup drive, not another drive of the same name.
+        [[ -f "$AUTO_USB_FILE" && -d "$USB_VOLUME/$USB_ARCHIVE_FOLDER" ]] || return 0
+    fi
+    identity="$(volume_identity "$USB_VOLUME")"
+    [[ -n "$identity" ]] || return 0  # a plain folder, or a drive that can't be identified
+    if [[ -n "$paused_on" ]]; then
+        [[ "$paused_on" == "$identity" ]] || return 0
+    elif [[ "$(cat "$AUTO_USB_DONE_FILE" 2>/dev/null || true)" == "$identity" ]]; then
+        return 0
+    fi
+    [[ -f "$USB_SUPERVISOR" ]] || { log "USB backup supervisor is missing: $USB_SUPERVISOR"; return 0; }
+
+    printf '%s\n' "$identity" > "$AUTO_USB_DONE_FILE"
+    flush_log
+    if "$LAUNCHCTL" submit -l "$USB_WORKER_LABEL" -- /bin/bash "$USB_SUPERVISOR" \
+        "$PYTHON" "$USB_BACKUP" "$LOG" "$INSTALL_DIR" "$USB_WORKER_LABEL" \
+        >> "$HOME/.camera_transfer.log" 2>&1; then
+        log "Started a USB backup by itself on: $USB_VOLUME"
+    else
+        log "ERROR: launchctl could not start the USB backup."
+        rm -f "$AUTO_USB_DONE_FILE"
+    fi
 }
 
 # Whether the handled card should stay the one in focus, even with another card waiting.
@@ -320,6 +374,10 @@ if [[ -n "$camera_dcim" ]]; then
         fi
     fi
     rm -f "$ABSENT_FILE"
+fi
+
+if [[ -z "$camera_dcim" || "$(cat "$STATE_FILE" 2>/dev/null || true)" == "$camera_dcim" ]]; then
+    start_usb_backup_if_due
 fi
 
 if [[ -z "$camera_dcim" ]]; then
@@ -428,6 +486,12 @@ fi
 # The importer has its own advisory lock. Avoid opening extra Terminal windows
 # while an import is already running, but retain the importer lock as the final
 # safety barrier against races.
+if usb_backup_is_running; then
+    # The backup holds the session lock until it stops, between files; a later poll imports the card.
+    : > "$USB_YIELD_FILE"
+    log "Asking the USB backup to give way to this card: $camera_dcim"
+    exit 0
+fi
 if "$PGREP" -f "$IMPORTER" >/dev/null 2>&1; then
     log "Importer already running; ignoring duplicate volume event for $camera_dcim"
     exit 0

@@ -61,6 +61,15 @@ class Paths:
         return self.install_dir / ".auto-eject-enabled"
 
     @property
+    def auto_usb_backup_file(self) -> Path:
+        return self.install_dir / ".auto-usb-backup-enabled"
+
+    @property
+    def usb_resume_file(self) -> Path:
+        """Left by a USB backup that stopped for a card: drive ID, files copied, files to copy."""
+        return self.install_dir / ".usb-backup-resume"
+
+    @property
     def handled_state_file(self) -> Path:
         return self.install_dir / ".last_camera_source"
 

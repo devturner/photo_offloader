@@ -158,6 +158,129 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
             check=False,
         )
 
+    # ---- USB backup: starting by itself, giving way to a card, and carrying on afterwards ----
+    def set_up_backup_drive(self, uuid="DRIVE-1", card=False):
+        """A real-looking drive, with launchctl recording what it's asked to run."""
+        if not card:
+            shutil.rmtree(self.card)
+        (self.photos / "CameraImports").mkdir(exist_ok=True)
+        (self.photos / ".test-volume-uuid").write_text(uuid)
+        self.submitted = self.root / "submitted.txt"
+        shutil.copy(REPO / "scripts" / "usb_backup_supervisor.sh", self.install / "scripts")
+        self.launchctl.write_text(
+            "#!/bin/bash\n"
+            'if [[ "$1" == "print" ]]; then exit 1; fi\n'
+            f'if [[ "$1" == "submit" ]]; then printf \'%s\\n\' "$*" >> {self.submitted}; exit 0; fi\n'
+            "exit 1\n"
+        )
+
+    def backup_starts(self):
+        return len(self.submitted.read_text().splitlines()) if self.submitted.exists() else 0
+
+    def importer_shows_as(self, backup):
+        """pgrep's stub: an importer is running, either as a backup or for a card."""
+        answer = "exit 0" if backup else 'if [[ "$*" == *--backup-usb* ]]; then exit 1; fi; exit 0'
+        self.pgrep.write_text(f"#!/bin/bash\n{answer}\n")
+
+    def switch_on_auto_backup(self):
+        (self.install / ".auto-usb-backup-enabled").touch()
+
+    def test_a_drive_is_not_backed_up_by_itself_unless_asked(self):
+        self.set_up_backup_drive()
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 0)
+
+    def test_the_option_starts_one_backup_each_time_the_drive_connects(self):
+        self.set_up_backup_drive()
+        self.switch_on_auto_backup()
+        self.run_trigger()
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 1)
+        uuid = (self.photos / ".test-volume-uuid").read_text()
+        shutil.rmtree(self.photos)
+        self.run_trigger()
+        self.photos.mkdir()
+        (self.photos / ".test-volume-uuid").write_text(uuid)
+        (self.photos / "CameraImports").mkdir()
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 2)
+
+    def test_only_a_drive_that_already_holds_backups_starts_one(self):
+        self.set_up_backup_drive()
+        self.switch_on_auto_backup()
+        (self.photos / "CameraImports").rmdir()
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 0)
+
+    def test_a_plain_folder_named_like_the_drive_starts_nothing(self):
+        self.set_up_backup_drive()
+        self.switch_on_auto_backup()
+        (self.photos / ".test-volume-uuid").unlink()
+        (self.install / ".auto-usb-backup-done").write_text("A-DRIVE-SEEN-EARLIER\n")
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 0)
+
+    def test_a_card_waiting_to_import_goes_before_a_backup(self):
+        self.set_up_backup_drive(card=True)
+        self.switch_on_auto_backup()
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 0)
+        self.assertIn("--source", self.command_capture.read_text())
+
+    def test_a_backup_waits_for_a_running_import(self):
+        self.set_up_backup_drive()
+        self.switch_on_auto_backup()
+        self.importer_shows_as(backup=False)
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 0)
+
+    def test_pausing_automatic_imports_also_holds_automatic_backups(self):
+        self.set_up_backup_drive()
+        self.switch_on_auto_backup()
+        (self.install / ".paused").touch()
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 0)
+
+    def test_a_new_card_asks_a_running_backup_to_give_way(self):
+        self.set_up_backup_drive(card=True)
+        self.importer_shows_as(backup=True)
+        self.run_trigger()
+        self.assertTrue((self.install / ".usb-backup-yield").exists())
+        self.assertFalse(self.command_capture.exists(), "the backup holds the session lock")
+
+    def test_a_new_card_gets_past_a_handled_card_to_ask_the_backup_to_give_way(self):
+        self.set_up_backup_drive(card=True)
+        self.state.write_text(f"{self.dcim}\n")
+        second = self.volumes / "SECOND CARD"
+        (second / "DCIM").mkdir(parents=True)
+        self.importer_shows_as(backup=True)
+        self.run_trigger()
+        self.assertTrue((self.install / ".usb-backup-yield").exists(), self.log.read_text())
+
+    def test_a_card_never_interrupts_another_cards_import(self):
+        self.set_up_backup_drive(card=True)
+        self.importer_shows_as(backup=False)
+        self.run_trigger()
+        self.assertFalse((self.install / ".usb-backup-yield").exists())
+
+    def test_a_paused_backup_carries_on_by_itself_with_the_option_off(self):
+        self.set_up_backup_drive()
+        (self.install / ".usb-backup-resume").write_text("DRIVE-1\n140\n475\n")
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 1)
+
+    def test_a_paused_backup_does_not_carry_on_to_a_different_drive(self):
+        self.set_up_backup_drive(uuid="OTHER-DRIVE")
+        (self.install / ".usb-backup-resume").write_text("DRIVE-1\n140\n475\n")
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 0)
+
+    def test_a_paused_backup_waits_while_its_card_is_still_to_import(self):
+        self.set_up_backup_drive(card=True)
+        (self.install / ".usb-backup-resume").write_text("DRIVE-1\n140\n475\n")
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 0)
+
     def test_a_diskutil_that_hangs_does_not_hold_up_the_trigger(self):
         self.diskutil.write_text("#!/bin/bash\nexec sleep 30\n")
         started = time.monotonic()
@@ -540,7 +663,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertTrue(self.command_capture.exists())
 
     def test_running_importer_is_not_launched_again(self):
-        self.pgrep.write_text("#!/bin/bash\nexit 0\n")
+        self.importer_shows_as(backup=False)
         self.assertEqual(self.run_trigger().returncode, 0)
         self.assertFalse(self.state.exists())
         self.assertIn("Importer already running", self.log.read_text())
@@ -682,7 +805,7 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.run_trigger()
         self.imported_card()
         self.second_card()
-        self.pgrep.write_text("#!/bin/bash\nexit 0\n")
+        self.importer_shows_as(backup=False)
         self.run_trigger()
         self.assertIsNone(self.imported_card())
         self.assertEqual(self.state.read_text().strip(), str(self.dcim))

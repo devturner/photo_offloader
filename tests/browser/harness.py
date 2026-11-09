@@ -295,6 +295,75 @@ def _uploading(s: Sandbox) -> None:
         s.advance(1)
 
 
+def _drive_files(s: Sandbox, on_both: int, only_on_mac: int) -> None:
+    """Catalog rows for files on the Mac and the drive, 28 MB each."""
+    mac, drive = s.paths.local_archives[0].resolve(), s.paths.usb_archives[0].resolve()
+    rows = []
+    for index in range(on_both + only_on_mac):
+        name = f"DSC_{index:04}.JPG"
+        rows.append((str(mac / name), str(mac), name))
+        if index < on_both:
+            rows.append((str(drive / name), str(drive), name))
+    db = catalog.catalog_connection()
+    with db:
+        db.executemany(
+            "INSERT INTO file_locations (path, root, relative_path, size, mtime_ns, inode,"
+            f" indexed_at) VALUES (?, ?, ?, {28 * MB}, 1, 1, ?)",
+            [(*row, s.now - 18 * 86400) for row in rows],
+        )
+    db.close()
+
+
+def _usb_behind(s: Sandbox) -> None:
+    s.add_usb()
+    s.status(state="idle")
+    _drive_files(s, on_both=3147, only_on_mac=12)
+
+
+def _usb_unplugged_behind(s: Sandbox) -> None:
+    s.status(state="idle")
+    _drive_files(s, on_both=3147, only_on_mac=12)
+
+
+def _backup_paused(s: Sandbox) -> None:
+    _copying(s)
+    s.paths.usb_resume_file.write_text("DRIVE-1\n140\n475\n")
+
+
+def _usb_waiting(s: Sandbox) -> None:
+    _copying(s)
+    s.paths.auto_usb_backup_file.touch()
+
+
+def _backup_and_upload(s: Sandbox) -> None:
+    s.add_usb()
+    s.set_up_google()
+    s.importer_up = True
+    s.status(
+        state="copying",
+        phase="USB backup",
+        stage="usb",
+        bytes_done=197 * MB,
+        bytes_total=340 * MB,
+        files_done=7,
+        files_total=12,
+        elapsed_seconds=20,
+        eta_seconds=6,
+    )
+    s.google_up = True
+    s.google_status("running", ago=10)
+    stamp = datetime.fromtimestamp(s.now).strftime("%Y/%m/%d %H:%M:%S")
+    s.paths.google_log_file.write_text(
+        f"{stamp} INFO  :   41 MiB / 90 MiB, 46%, 7 MiB/s, ETA 7s (xfr#3/8)\n"
+    )
+
+
+def _usb_up_to_date(s: Sandbox) -> None:
+    s.add_usb()
+    s.status(state="idle")
+    _drive_files(s, on_both=3159, only_on_mac=0)
+
+
 def _already_imported(s: Sandbox) -> None:
     """The one state with every step button showing."""
     s.add_card()
@@ -648,6 +717,12 @@ def _check_deleted(s: Sandbox) -> None:
 
 SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "idle": lambda s: s.status(state="idle"),
+    "usb_behind": _usb_behind,
+    "usb_unplugged_behind": _usb_unplugged_behind,
+    "usb_up_to_date": _usb_up_to_date,
+    "backup_paused": _backup_paused,
+    "usb_waiting": _usb_waiting,
+    "backup_and_upload": _backup_and_upload,
     "check_running": _check_running,
     "check_during_import": _check_during_import,
     "check_clean": lambda s: _record_check(s, message="All 6,300 copies match."),

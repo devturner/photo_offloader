@@ -190,7 +190,7 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         )
         with patch("builtins.input", side_effect=AssertionError("should not prompt for a card")):
             self.assertEqual(app.main(["--backup-usb"]), 0)
-        backup.assert_called_once_with()
+        backup.assert_called_once_with(may_pause=True)
         notify.assert_called_once()
 
     @patch("photo_offloader.logs.notify")

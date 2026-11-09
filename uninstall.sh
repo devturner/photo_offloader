@@ -8,6 +8,7 @@ AGENTS_DIR="$HOME/Library/LaunchAgents"
 LABEL="com.user.photooffloader"
 UI_LABEL="com.user.photooffloader.menubar"
 IMPORT_LABEL="com.user.photooffloader.import"
+USB_LABEL="com.user.photooffloader.usb-backup"
 VERBOSE=0
 DRY_RUN=0
 WAIT_SECONDS="${PHOTO_OFFLOADER_UNINSTALL_WAIT_SECONDS:-10}"
@@ -154,6 +155,7 @@ if exists_in_launchd "$IMPORT_LABEL"; then
   fi
 fi
 bootout_agent "$IMPORT_LABEL" "$AGENTS_DIR/$IMPORT_LABEL.plist"
+bootout_agent "$USB_LABEL" "$AGENTS_DIR/$USB_LABEL.plist"
 
 # Every installed program, as "path|description". Entries after the first five are
 # the flat layout used before v2.5, so an older installation is also cleaned up.
