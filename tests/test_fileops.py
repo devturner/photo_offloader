@@ -3,6 +3,7 @@ import ctypes
 import errno
 import mmap
 import os
+import signal
 import tempfile
 import unittest
 from pathlib import Path
@@ -122,6 +123,32 @@ class TestFileops(support.CardFixtureTestCase):
             fileops.install_without_overwrite(temp, final)
         self.assertFalse(final.exists())
         self.assertEqual(temp.read_bytes(), b"verified")
+
+    def test_a_sigterm_just_after_the_name_is_claimed_cannot_leave_an_empty_file(self):
+        # An empty file under the final name makes every later backup report "USB file differs",
+        # and a signal here lands before anything can record that the file was created.
+        temp, final = self.root / "tmp", self.root / "final"
+        temp.write_bytes(b"verified")
+        real_open = os.open
+
+        def open_then_sigterm(path, *args, **kwargs):
+            fd = real_open(path, *args, **kwargs)
+            if Path(path) == final:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return fd
+
+        def interrupt(_signum, _frame):
+            raise KeyboardInterrupt
+
+        previous = signal.signal(signal.SIGTERM, interrupt)
+        self.addCleanup(signal.signal, signal.SIGTERM, previous)
+        with (
+            patch("os.link", side_effect=OSError(errno.ENOTSUP, "not supported")),
+            patch("photo_offloader.fileops.os.open", open_then_sigterm),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            fileops.install_without_overwrite(temp, final)
+        self.assertEqual(final.read_bytes(), b"verified")
 
     def test_install_raises_an_unexpected_link_error_and_installs_nothing(self):
         temp, final = self.root / "tmp", self.root / "final"
