@@ -251,6 +251,22 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")
+    def test_the_notification_counts_new_files_not_files_found(self, notify, launch):
+        stats = ImportStats(found=2724, destination_copies=16, destination_skips=2708)
+        app._report_outcome(stats, ImportStats(), False, False, False)
+        self.assertIn("16 new files copied", notify.call_args[0][1])
+        self.assertNotIn("2724", notify.call_args[0][1])
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    def test_the_notification_says_when_nothing_was_new(self, notify, launch):
+        app._report_outcome(
+            ImportStats(found=5, destination_skips=5), ImportStats(), True, False, False
+        )
+        self.assertIn("No new files", notify.call_args[0][1])
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
     def test_a_finished_import_starts_the_upload(self, notify, launch):
         result = app._report_outcome(ImportStats(found=3), ImportStats(), False, False, False)
         self.assertEqual(result, 0)

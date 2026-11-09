@@ -663,6 +663,12 @@ def _report_local_failure(
     logs.notify("Photo Import Incomplete", message)
 
 
+def _new_files_text(copied: int) -> str:
+    if not copied:
+        return "No new files: the Mac already had everything on this card."
+    return f"{copied:,} new file{'' if copied == 1 else 's'} copied to the Mac."
+
+
 def _report_outcome(
     local_stats: transfer.ImportStats,
     backup_stats: transfer.ImportStats,
@@ -706,7 +712,7 @@ def _report_outcome(
     )
     logs.notify(
         "Photo Import Complete",
-        f"{local_stats.found} media files copied to the Mac; USB backup "
+        f"{_new_files_text(local_stats.destination_copies)} USB backup "
         + ("completed." if usb_expected else "was not run."),
     )
     return 0

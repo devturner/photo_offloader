@@ -62,10 +62,11 @@ Files are filed by month and camera, then by type:
 - **The camera** comes from the file's metadata. Reading it from video needs
   [ExifTool](https://exiftool.org); without ExifTool, or without usable metadata, the folder is
   `Unknown-Camera`.
-- **Everything on the card is copied.** As well as `DCIM`, the importer scans `PRIVATE` and
-  `MP_ROOT`, where Sony, Canon and Panasonic cameras keep video. Unknown file types go to `Other`
-  and are listed in the log, so nothing is left behind on a card you then format. Hidden files,
-  including macOS `._*` files, are skipped.
+- **Three folders on the card are copied:** `DCIM`, plus `PRIVATE` and `MP_ROOT`, where Sony, Canon
+  and Panasonic cameras keep video. Anything else at the top level of the card is not copied, so
+  check for it before you format a card a camera has stored files on elsewhere. Unknown file types
+  in those three folders go to `Other` and are listed in the log. Hidden files, including macOS
+  `._*` files, and camera index files are skipped.
 
 Archives from an older version may have RAW files in `CameraImports`.
 `tools/move_raw_to_separate_folder.sh` moves them, and previews the moves unless you pass `--apply`.
