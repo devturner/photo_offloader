@@ -235,7 +235,9 @@ class TestProgressBar(PageTestCase):
             sandbox.advance(1)
             self.refresh()
             self.page.wait_for_function("!document.querySelector('#hero .bar > div').dataset.old")
-            self.assertLess(self.glow()[2], 100)
+            # A new bar's glow starts on the next drawn frame, so a busy machine lags (150 ms seen in
+            # CI). A restart is further out: these checks are over 350 ms apart in a 2400 ms cycle.
+            self.assertLess(self.glow()[2], 300)
 
     def test_with_reduce_motion_it_is_a_still_empty_track(self):
         self.show("starting_upload")  # the harness asks for reduced motion by default
