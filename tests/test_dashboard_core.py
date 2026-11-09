@@ -323,6 +323,14 @@ class TestActivity(Fixture):
         self.assertEqual(self.core.state()["activity"]["title"], "Copying new files")
         self.assertEqual(self.pipeline("archive")["headline"], "Copying")
 
+    def test_a_running_import_with_no_progress_says_so(self):
+        self.write_status(state="copying", phase="copy", current_file="DSC_0001.NEF")
+        with patch.object(self.core, "importer_running", return_value=True):
+            self.advance(core.STALLED_STATUS_SECONDS - 1)
+            self.assertIn("DSC_0001", self.core.state()["activity"]["detail"])
+            self.advance(1)
+            self.assertIn("No progress for 5 min", self.core.state()["activity"]["detail"])
+
     def test_activity_tells_what_it_is_actually_doing(self):
         # User feedback 2026-11-04: "Activity is too generic".
         expectations = [

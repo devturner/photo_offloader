@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 from photo_offloader import (
+    awake,
     catalog,
     catalog_refresh,
     config,
@@ -510,6 +511,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     previous = signal.signal(signal.SIGTERM, importer._raise_keyboard_interrupt)
     try:
         with _only_one_check():
+            awake.keep_awake()
             return _run()
     except _Busy:
         print("A check is already running.")

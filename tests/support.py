@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from photo_offloader import (
+    awake,
     card,
     catalog,
     catalog_refresh,
@@ -97,6 +98,10 @@ def isolate_config(testcase: unittest.TestCase, root: Path, **overrides) -> None
     patcher.start()
     testcase.addCleanup(patcher.stop)
     patcher = patch.object(run_report, "volume_info", return_value="Test volume\n")
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
+    # A test must not hold a real power assertion on the user's Mac.
+    patcher = patch.object(awake, "keep_awake")
     patcher.start()
     testcase.addCleanup(patcher.stop)
     # The catalog schema is set up once per database path per process.

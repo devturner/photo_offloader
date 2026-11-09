@@ -66,14 +66,12 @@ def damaged_row(relative="2026-10/a/Raws/two.nef"):
 
 
 class TestStarting(Check):
-    def test_it_starts_the_installed_program_and_keeps_the_mac_awake(self):
+    def test_it_starts_the_installed_program(self):
         result = self.core.act("verify")
         self.assertTrue(result["ok"])
         self.assertEqual(
             self.spawned[-1],
             [
-                "/usr/bin/caffeinate",
-                "-i",
                 str(self.paths.python),
                 str(self.install / config.VERIFY),
             ],

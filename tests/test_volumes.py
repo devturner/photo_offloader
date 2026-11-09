@@ -60,6 +60,12 @@ class TestVolumes(support.CardFixtureTestCase):
             run.return_value = MagicMock(returncode=1, stdout="", stderr="bad")
             self.assertFalse(volumes.eject_volume(self.card))
 
+    @patch("subprocess.run", side_effect=subprocess.TimeoutExpired("diskutil", 60))
+    def test_an_eject_that_hangs_is_a_failed_eject(self, run):
+        with patch.object(Path, "is_mount", return_value=True):
+            self.assertFalse(volumes.eject_volume(self.card))
+        self.assertGreater(run.call_args.kwargs["timeout"], 0)
+
     def test_destination_snapshot_is_immutable_and_ordered(self):
         identity = VolumeIdentity(self.usb, "disk4s1", "uuid-a")
         snapshot = DestinationSnapshot((self.local, self.usb), True, identity)

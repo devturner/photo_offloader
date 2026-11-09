@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 from photo_offloader import (
+    awake,
     card,
     catalog,
     catalog_refresh,
@@ -781,6 +782,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             # Do not reset shared dashboard status until this process owns the
             # session lock; a duplicate launch must not hide the active session.
             logger.info("--- Starting new photo offloader session run_id=%s ---", run_id)
+            awake.keep_awake()
             _RUN.update(kind="import", started_at=time.time())
             progress._PROGRESS_STARTED = time.monotonic()
             progress._PROGRESS.update(

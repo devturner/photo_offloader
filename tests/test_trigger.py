@@ -158,6 +158,25 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
             check=False,
         )
 
+    def test_a_diskutil_that_hangs_does_not_hold_up_the_trigger(self):
+        self.diskutil.write_text("#!/bin/bash\nexec sleep 30\n")
+        started = time.monotonic()
+        result = self.run_trigger(PHOTO_OFFLOADER_DISKUTIL_SECONDS="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(time.monotonic() - started, 15)
+
+    def test_an_eject_that_hangs_does_not_hold_up_the_trigger(self):
+        (self.install / ".auto-eject-enabled").touch()
+        self.assertEqual(self.run_trigger().returncode, 0)
+        with (self.install / ".import-status").open("a") as status:
+            status.write(f"success|{self.dcim}|\n")
+        self.diskutil.write_text('#!/bin/bash\n[[ "$1" == "eject" ]] && exec sleep 30\nexit 1\n')
+        started = time.monotonic()
+        result = self.run_trigger(PHOTO_OFFLOADER_DISKUTIL_SECONDS="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertIn("Card ejection failed", self.log.read_text())
+
     def test_paused_service_does_not_start_an_import(self):
         pause_file = self.install / ".paused"
         pause_file.touch()

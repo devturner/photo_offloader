@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import card, catalog, config, fileops, logs, progress
+from photo_offloader import awake, card, catalog, config, fileops, logs, progress
 from photo_offloader import importer as app
 from photo_offloader.transfer import ImportStats
 from photo_offloader.volumes import VolumeIdentity
@@ -264,6 +264,13 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
             ImportStats(found=5, destination_skips=5), ImportStats(), True, False, False
         )
         self.assertIn("No new files", notify.call_args[0][1])
+
+    @patch("photo_offloader.volumes.eject_volume", return_value=True)
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    def test_an_import_keeps_the_mac_awake(self, launch, eject):
+        self.media()
+        app.main(["--source", str(self.card), "--no-usb"])
+        awake.keep_awake.assert_called_once_with()
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")

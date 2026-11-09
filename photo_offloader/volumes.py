@@ -14,6 +14,7 @@ from photo_offloader import config
 from photo_offloader.logs import logger
 
 DISKUTIL_INFO_TIMEOUT_SECONDS = 30  # a failing card can leave diskutil waiting
+DISKUTIL_EJECT_TIMEOUT_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -118,7 +119,11 @@ def eject_volume(volume_path: Path) -> bool:
         return False
     try:
         result = subprocess.run(
-            ["diskutil", "eject", str(volume_path)], check=False, capture_output=True, text=True
+            ["diskutil", "eject", str(volume_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=DISKUTIL_EJECT_TIMEOUT_SECONDS,
         )
         if result.returncode == 0:
             logger.info("Ejected: %s", volume_path)
@@ -127,6 +132,6 @@ def eject_volume(volume_path: Path) -> bool:
             "Could not eject %s: %s", volume_path, result.stderr.strip() or result.stdout.strip()
         )
         return False
-    except OSError as exc:
+    except (OSError, subprocess.TimeoutExpired) as exc:
         logger.error("Could not eject %s: %s", volume_path, exc)
         return False
