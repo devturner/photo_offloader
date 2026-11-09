@@ -96,9 +96,16 @@ flush_log() {
 }
 trap flush_log EXIT
 
+# A failing card can leave diskutil waiting for good, and this script holds the trigger lock.
+# macOS has no timeout command; an alarm survives exec, so perl limits whatever it runs.
+DISKUTIL_SECONDS="${PHOTO_OFFLOADER_DISKUTIL_SECONDS:-30}"
+limited_diskutil() {
+    /usr/bin/perl -e 'alarm shift; exec @ARGV or exit 127' "$DISKUTIL_SECONDS" "$DISKUTIL" "$@"
+}
+
 # Identity of a mounted volume: its VolumeUUID (empty when it cannot be read).
 volume_identity() {
-    "$DISKUTIL" info -plist "$1" 2>/dev/null \
+    limited_diskutil info -plist "$1" 2>/dev/null \
         | tr '\n' ' ' \
         | sed -n 's/.*<key>VolumeUUID<\/key>[[:space:]]*<string>\([^<]*\)<\/string>.*/\1/p' \
         | head -n 1 || true
@@ -407,7 +414,7 @@ if [[ -f "$STATE_FILE" ]] && [[ "$(cat "$STATE_FILE")" == "$camera_dcim" ]]; the
 
     volume_path="${camera_dcim%/DCIM}"
     log "Camera source already handled for this mount; no importer is running. Requesting safe ejection: $volume_path"
-    if eject_output="$("$DISKUTIL" eject "$volume_path" 2>&1)"; then
+    if eject_output="$(limited_diskutil eject "$volume_path" 2>&1)"; then
         printf '%s\n' "$camera_dcim:ejected" > "$EJECT_STATE_FILE"
         log "Card ejected successfully: $volume_path"
     else

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import card, catalog, config, fileops, logs, progress
+from photo_offloader import awake, card, catalog, config, fileops, logs, progress
 from photo_offloader import importer as app
 from photo_offloader.transfer import ImportStats
 from photo_offloader.volumes import VolumeIdentity
@@ -248,6 +248,29 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
             self.assertEqual(app.main(["--source", str(self.card), "--no-usb"]), 1)
         launch.assert_not_called()
         self.assertNotIn("local_verified", catalog.list_import_history()[0]["details"])
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    def test_the_notification_counts_new_files_not_files_found(self, notify, launch):
+        stats = ImportStats(found=2724, destination_copies=16, destination_skips=2708)
+        app._report_outcome(stats, ImportStats(), False, False, False)
+        self.assertIn("16 new files copied", notify.call_args[0][1])
+        self.assertNotIn("2724", notify.call_args[0][1])
+
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    @patch("photo_offloader.logs.notify")
+    def test_the_notification_says_when_nothing_was_new(self, notify, launch):
+        app._report_outcome(
+            ImportStats(found=5, destination_skips=5), ImportStats(), True, False, False
+        )
+        self.assertIn("No new files", notify.call_args[0][1])
+
+    @patch("photo_offloader.volumes.eject_volume", return_value=True)
+    @patch("photo_offloader.importer.launch_google_photos_sync")
+    def test_an_import_keeps_the_mac_awake(self, launch, eject):
+        self.media()
+        app.main(["--source", str(self.card), "--no-usb"])
+        awake.keep_awake.assert_called_once_with()
 
     @patch("photo_offloader.importer.launch_google_photos_sync")
     @patch("photo_offloader.logs.notify")

@@ -386,15 +386,14 @@ def mark_google_photos_uploaded(path: Path, remote: str, album: str) -> None:
 
 
 def google_photos_uploaded_fingerprints() -> Dict[str, Tuple[int, int, int]]:
-    """Return {resolved path: (size, mtime_ns, inode)} for every recorded upload in one query."""
-    try:
-        with catalog_db() as db:
-            rows = db.execute(
-                "SELECT path, size, mtime_ns, inode FROM google_photos_uploads"
-            ).fetchall()
-    except sqlite3.Error as exc:
-        logger.debug("Could not read Google Photos upload records: %s", exc)
-        return {}
+    """Return {resolved path: (size, mtime_ns, inode)} for every recorded upload in one query.
+
+    A read error is raised: an empty result would mean that nothing has ever been uploaded.
+    """
+    with catalog_db() as db:
+        rows = db.execute(
+            "SELECT path, size, mtime_ns, inode FROM google_photos_uploads"
+        ).fetchall()
     return {row[0]: (row[1], row[2], row[3]) for row in rows}
 
 

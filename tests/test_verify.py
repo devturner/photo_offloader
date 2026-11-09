@@ -6,12 +6,14 @@ import io
 import os
 import shutil
 import sqlite3
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 from photo_offloader import (
+    awake,
     catalog,
     catalog_refresh,
     config,
@@ -828,6 +830,15 @@ class TestWarningText(unittest.TestCase):
         )
         self.assertFalse(warning["drive"])
         self.assertNotIn("USB", warning["what"])
+
+
+class TestStayingAwake(unittest.TestCase):
+    def test_a_check_keeps_the_mac_awake_however_it_was_started(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            support.isolate_config(self, Path(tmp))
+            with patch.object(verify, "_run", return_value=0), redirect_stdout(io.StringIO()):
+                verify.main([])
+            awake.keep_awake.assert_called_once_with()
 
 
 if __name__ == "__main__":

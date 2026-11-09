@@ -9,9 +9,11 @@ import hashlib
 import mmap
 import os
 import shutil
+import signal
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Iterator
 
 from photo_offloader import config, logs, progress
 from photo_offloader.logs import logger
@@ -204,6 +206,20 @@ def _flush_folder(folder: Path) -> None:
         os.close(fd)
 
 
+@contextmanager
+def _cancel_signals_held() -> Iterator[None]:
+    """Hold SIGTERM and SIGINT until the block ends, so a cancel can't land partway through it.
+
+    A cancel arrives as a KeyboardInterrupt between any two bytecodes, including after a file is
+    created but before anything has recorded that, where no cleanup could know to remove it.
+    """
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
 def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
     try:
         os.link(temp_path, final_path)
@@ -220,22 +236,22 @@ def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
         }
         if exc.errno not in unsupported:
             raise
-    try:
-        fd = os.open(final_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
-    except FileExistsError:
-        return False
-    try:
-        with os.fdopen(fd, "wb") as output, temp_path.open("rb") as source:
-            _skip_page_cache(output.fileno(), final_path)
-            shutil.copyfileobj(source, output)
-            output.flush()
-            flush_to_disk(output.fileno())
-    except Exception:
+    # No hard links (exFAT): claim the name with an empty file, then rename the verified file over
+    # it. Only the file created here is ever replaced, and no partial copy gets the final name.
+    with _cancel_signals_held():
         try:
-            final_path.unlink(missing_ok=True)
-        except OSError as cleanup_exc:
-            logger.warning("Could not remove the partial copy %s: %s", final_path, cleanup_exc)
-        raise
+            fd = os.open(final_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            return False
+        try:
+            os.close(fd)
+            os.replace(temp_path, final_path)
+        except BaseException:
+            try:
+                final_path.unlink(missing_ok=True)
+            except OSError as cleanup_exc:
+                logger.warning("Could not remove the empty file %s: %s", final_path, cleanup_exc)
+            raise
     return True
 
 

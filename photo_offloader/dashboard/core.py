@@ -30,6 +30,7 @@ from photo_offloader.presence import SERVICE_LABEL
 
 LAST_TRANSFER_TTL_SECONDS = 10 * 60  # completed/canceled results fade after this
 STALE_STATUS_SECONDS = 20  # an "active" status this old, with no importer, is stale
+STALLED_STATUS_SECONDS = 300  # a running importer that hasn't reported for this long may be stuck
 # The graph shows 90 of these (SPARK_MAX_POINTS in web/index.html); the rest settle its smoothing.
 SPEED_SAMPLES = 130
 UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60  # an upload this soon after an import continues its steps
@@ -323,6 +324,9 @@ class DashboardCore:
         total = int(status.get("bytes_total", 0) or 0)
         kind = {"catalog": "catalog", "usb": "usb_backup"}.get(stage, "import")
         title, detail = display.activity_text(status, stage)
+        age = self._status_age(status, now)
+        if age is not None and age >= STALLED_STATUS_SECONDS:
+            detail = f"No progress for {int(age // 60)} min. The card or drive may be stuck"
         new_only = stage == "copy" and int(status.get("expected_new_bytes") or 0) > 0
         if new_only:
             # The new files are the work left: already-saved files take no copying time.
@@ -1033,15 +1037,7 @@ class DashboardCore:
             return {"ok": False, "message": "A check is already running."}
         if self.importer_running():
             return {"ok": False, "message": "An import is running. Check when it has finished."}
-        # A check takes many minutes, and a sleeping Mac would leave it stuck partway.
-        self._spawn(
-            [
-                "/usr/bin/caffeinate",
-                "-i",
-                str(self.paths.python),
-                str(self.paths.verify_script),
-            ]
-        )
+        self._spawn([str(self.paths.python), str(self.paths.verify_script)])
         self._invalidate("verify")
         return {"ok": True, "message": "Check started. You can close this window while it runs."}
 

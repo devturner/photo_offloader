@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 from photo_offloader import (
+    awake,
     card,
     catalog,
     catalog_refresh,
@@ -663,6 +664,12 @@ def _report_local_failure(
     logs.notify("Photo Import Incomplete", message)
 
 
+def _new_files_text(copied: int) -> str:
+    if not copied:
+        return "No new files: the Mac already had everything on this card."
+    return f"{copied:,} new file{'' if copied == 1 else 's'} copied to the Mac."
+
+
 def _report_outcome(
     local_stats: transfer.ImportStats,
     backup_stats: transfer.ImportStats,
@@ -706,7 +713,7 @@ def _report_outcome(
     )
     logs.notify(
         "Photo Import Complete",
-        f"{local_stats.found} media files copied to the Mac; USB backup "
+        f"{_new_files_text(local_stats.destination_copies)} USB backup "
         + ("completed." if usb_expected else "was not run."),
     )
     return 0
@@ -775,6 +782,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             # Do not reset shared dashboard status until this process owns the
             # session lock; a duplicate launch must not hide the active session.
             logger.info("--- Starting new photo offloader session run_id=%s ---", run_id)
+            awake.keep_awake()
             _RUN.update(kind="import", started_at=time.time())
             progress._PROGRESS_STARTED = time.monotonic()
             progress._PROGRESS.update(

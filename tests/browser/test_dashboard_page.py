@@ -720,32 +720,52 @@ class TestReports(PageTestCase):
         expect(self.page.locator(".run-report")).to_have_count(0)
         self.assertEqual(self.row_top(1), below)
 
-    def _report_heights_over(self, milliseconds):
-        return self.page.evaluate(
-            """ms => new Promise(done => {
-                const seen = [], end = performance.now() + ms;
-                const look = () => {
-                    const report = document.querySelector('.run-report');
-                    seen.push(report ? report.getBoundingClientRect().height : 0);
-                    if (performance.now() < end) requestAnimationFrame(look); else done(seen);
+    def _hold_report_folds(self):
+        """Pause each report fold as it starts, so a test can seek it without racing the clock.
+
+        Counting drawn frames failed on busy CI runners, which drew as few as 4 in 300 ms.
+        """
+        self.page.evaluate(
+            """() => {
+                const real = Element.prototype.animate;
+                Element.prototype.animate = function (...args) {
+                    const animation = real.apply(this, args);
+                    if (this.classList.contains('run-report')) {
+                        animation.pause();
+                        window.heldFold = animation;
+                    }
+                    return animation;
                 };
-                requestAnimationFrame(look);  // drawn frames only, which is what a person sees
-            })""",
-            milliseconds,
+            }"""
+        )
+
+    def _heights_through_held_fold(self):
+        """The report's height at points through the fold, then let the fold finish."""
+        return self.page.evaluate(
+            """() => {
+                const fold = window.heldFold, report = fold.effect.target;
+                const heights = [0, 45, 90, 135, 179].map(at => {
+                    fold.currentTime = at;
+                    return report.getBoundingClientRect().height;
+                });
+                fold.finish();
+                return heights;
+            }"""
         )
 
     def test_a_report_unfolds_and_folds_instead_of_jumping(self):
         self.load("readme_import")
         self.open_page(reduced_motion="no-preference")
+        self._hold_report_folds()
         self.rows().first.click()
-        opening = self._report_heights_over(300)
-        self.assertGreater(len({round(h) for h in opening}), 3, opening)
-        self.assertEqual(opening, sorted(opening))
+        opening = self._heights_through_held_fold()
+        self.assertEqual(opening, sorted(opening), opening)
+        self.assertGreaterEqual(len(set(opening)), 3, opening)  # it stops at its padding early
         self.rows().first.click()
-        closing = self._report_heights_over(300)
-        self.assertGreater(len({round(h) for h in closing}), 3, closing)
-        self.assertEqual(closing, sorted(closing, reverse=True))
-        self.assertEqual(closing[-1], 0)
+        closing = self._heights_through_held_fold()
+        self.assertEqual(closing, sorted(closing, reverse=True), closing)
+        self.assertGreaterEqual(len(set(closing)), 3, closing)
+        expect(self.page.locator(".run-report")).to_have_count(0)
 
     def run_opacities(self):
         return self.page.evaluate(
