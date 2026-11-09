@@ -352,6 +352,7 @@ class TestMenu(PageTestCase):
     def test_switches_keep_it_open_and_show_the_change(self):
         for selector, action, flag in (
             ("#m-eject", "toggle_auto_eject", "auto_eject_file"),
+            ("#m-auto-usb", "toggle_auto_usb_backup", "auto_usb_backup_file"),
             ("#m-terminal", "toggle_terminal_output", "terminal_output_file"),
         ):
             with self.subTest(action=action):
@@ -389,6 +390,30 @@ class TestMenu(PageTestCase):
             with self.subTest(selector=selector):
                 expect(self.page.locator(selector)).to_be_disabled()
         expect(self.page.locator("#m-pause")).to_be_enabled()
+
+    def test_a_backup_and_an_upload_each_get_a_row(self):
+        self.show("backup_and_upload")
+        expect(self.page.locator("#hero h2")).to_have_text("Backing up and uploading")
+        expect(self.page.locator("#hero .lane-name")).to_have_text(["USB backup", "Google Photos"])
+        expect(self.page.locator("#hero .lane-figures").nth(1)).to_contain_text("7.0 MB/s")
+
+    def test_a_backup_and_upload_panel_stays_the_panels_size(self):
+        heights = []
+        for state in ("idle", "backup_and_upload", "backup_paused"):
+            self.show(state)
+            heights.append(self.page.locator("#hero").bounding_box()["height"])
+        self.assertEqual(len(set(heights)), 1, heights)
+        self.show("backup_and_upload")
+        content = self.page.evaluate("document.querySelector('#hero').scrollHeight")
+        self.assertLessEqual(content, heights[0] + 1, "the two rows must fit in the panel")
+
+    def test_a_drive_that_is_behind_offers_a_backup_only_when_plugged_in(self):
+        self.open_menu("usb_behind")
+        expect(self.page.locator("#m-usb")).to_be_enabled()
+        expect(self.page.locator('.step[data-state="warn"] h3')).to_have_text("12 files behind")
+        self.open_menu("usb_unplugged_behind")
+        expect(self.page.locator("#m-usb")).to_be_disabled()
+        expect(self.page.locator('.step[data-state="warn"] h3')).to_have_text("Not connected")
 
     def test_stop_asks_first_and_offers_a_choice_during_a_transfer(self):
         self.open_menu("already_imported")

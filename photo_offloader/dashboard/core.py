@@ -367,6 +367,9 @@ class DashboardCore:
                 return {
                     "local": 0,
                     "usb": 0,
+                    "usb_waiting": 0,
+                    "usb_waiting_bytes": 0,
+                    "usb_last_backup": None,
                     "uploaded": 0,
                     "local_updated": None,
                     "usb_updated": None,
@@ -383,6 +386,17 @@ class DashboardCore:
                     ).fetchone()[0]
                     usb = db.execute(
                         "SELECT COUNT(*) FROM file_locations WHERE root = ?", (usb_roots[0],)
+                    ).fetchone()[0]
+                    # By name, so extra files on the drive can't hide a missing one.
+                    waiting, waiting_bytes = db.execute(
+                        f"""SELECT COUNT(*), COALESCE(SUM(size), 0) FROM file_locations AS mac
+                            WHERE root IN ({marks}) AND NOT EXISTS (
+                                SELECT 1 FROM file_locations AS drive
+                                WHERE drive.root = ? AND drive.relative_path = mac.relative_path)""",
+                        [*local_roots, usb_roots[0]],
+                    ).fetchone()
+                    last_backup = db.execute(
+                        "SELECT MAX(indexed_at) FROM file_locations WHERE root = ?", (usb_roots[0],)
                     ).fetchone()[0]
                     try:
                         uploaded = db.execute(
@@ -409,6 +423,9 @@ class DashboardCore:
             return {
                 "local": local,
                 "usb": usb,
+                "usb_waiting": waiting,
+                "usb_waiting_bytes": waiting_bytes,
+                "usb_last_backup": last_backup,
                 "uploaded": uploaded,
                 "local_updated": newest(local_roots),
                 "usb_updated": newest(usb_roots),
@@ -683,12 +700,17 @@ class DashboardCore:
         usb_mounted = self.usb_mounted()
         busy = import_activity is not None  # the importer is working (uploads don't block it)
         activity = import_activity or self._upload_activity(google, latest, now)
+        usb_paused = self._usb_paused()
+        lanes = self._lanes(import_activity, google, latest, now) if activity else None
+        if lanes:
+            activity = {**activity, "lanes": lanes}
         checking = self._verify_progress()
 
         handled = self.card_handled(card)
         headline = display.headline(
             running, paused, card, activity, interrupted, last, status, google, handled
         )
+        headline = self._with_usb_news(headline, lanes, import_activity, usb_paused)
         payload = {
             "generated_at": now,
             "version": jsonfile.read_object(self.paths.install_dir / "build_info.json").get(
@@ -713,11 +735,14 @@ class DashboardCore:
                 "" if google["configured"] else self._google_setup_step(),
                 self.card_has_unsaved_files(card),
                 bool(checking and checking["usb"]),
+                usb_paused,
+                self.paths.auto_usb_backup_file.exists(),
             ),
             "verify": checking,
             "upload": google["progress"],
             "settings": {
                 "auto_eject": self.paths.auto_eject_file.exists(),
+                "auto_usb_backup": self.paths.auto_usb_backup_file.exists(),
                 "terminal_output": self.paths.terminal_output_file.exists(),
                 "theme": self.theme(),
                 "report_style": self.report_style(),
@@ -725,6 +750,71 @@ class DashboardCore:
         }
         self._log_view(now, payload, status, google)
         return payload
+
+    def _usb_paused(self) -> Optional[Dict[str, int]]:
+        """How far a USB backup got before it stopped for a card, if one did."""
+        try:
+            _drive, copied, total = self.paths.usb_resume_file.read_text().split("\n")[:3]
+            return {"copied": int(copied), "total": int(total)}
+        except (OSError, ValueError):
+            return None
+
+    def _lanes(
+        self,
+        running: Optional[Dict[str, Any]],
+        google: Dict[str, Any],
+        row: Optional[Dict[str, Any]],
+        now: float,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """A row each when a USB backup and an upload overlap, or None for the ordinary panel."""
+        uploading = google["state"] == "running"
+        upload = (
+            display.upload_lane(
+                google["progress"], self._eta_seconds((google["progress"] or {}).get("eta"))
+            )
+            if uploading
+            else None
+        )
+        if running and running["kind"] == "usb_backup":
+            began = now - running["elapsed_seconds"]
+            if (
+                not upload
+                and google["state"] == "complete"
+                and (google["updated_at"] or 0) >= began
+            ):
+                upload = display.done_lane("Google Photos")
+            return [display.backup_lane(running), upload] if upload else None
+        started = google.get("started_at")
+        backup_overlapped = (
+            not running
+            and row is not None
+            and row["kind"] == "usb_backup"
+            and started is not None
+            and float(row["finished_at"]) >= started
+        )
+        return [display.done_lane("USB backup"), upload] if upload and backup_overlapped else None
+
+    @staticmethod
+    def _with_usb_news(
+        headline: Dict[str, Any],
+        lanes: Optional[List[Dict[str, Any]]],
+        running: Optional[Dict[str, Any]],
+        usb_paused: Optional[Dict[str, int]],
+    ) -> Dict[str, Any]:
+        if lanes:
+            return {
+                **headline,
+                "title": "Backing up and uploading",
+                "detail": "Running side by side. Neither waits for the other.",
+            }
+        if usb_paused and running and running["kind"] == "import":
+            return {
+                **headline,
+                "title": "Importing your card first",
+                "detail": f"USB backup paused at {usb_paused['copied']:,} of "
+                f"{usb_paused['total']:,} files. It carries on by itself after this import.",
+            }
+        return headline
 
     def _log_view(
         self, now: float, payload: Dict[str, Any], status: Dict[str, Any], google: Dict[str, Any]
@@ -834,6 +924,9 @@ class DashboardCore:
             "open_verify_report": lambda: self._open_verify_report(params),
             "google_sync": self._google_sync,
             "toggle_auto_eject": lambda: self._toggle(self.paths.auto_eject_file, "Auto-eject"),
+            "toggle_auto_usb_backup": lambda: self._toggle(
+                self.paths.auto_usb_backup_file, "Automatic USB backup"
+            ),
             "toggle_terminal_output": lambda: self._toggle(
                 self.paths.terminal_output_file, "Terminal windows"
             ),

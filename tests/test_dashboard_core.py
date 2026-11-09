@@ -125,6 +125,23 @@ class Fixture(unittest.TestCase):
                     (f"u{index}", str(self.paths.usb_archives[0].resolve()), f"u{index}", index),
                 )
 
+    def seed_files(self, local, usb, usb_indexed_at=1.0):
+        """Catalog rows by {relative path: size}, so the Mac and the drive can share names."""
+        catalog.catalog_connection().close()
+        rows = [
+            (f"m/{name}", str(self.paths.local_archives[0].resolve()), name, size, 1.0)
+            for name, size in local.items()
+        ] + [
+            (f"u/{name}", str(self.paths.usb_archives[0].resolve()), name, size, usb_indexed_at)
+            for name, size in usb.items()
+        ]
+        with sqlite3.connect(self.data / "catalog.sqlite3") as db:
+            db.executemany(
+                "INSERT INTO file_locations (path, root, relative_path, size, mtime_ns, inode,"
+                " indexed_at) VALUES (?, ?, ?, ?, 1, 1, ?)",
+                rows,
+            )
+
     def action_ids(self, step_id):
         return [action["id"] for action in self.pipeline(step_id)["actions"]]
 
@@ -1111,10 +1128,278 @@ class TestPipeline(Fixture):
         self.assertEqual(states, {"card": "off", "archive": "ok", "usb": "off", "cloud": "off"})
 
     def test_archive_and_usb_counts_come_from_the_catalog(self):
-        self.seed_catalog(local=3, usb=2)
+        self.seed_files(local={"a": 1, "b": 1, "c": 1}, usb={"a": 1, "b": 1, "c": 1})
         self.usb.mkdir()
         self.assertEqual(self.pipeline("archive")["detail"], "3 files indexed")
-        self.assertEqual(self.pipeline("usb")["detail"], "2 files backed up")
+        self.assertEqual(self.pipeline("usb")["detail"], "All 3 files are on the drive")
+        self.assertEqual(self.pipeline("usb")["headline"], "Up to date")
+
+    def test_a_connected_drive_says_how_far_behind_it_is(self):
+        self.seed_files(local={"a": 1, "b": 1024, "c": 2048}, usb={"a": 1})
+        self.usb.mkdir()
+        step = self.pipeline("usb")
+        self.assertEqual(step["state"], "warn")
+        self.assertEqual(step["headline"], "2 files behind")
+        self.assertEqual(step["detail"], "3.0 KB not on the drive yet")
+        self.assertEqual(self.action_ids("usb"), ["usb_backup", "eject_usb"])
+
+    def test_one_file_behind_reads_naturally(self):
+        self.seed_files(local={"a": 1, "b": 2048}, usb={"a": 1})
+        self.usb.mkdir()
+        self.assertEqual(self.pipeline("usb")["headline"], "1 file behind")
+
+    def test_extra_files_on_the_drive_do_not_hide_what_is_missing(self):
+        self.seed_files(local={"a": 1, "b": 1}, usb={"a": 1, "x": 1, "y": 1})
+        self.usb.mkdir()
+        self.assertEqual(self.pipeline("usb")["headline"], "1 file behind")
+
+    def test_an_unplugged_drive_says_what_is_waiting_and_when_it_last_got_files(self):
+        last = datetime(2026, 10, 21, 12).timestamp()
+        self.seed_files(local={"a": 1, "b": 2048}, usb={"a": 1}, usb_indexed_at=last)
+        step = self.pipeline("usb")
+        self.assertEqual(step["state"], "warn")
+        self.assertEqual(step["headline"], "Not connected")
+        self.assertEqual(
+            step["detail"], "1 file (2.0 KB) not on the drive yet. Last backup Oct 21."
+        )
+        self.assertEqual(step["actions"], [])
+
+    def test_someone_who_has_never_used_a_drive_is_not_warned(self):
+        self.seed_files(local={"a": 1}, usb={})
+        step = self.pipeline("usb")
+        self.assertEqual(step["state"], "off")
+        self.assertEqual(step["detail"], "Plug in the backup drive")
+
+    def test_a_first_backup_to_a_connected_drive_shows_everything_as_waiting(self):
+        self.seed_files(local={"a": 1, "b": 1}, usb={})
+        self.usb.mkdir()
+        self.assertEqual(self.pipeline("usb")["headline"], "2 files behind")
+
+    def paused_backup(self, importing=True):
+        self.usb.mkdir(exist_ok=True)
+        self.paths.usb_resume_file.write_text("DRIVE-1\n140\n475\n")
+        if importing:
+            self.importer_up = True
+            self.write_status(state="copying", phase="card-to-ssd", source="/Volumes/X")
+
+    def test_a_backup_paused_for_a_card_says_so_in_the_box_and_the_panel(self):
+        self.paused_backup()
+        step = self.pipeline("usb")
+        self.assertEqual(
+            (step["headline"], step["detail"]), ("Paused for card", "140 of 475 files copied")
+        )
+        headline = self.core.state()["headline"]
+        self.assertEqual(headline["title"], "Importing your card first")
+        self.assertEqual(
+            headline["detail"],
+            "USB backup paused at 140 of 475 files. It carries on by itself after this import.",
+        )
+
+    def test_a_paused_backup_with_no_import_running_says_it_will_carry_on(self):
+        self.paused_backup(importing=False)
+        self.assertEqual(self.pipeline("usb")["detail"], "Carries on in a moment")
+
+    def test_a_paused_backup_with_the_drive_unplugged_shows_the_drive_as_unplugged(self):
+        self.paused_backup(importing=False)
+        self.usb.rmdir()
+        self.advance(10)
+        self.assertEqual(self.pipeline("usb")["headline"], "Not connected")
+
+    def test_with_the_option_on_a_drive_waits_for_the_import(self):
+        self.usb.mkdir()
+        self.core.act("toggle_auto_usb_backup")
+        self.importer_up = True
+        self.write_status(state="copying", phase="card-to-ssd", source="/Volumes/X")
+        step = self.pipeline("usb")
+        self.assertEqual(
+            (step["headline"], step["detail"]), ("Waiting", "Backs up after this import")
+        )
+
+    def test_the_automatic_backup_option_is_off_until_switched_on(self):
+        self.assertFalse(self.core.state()["settings"]["auto_usb_backup"])
+        self.core.act("toggle_auto_usb_backup")
+        self.assertTrue(self.core.state()["settings"]["auto_usb_backup"])
+        self.assertTrue(self.paths.auto_usb_backup_file.exists())
+
+    def backing_up(self):
+        self.usb.mkdir(exist_ok=True)
+        self.importer_up = True
+        self.write_status(
+            state="copying",
+            phase="USB backup",
+            stage="usb",
+            source="/Users/a",
+            bytes_done=197 * 1024 * 1024,
+            bytes_total=340 * 1024 * 1024,
+            files_done=7,
+            files_total=12,
+            elapsed_seconds=20,
+            eta_seconds=6,
+        )
+
+    def test_a_lone_backup_has_the_ordinary_panel(self):
+        self.backing_up()
+        self.assertNotIn("lanes", self.core.state()["activity"])
+
+    def test_a_backup_and_an_upload_together_get_a_row_each(self):
+        self.backing_up()
+        progress = {
+            "transferred": "41 MB",
+            "total": "90 MB",
+            "percent": 46,
+            "speed": "7.0 MB/s",
+            "eta": "7s",
+            "files_done": 3,
+            "files_total": 8,
+            "finalizing": False,
+        }
+        google = {
+            "state": "running",
+            "progress": progress,
+            "configured": True,
+            "started_at": self.now - 10,
+            "updated_at": self.now,
+            "message": "",
+        }
+        with patch.object(self.core, "_google", return_value=google):
+            state = self.core.state()
+        self.assertEqual(state["headline"]["title"], "Backing up and uploading")
+        backup, upload = state["activity"]["lanes"]
+        self.assertEqual((backup["label"], upload["label"]), ("USB backup", "Google Photos"))
+        self.assertEqual(backup["left"], "7 of 12 files · 197.0 MB of 340.0 MB")
+        self.assertTrue(backup["right"].startswith("About 6 s left"))
+        self.assertEqual(upload["left"], "3 of 8 files · 41 MB of 90 MB")
+        self.assertEqual(upload["right"], "About 7 s left · 7.0 MB/s")
+        self.assertEqual(upload["percent"], 46)
+
+    def test_the_backup_row_shows_its_speed_once_it_has_moved(self):
+        self.usb.mkdir(exist_ok=True)
+        self.importer_up = True
+        progress = {
+            "transferred": "41 MB",
+            "total": "90 MB",
+            "percent": 46,
+            "speed": "7.0 MB/s",
+            "eta": "7s",
+            "files_done": 3,
+            "files_total": 8,
+            "finalizing": False,
+            "logged_at": self.now,
+        }
+        google = {
+            "state": "running",
+            "progress": progress,
+            "configured": True,
+            "started_at": self.now - 10,
+            "updated_at": self.now,
+            "message": "",
+        }
+        with patch.object(self.core, "_google", return_value=google):
+            for moved in (10, 34, 58, 82):
+                self.write_status(
+                    state="copying",
+                    phase="USB backup",
+                    stage="usb",
+                    bytes_done=moved * 1024 * 1024,
+                    bytes_total=340 * 1024 * 1024,
+                    bytes_transferred=moved * 1024 * 1024,
+                    files_done=1,
+                    files_total=12,
+                    elapsed_seconds=20,
+                )
+                state = self.core.state()
+                self.advance(1)
+        self.assertRegex(state["activity"]["lanes"][0]["right"], r"\d MB/s$")
+
+    def test_an_upload_that_finishes_first_stays_on_show_as_done(self):
+        self.backing_up()
+        google = {
+            "state": "complete",
+            "progress": None,
+            "configured": True,
+            "started_at": self.now - 15,
+            "updated_at": self.now - 5,
+            "message": "",
+        }
+        with patch.object(self.core, "_google", return_value=google):
+            state = self.core.state()
+        self.assertEqual(state["activity"]["lanes"][1]["left"], "Done")
+        self.assertEqual(state["activity"]["lanes"][1]["percent"], 100)
+
+    def test_an_upload_finished_before_the_backup_began_is_not_shown(self):
+        self.backing_up()
+        google = {
+            "state": "complete",
+            "progress": None,
+            "configured": True,
+            "started_at": self.now - 900,
+            "updated_at": self.now - 800,
+            "message": "",
+        }
+        with patch.object(self.core, "_google", return_value=google):
+            self.assertNotIn("lanes", self.core.state()["activity"])
+
+    def test_an_upload_that_began_after_the_backup_ended_has_the_ordinary_panel(self):
+        self.record(
+            kind="usb_backup",
+            source="USB backup",
+            started_at=self.now - 90,
+            finished_at=self.now - 60,
+        )
+        progress = {
+            "transferred": "41 MB",
+            "total": "90 MB",
+            "percent": 46,
+            "speed": "7.0 MB/s",
+            "eta": "7s",
+            "files_done": 3,
+            "files_total": 8,
+            "finalizing": False,
+            "logged_at": self.now,
+        }
+        google = {
+            "state": "running",
+            "progress": progress,
+            "configured": True,
+            "started_at": self.now - 10,
+            "updated_at": self.now,
+            "message": "",
+        }
+        with patch.object(self.core, "_google", return_value=google):
+            self.assertNotIn("lanes", self.core.state()["activity"])
+
+    def test_a_backup_that_finishes_first_stays_on_show_as_done(self):
+        self.record(
+            kind="usb_backup",
+            source="USB backup",
+            started_at=self.now - 30,
+            finished_at=self.now - 4,
+        )
+        progress = {
+            "transferred": "41 MB",
+            "total": "90 MB",
+            "percent": 46,
+            "speed": "7.0 MB/s",
+            "eta": "7s",
+            "files_done": 3,
+            "files_total": 8,
+            "finalizing": False,
+            "logged_at": self.now,
+        }
+        google = {
+            "state": "running",
+            "progress": progress,
+            "configured": True,
+            "started_at": self.now - 10,
+            "updated_at": self.now,
+            "message": "",
+            "logged_at": None,
+        }
+        with patch.object(self.core, "_google", return_value=google):
+            state = self.core.state()
+        self.assertEqual(state["headline"]["title"], "Backing up and uploading")
+        self.assertEqual(state["activity"]["lanes"][0]["left"], "Done")
+        self.assertEqual(state["activity"]["lanes"][1]["label"], "Google Photos")
 
     def test_usb_offers_a_backup_only_when_it_is_connected_and_nothing_is_running(self):
         self.assertEqual(self.pipeline("usb")["actions"], [])

@@ -254,25 +254,112 @@ def _archive_step(activity: Optional[Dict[str, Any]], local: Optional[int]) -> D
 def _usb_step(
     activity: Optional[Dict[str, Any]],
     usb_mounted: bool,
-    usb: Optional[int],
+    counts: Optional[Dict[str, Any]],
     busy: bool,
     drive_in_use: bool = False,
+    paused: Optional[Dict[str, int]] = None,
+    auto_backup: bool = False,
 ) -> Dict[str, Any]:
+    importing = bool(activity and activity["kind"] == "import")
+    if usb_mounted and paused and not (activity and activity["kind"] == "usb_backup"):
+        detail = (
+            f"{paused['copied']:,} of {paused['total']:,} files copied"
+            if importing
+            else "Carries on in a moment"
+        )
+        return _step("usb", "USB backup", "active", "Paused for card", detail)
+    if usb_mounted and auto_backup and importing:
+        return _step("usb", "USB backup", "active", "Waiting", "Backs up after this import")
+    usb = counts["usb"] if counts else 0
+    waiting = counts["usb_waiting"] if counts else 0
     if activity and activity["kind"] == "usb_backup":
         return _step("usb", "USB backup", "active", "Backing up", activity["detail"])
     if usb_mounted and drive_in_use:
         actions = [] if busy else [_action("usb_backup", "Back up now")]
         return _step("usb", "USB backup", "ok", "Connected", "In use by the check", actions)
     if usb_mounted:
-        return _step(
-            "usb",
-            "USB backup",
-            "ok",
-            "Connected",
-            f"{usb:,} files backed up" if usb else "Ready to back up",
-            [] if busy else [_action("usb_backup", "Back up now"), _action("eject_usb", "Eject")],
+        actions = (
+            [] if busy else [_action("usb_backup", "Back up now"), _action("eject_usb", "Eject")]
         )
+        if waiting:
+            size = format_bytes(counts["usb_waiting_bytes"])
+            return _step(
+                "usb",
+                "USB backup",
+                "warn",
+                f"{plural(waiting, 'file')} behind",
+                f"{size} not on the drive yet",
+                actions,
+            )
+        if usb:
+            return _step("usb", "USB backup", "ok", "Up to date", _all_on_drive(usb), actions)
+        return _step("usb", "USB backup", "ok", "Connected", "Ready to back up", actions)
+    # With no files ever recorded on a drive, nobody has one to plug in yet: don't nag.
+    if waiting and usb:
+        return _step("usb", "USB backup", "warn", "Not connected", _waiting_while_unplugged(counts))
     return _step("usb", "USB backup", "off", "Not connected", "Plug in the backup drive")
+
+
+def _lane_figures(eta_seconds: Optional[float], speed_bps: float) -> str:
+    parts = []
+    if eta_seconds:
+        left = f"{round(eta_seconds)} s" if eta_seconds < 90 else f"{round(eta_seconds / 60)} min"
+        parts.append(f"About {left} left")
+    if speed_bps > 0:
+        parts.append(f"{format_bytes(speed_bps)}/s")
+    return " · ".join(parts)
+
+
+def backup_lane(activity: Dict[str, Any]) -> Dict[str, Any]:
+    """The USB backup's row when it shares the top panel with an upload."""
+    left = activity["detail"]
+    if activity["files_total"]:
+        left = (
+            f"{activity['files_done']:,} of {plural(activity['files_total'], 'file')} · "
+            f"{format_bytes(activity['bytes_done'])} of {format_bytes(activity['bytes_total'])}"
+        )
+    return {
+        "label": "USB backup",
+        "percent": activity["percent"] or 0,
+        "left": left,
+        "right": _lane_figures(activity["eta_seconds"], activity["speed_bps"]),
+    }
+
+
+def upload_lane(progress: Optional[Dict[str, Any]], eta_seconds: Optional[float]) -> Dict[str, Any]:
+    """The upload's row when it shares the top panel with a USB backup."""
+    if not progress:
+        return {"label": "Google Photos", "percent": 0, "left": "Preparing", "right": ""}
+    files = (
+        f"{progress['files_done']:,} of {plural(progress['files_total'], 'file')} · "
+        if progress.get("files_total")
+        else ""
+    )
+    speed = parse_display_bytes(str(progress.get("speed") or "").replace("/s", ""))
+    return {
+        "label": "Google Photos",
+        "percent": progress.get("percent") or 0,
+        "left": f"{files}{progress.get('transferred')} of {progress.get('total')}",
+        "right": _lane_figures(eta_seconds, speed),
+    }
+
+
+def done_lane(label: str) -> Dict[str, Any]:
+    """Stays on show until the other job ends, so the panel doesn't jump."""
+    return {"label": label, "percent": 100, "left": "Done", "right": ""}
+
+
+def _all_on_drive(files: int) -> str:
+    return "The 1 file is on the drive" if files == 1 else f"All {files:,} files are on the drive"
+
+
+def _waiting_while_unplugged(counts: Dict[str, Any]) -> str:
+    size = format_bytes(counts["usb_waiting_bytes"])
+    text = f"{plural(counts['usb_waiting'], 'file')} ({size}) not on the drive yet."
+    if not counts["usb_last_backup"]:
+        return text
+    last = datetime.fromtimestamp(counts["usb_last_backup"])
+    return f"{text} Last backup {last:%b} {last.day}."
 
 
 def _cloud_step(
@@ -332,12 +419,14 @@ def pipeline(
     setup_step: str,
     card_unsaved: bool = False,
     drive_in_use: bool = False,
+    usb_paused: Optional[Dict[str, int]] = None,
+    auto_backup: bool = False,
 ) -> List[Dict[str, Any]]:
     """The four steps a photo moves through (card, Mac, USB, Google) and what each can do now."""
     return [
         _card_step(card, activity, busy, can_reimport, card_unsaved),
         _archive_step(activity, counts["local"] if counts else None),
-        _usb_step(activity, usb_mounted, counts["usb"] if counts else None, busy, drive_in_use),
+        _usb_step(activity, usb_mounted, counts, busy, drive_in_use, usb_paused, auto_backup),
         _cloud_step(
             google,
             counts["uploaded"] if counts else 0,
