@@ -38,6 +38,7 @@ import_process_running() {
   local target
   for target in \
     "$INSTALL_DIR/scripts/import_supervisor.sh" \
+    "$INSTALL_DIR/scripts/usb_backup_supervisor.sh" \
     "$SCRIPT_PATH" \
     "$INSTALL_DIR/photo_offloader_import_supervisor.sh" \
     "$INSTALL_DIR/camera_offloader_v2.py"; do

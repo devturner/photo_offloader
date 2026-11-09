@@ -429,10 +429,40 @@ def _run_catalog_update() -> int:
     return 0
 
 
+def _remove_usb_markers() -> None:
+    for marker in (config.USB_YIELD_PATH, config.USB_RESUME_PATH):
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not remove %s: %s", marker, exc)
+
+
+def _pause_usb_backup(stats: transfer.ImportStats) -> int:
+    """Leave word for the trigger to carry on after the card. This isn't a finished run."""
+    _RUN.clear()
+    _remove_usb_markers()
+    identity = volumes.get_volume_identity(config.USB_DEST_VOLUME)
+    try:
+        text = f"{identity.volume_uuid if identity else ''}\n"
+        text += f"{stats.destination_copies}\n{stats.to_copy}\n"
+        temporary = config.USB_RESUME_PATH.with_suffix(".tmp")
+        temporary.write_text(text, encoding="utf-8")
+        temporary.replace(config.USB_RESUME_PATH)
+    except OSError as exc:  # the drive still shows as behind, and Back up now still works
+        logger.warning("Could not save where the USB backup stopped: %s", exc)
+    progress.update_status(
+        state="paused", message="USB backup paused for a camera card", current_file=""
+    )
+    return 0
+
+
 def _run_usb_backup() -> int:
     _RUN.update(kind="usb_backup", usb=True)
     logger.info("Starting independent local-to-USB backup.")
-    backup_stats = transfer.copy_local_archive_to_usb()
+    _remove_usb_markers()  # a request left from an earlier run must not stop this one at once
+    backup_stats = transfer.copy_local_archive_to_usb(may_pause=True)
+    if backup_stats.paused:
+        return _pause_usb_backup(backup_stats)
     _RUN.update(
         usb_stats=backup_stats,
         files=backup_stats.found,

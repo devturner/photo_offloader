@@ -42,6 +42,9 @@ LOG_FILE_PATH = HOME / ".camera_transfer.log"
 TRIGGER_LOG_PATH = HOME / ".camera_transfer_trigger.log"  # written by scripts/trigger.sh
 SESSION_LOCK_PATH = HOME / "Library" / "Caches" / "PhotoOffloader" / "import.lock"
 STATUS_FILE_PATH = INSTALL_DIR / "status.json"
+# scripts/trigger.sh uses the same two paths.
+USB_YIELD_PATH = INSTALL_DIR / ".usb-backup-yield"  # a card is waiting: the backup should stop
+USB_RESUME_PATH = INSTALL_DIR / ".usb-backup-resume"  # drive ID, files copied, files to copy
 CATALOG_DB_PATH = DATA_DIR / "catalog.sqlite3"
 CARD_MANIFESTS_DIR = DATA_DIR / "card-manifests"  # one file per card, named by its volume ID
 RUN_REPORTS_DIR = DATA_DIR / "run-reports"  # one folder per import: every file's result, its log
