@@ -50,9 +50,7 @@ class TestFileops(support.CardFixtureTestCase):
                     "photo_offloader.fileops.os.link",
                     side_effect=OSError(errno.EXDEV, "cross-device"),
                 ),
-                patch(
-                    "photo_offloader.fileops.shutil.copyfileobj", side_effect=OSError("disk full")
-                ),
+                patch("photo_offloader.fileops.os.replace", side_effect=OSError("disk full")),
                 patch.object(Path, "unlink", side_effect=OSError("still busy")),
                 self.assertLogs("camera_offloader", level="WARNING") as captured,
                 self.assertRaisesRegex(OSError, "disk full"),
@@ -99,6 +97,32 @@ class TestFileops(support.CardFixtureTestCase):
             self.assertFalse(fileops.install_without_overwrite(temp, final))
         self.assertEqual(final.read_bytes(), b"old")
 
+    def test_install_without_hard_links_moves_the_verified_file_into_place(self):
+        # A second copy would be a file nobody verified, and would sit half-written under the
+        # final name for as long as it took. exFAT has no hard links, but renames over a file.
+        temp, final = self.root / "tmp", self.root / "final"
+        temp.write_bytes(b"verified")
+        inode = temp.stat().st_ino
+        with patch("os.link", side_effect=OSError(errno.ENOTSUP, "not supported")):
+            self.assertTrue(fileops.install_without_overwrite(temp, final))
+        self.assertEqual(final.read_bytes(), b"verified")
+        self.assertEqual(final.stat().st_ino, inode)
+        self.assertFalse(temp.exists())
+
+    def test_a_cancel_during_an_install_without_hard_links_leaves_no_file(self):
+        # SIGTERM arrives as KeyboardInterrupt, which "except Exception" misses. A file left
+        # under the final name made every later backup fail with "USB file differs".
+        temp, final = self.root / "tmp", self.root / "final"
+        temp.write_bytes(b"verified")
+        with (
+            patch("os.link", side_effect=OSError(errno.ENOTSUP, "not supported")),
+            patch("photo_offloader.fileops.os.replace", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            fileops.install_without_overwrite(temp, final)
+        self.assertFalse(final.exists())
+        self.assertEqual(temp.read_bytes(), b"verified")
+
     def test_install_raises_an_unexpected_link_error_and_installs_nothing(self):
         temp, final = self.root / "tmp", self.root / "final"
         temp.write_bytes(b"new")
@@ -141,15 +165,6 @@ class TestFileops(support.CardFixtureTestCase):
         fileops.copy_file_with_progress(source, copy)
         self.assertEqual(pages_in_ram(copy), 0)
 
-    def test_an_install_without_hard_links_leaves_nothing_in_ram(self):
-        if not hasattr(fileops.fcntl, "F_NOCACHE"):
-            self.skipTest("F_NOCACHE is macOS-only")
-        temp, final = self.root / "tmp", self.root / "final"
-        temp.write_bytes(os.urandom(5 * 1024 * 1024 + 123))
-        with patch("os.link", side_effect=OSError(errno.EXDEV, "cross-device")):
-            self.assertTrue(fileops.install_without_overwrite(temp, final))
-        self.assertEqual(pages_in_ram(final), 0)
-
     def fcntl_commands_during(self, action):
         commands = []
         real_fcntl = fileops.fcntl.fcntl
@@ -169,17 +184,6 @@ class TestFileops(support.CardFixtureTestCase):
         source, copy = self.root / "source", self.root / "copy"
         source.write_bytes(b"photo")
         commands = self.fcntl_commands_during(lambda: fileops.copy_file_with_progress(source, copy))
-        self.assertIn(fileops.fcntl.F_FULLFSYNC, commands)
-
-    def test_an_install_without_hard_links_is_flushed_out_of_the_drives_own_cache(self):
-        if not hasattr(fileops.fcntl, "F_FULLFSYNC"):
-            self.skipTest("F_FULLFSYNC is macOS-only")
-        temp, final = self.root / "tmp", self.root / "final"
-        temp.write_bytes(b"photo")
-        with patch("os.link", side_effect=OSError(errno.EXDEV, "cross-device")):
-            commands = self.fcntl_commands_during(
-                lambda: fileops.install_without_overwrite(temp, final)
-            )
         self.assertIn(fileops.fcntl.F_FULLFSYNC, commands)
 
     def test_flush_uses_fsync_on_a_drive_without_a_full_flush(self):

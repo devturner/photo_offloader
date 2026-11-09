@@ -220,21 +220,19 @@ def install_without_overwrite(temp_path: Path, final_path: Path) -> bool:
         }
         if exc.errno not in unsupported:
             raise
+    # No hard links (exFAT): claim the name with an empty file, then rename the verified file over
+    # it. Only the file created here is ever replaced, and no partial copy gets the final name.
     try:
-        fd = os.open(final_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        os.close(os.open(final_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666))
     except FileExistsError:
         return False
     try:
-        with os.fdopen(fd, "wb") as output, temp_path.open("rb") as source:
-            _skip_page_cache(output.fileno(), final_path)
-            shutil.copyfileobj(source, output)
-            output.flush()
-            flush_to_disk(output.fileno())
-    except Exception:
+        os.replace(temp_path, final_path)
+    except BaseException:  # SIGTERM arrives as KeyboardInterrupt
         try:
             final_path.unlink(missing_ok=True)
         except OSError as cleanup_exc:
-            logger.warning("Could not remove the partial copy %s: %s", final_path, cleanup_exc)
+            logger.warning("Could not remove the empty file %s: %s", final_path, cleanup_exc)
         raise
     return True
 
