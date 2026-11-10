@@ -7,6 +7,7 @@ import fcntl
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -221,7 +222,10 @@ def parse_rclone_stats_line(line: str) -> Optional[dict[str, object]]:
     }
 
 
-def publish_status(state: str, message: str, new_run: bool = False) -> None:
+def publish_status(
+    state: str, message: str, new_run: bool = False, waiting: Optional[int] = None
+) -> None:
+    """``waiting``: for a stopped upload, how many of its files it didn't send."""
     previous = jsonfile.read_object(config.GOOGLE_STATUS_PATH)
     payload = {
         "state": state,
@@ -229,6 +233,8 @@ def publish_status(state: str, message: str, new_run: bool = False) -> None:
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "last_success": previous.get("last_success"),
     }
+    if waiting is not None:
+        payload["waiting"] = waiting
     if state == "complete":
         payload["last_success"] = payload["updated_at"]
     if state == "running":
@@ -290,23 +296,83 @@ def current_status_state() -> str:
     return str(jsonfile.read_object(config.GOOGLE_STATUS_PATH).get("state", ""))
 
 
-def run_sync(argv: Optional[Sequence[str]] = None) -> int:
-    config.INSTALL_DIR.mkdir(parents=True, exist_ok=True)
-    # An flock is released by the OS the moment its holder dies, so a crash,
+class Stopped(Exception):
+    """The sync got SIGTERM: from Pause uploads, or from anything else that stops it."""
+
+
+def _stop_on_sigterm(_signum: int, _frame: object) -> None:
+    raise Stopped()
+
+
+def uploads_paused() -> bool:
+    return config.GOOGLE_PAUSED_PATH.exists()
+
+
+def _publish_paused(waiting: Optional[int] = None) -> None:
+    previous = jsonfile.read_object(config.GOOGLE_STATUS_PATH)
+    if waiting is None and previous.get("state") == "paused":
+        return  # keep the count the paused upload saved
+    count = f" {waiting:,} file(s) waiting." if waiting else ""
+    publish_status("paused", f"Uploads are paused.{count}", waiting=waiting)
+
+
+def _open_lock(path: Path) -> int:
+    # An flock is released by the OS the moment its last holder dies, so a crash,
     # SIGKILL or power loss can never leave a stale lock behind. The lock file
     # itself is never deleted (deleting it would reopen a lock/unlink race).
-    lock_fd = os.open(config.GOOGLE_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+    return os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+
+
+def _try_lock(fd: int) -> bool:
     try:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _wait_in_queue(lock_fd: int) -> bool:
+    """Wait for the running upload to end, if no other sync is waiting already.
+
+    The running upload only sends the files it listed when it started, so a sync started by a
+    later import must not just give up. One waiting sync is enough: it lists every file once
+    it gets the lock. True once this sync holds ``lock_fd``.
+    """
+    queue_fd = _open_lock(config.GOOGLE_QUEUE_LOCK_PATH)
+    try:
+        if not _try_lock(queue_fd):
+            return False
+        log_sync_event("An upload is running; this sync sends any new files after it.")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        return True
+    finally:
+        os.close(queue_fd)  # the next import's sync may wait now; it lists files after us
+
+
+def run_sync(argv: Optional[Sequence[str]] = None) -> int:
+    signal.signal(signal.SIGTERM, _stop_on_sigterm)
+    config.INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    if uploads_paused():
+        _publish_paused()
+        return 0
+    lock_fd = _open_lock(config.GOOGLE_LOCK_PATH)
+    try:
+        if not _try_lock(lock_fd) and not _wait_in_queue(lock_fd):
             # Keep the live run's real progress message if it already published one.
             if current_status_state() != "running":
                 publish_status("running", "A Google Photos upload is already running.")
             return 0
+        if uploads_paused():  # paused while this sync waited
+            _publish_paused()
+            return 0
         os.ftruncate(lock_fd, 0)
         os.write(lock_fd, str(os.getpid()).encode("ascii"))  # informational only
-        return _sync()
+        return _sync(lock_fd)
+    except Stopped:
+        # Stopped before any upload began: nothing was sent, so there is nothing to record.
+        if uploads_paused():
+            _publish_paused()
+        return 0
     finally:
         os.close(lock_fd)
 
@@ -382,7 +448,28 @@ def _ensure_album(rclone: str, destination: str) -> Optional[int]:
     return None
 
 
-def _upload_snapshot(rclone: str, destination: str, pending: List[str]) -> Optional[int]:
+def _run_rclone(command: List[str], lock_fd: Optional[int]) -> int:
+    """Run rclone until it ends, and stop it if the sync is stopped first.
+
+    rclone inherits the upload lock, so if the sync is killed in a way it can't catch, the
+    rclone it leaves behind still holds the lock and no second upload starts beside it.
+    """
+    process = subprocess.Popen(command, pass_fds=() if lock_fd is None else (lock_fd,))
+    try:
+        return process.wait()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+def _upload_snapshot(
+    rclone: str, destination: str, pending: List[str], lock_fd: Optional[int] = None
+) -> Optional[int]:
     """Run rclone on exactly ``pending``. Its exit code, or None if it could not start.
 
     Files imported while the upload is running are neither sent nor recorded, so the next
@@ -415,7 +502,7 @@ def _upload_snapshot(rclone: str, destination: str, pending: List[str]) -> Optio
             f"Uploading {len(pending):,} JPG/video file(s) to Google Photos album '{ALBUM_NAME}'.",
         )
         try:
-            return subprocess.run(command, check=False).returncode
+            return _run_rclone(command, lock_fd)
         except OSError as exc:
             publish_status("failed", f"Could not start rclone: {exc}")
             return None
@@ -451,7 +538,66 @@ def _record_upload(pending: List[str]) -> int:
     return 0
 
 
-def _sync() -> int:
+COPIED_LINE = re.compile(r"^(\d{4}/\d\d/\d\d \d\d:\d\d:\d\d) INFO\s+: (.+): Copied \(")
+
+
+def sent_since(pending: Sequence[str], started_at: float) -> List[str]:
+    """The files of ``pending`` that rclone's log says it copied since ``started_at``."""
+    wanted, sent = set(pending), []
+    try:
+        lines = config.GOOGLE_LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        log_sync_event(f"Could not read the log to see what was sent: {exc}")
+        return []
+    for line in lines:
+        match = COPIED_LINE.match(line)
+        if not match or match.group(2) not in wanted:
+            continue
+        stamp = datetime.strptime(match.group(1), "%Y/%m/%d %H:%M:%S").timestamp()
+        if stamp >= int(started_at):  # the log has whole seconds
+            sent.append(match.group(2))
+            wanted.discard(match.group(2))
+    return sent
+
+
+def _upload_stopped(pending: List[str], started_at: float) -> int:
+    """Save what a stopped upload sent, so it isn't sent again, and say why it stopped."""
+    sent = sent_since(pending, started_at)
+    try:
+        catalog.mark_google_photos_uploaded_many(
+            [config.LOCAL_DEST_ROOT / name for name in sent], REMOTE_NAME, ALBUM_NAME
+        )
+    except (OSError, sqlite3.Error) as exc:
+        # rclone skips names already in the album, so these are only sent again by name.
+        log_sync_event(f"Could not save which files were sent before the upload stopped: {exc}")
+    waiting = len(pending) - len(sent)
+    paused = uploads_paused()
+    log_sync_event(
+        f"Upload {'paused' if paused else 'stopped'} after {len(sent):,} of {len(pending):,} file(s)."
+    )
+    if paused:
+        _publish_paused(waiting)
+    else:
+        publish_status("interrupted", "The upload was stopped before it finished.", waiting=waiting)
+    _record_on_import("paused" if paused else "stopped", sent, started_at)
+    return 0 if paused else 1
+
+
+def _record_on_import(outcome: str, sent: List[str], started_at: float) -> None:
+    catalog.record_upload_on_import(
+        {
+            "outcome": outcome,
+            "files": len(sent),
+            "bytes": _pending_bytes(sent),
+            "seconds": round(time.time() - started_at, 1),
+            "album": ALBUM_NAME,
+        },
+        started_at=started_at,
+        within_seconds=UPLOAD_FOLLOWS_IMPORT_SECONDS,
+    )
+
+
+def _sync(lock_fd: Optional[int] = None) -> int:
     rclone = find_rclone()
     if not rclone:
         publish_status(
@@ -482,18 +628,11 @@ def _sync() -> int:
         "running", f"Preparing to upload {len(pending):,} JPG/video file(s).", new_run=True
     )
     started_at = time.time()
-    code = _send_pending(rclone, pending)
-    catalog.record_upload_on_import(
-        {
-            "outcome": "complete" if code == 0 else "failed",
-            "files": len(pending),
-            "bytes": _pending_bytes(pending),
-            "seconds": round(time.time() - started_at, 1),
-            "album": ALBUM_NAME,
-        },
-        started_at=started_at,
-        within_seconds=UPLOAD_FOLLOWS_IMPORT_SECONDS,
-    )
+    try:
+        code = _send_pending(rclone, pending, lock_fd)
+    except Stopped:
+        return _upload_stopped(pending, started_at)
+    _record_on_import("complete" if code == 0 else "failed", pending, started_at)
     return code
 
 
@@ -508,7 +647,7 @@ def _pending_bytes(pending: List[str]) -> int:
     return total
 
 
-def _send_pending(rclone: str, pending: List[str]) -> int:
+def _send_pending(rclone: str, pending: List[str], lock_fd: Optional[int] = None) -> int:
     """Check the remote and send ``pending``. Publishes the result and returns the exit code."""
     destination = f"{REMOTE_NAME}:album/{ALBUM_NAME}"
     with _timed_step("remote check"):
@@ -531,7 +670,7 @@ def _send_pending(rclone: str, pending: List[str]) -> int:
 
     logs.rotate_log_file(config.GOOGLE_LOG_PATH, SYNC_LOG_MAX_BYTES, SYNC_LOG_BACKUPS)
     with _timed_step("rclone copy"):
-        returncode = _upload_snapshot(rclone, destination, pending)
+        returncode = _upload_snapshot(rclone, destination, pending, lock_fd)
     if returncode is None:
         return 1
     if returncode == 0:

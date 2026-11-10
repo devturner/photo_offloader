@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SLOW_MODULES=" test_trigger test_service_control " # tests/browser isn't listed at the top level
+SLOW_MODULES=" test_trigger test_service_control test_google_photos_process " # tests/browser isn't listed at the top level
 
 usage() {
   echo "Usage: tools/test.sh fast [--list] | full" >&2

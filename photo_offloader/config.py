@@ -68,6 +68,9 @@ GOOGLE_STATUS_PATH = INSTALL_DIR / "google_photos_status.json"
 GOOGLE_LOG_PATH = INSTALL_DIR / "google_photos_sync.log"
 GOOGLE_LAUNCHER_LOG_PATH = INSTALL_DIR / "google_photos_sync_launcher.log"
 GOOGLE_LOCK_PATH = INSTALL_DIR / ".google-photos-sync.lock"
+# Held by the one sync waiting for a running upload to finish, so others don't stack up.
+GOOGLE_QUEUE_LOCK_PATH = INSTALL_DIR / ".google-photos-sync.queue.lock"
+GOOGLE_PAUSED_PATH = INSTALL_DIR / ".google-photos-paused"  # Pause uploads; kept over restarts
 PREFERENCES_PATH = DATA_DIR / "preferences.json"
 RCLONE_CONFIG_PATH = HOME / ".config" / "rclone" / "rclone.conf"  # rclone's own; read only
 
