@@ -18,7 +18,12 @@ OUTLINE = (44, 46, 52)
 BLUE = (66, 112, 168)
 GOLD = (224, 195, 112)
 LABEL = (44, 46, 52)
-W = 30  # outline width
+BACKGROUND = (34, 38, 46)
+W = 22  # outline width
+# Apple's icon grid: the rounded square fills 824 of 1024 pixels. An icon that doesn't fill it is
+# shown on a grey plate in the Dock (macOS 26 and later).
+TILE = 824
+CARD_SCALE = 0.68  # the card is drawn on a 1024 grid, then shrunk onto the tile
 
 
 def scaled(points):
@@ -93,18 +98,40 @@ def swoop():
 
 def shapes() -> List[Tuple[List[Point], Color, bool]]:
     """Every shape, back to front, as (points, fill, outlined)."""
-    out = [(card_outline(), BLUE, True)]
+    card = [(card_outline(), BLUE, True)]
     # Gold contacts: four tall pads and a shorter one under the cut corner.
     for i, x in enumerate((268, 362, 456, 550, 644)):
         height = 170 if i < 4 else 130
         pad = [(x, 164), (x + 64, 164), (x + 64, 164 + height), (x, 164 + height)]
-        out.append((rounded_polygon(pad, 12), GOLD, True))
+        card.append((rounded_polygon(pad, 12), GOLD, True))
     # The label, with the arrow on it.
-    out.append(
+    card.append(
         (rounded_polygon([(256, 520), (768, 520), (768, 868), (256, 868)], 30), LABEL, False)
     )
-    out.append((swoop(), GOLD, False))
-    return out
+    card.append((swoop(), GOLD, False))
+    # Centre the card's outline (x 174-828, y 112-916) on the tile.
+    cx, cy = (174 + 828) / 2, (112 + 916) / 2
+
+    def place(points):
+        return [(512 + (x - cx) * CARD_SCALE, 512 + (y - cy) * CARD_SCALE) for x, y in points]
+
+    return [(tile(), BACKGROUND, False)] + [(place(pts), fill, o) for pts, fill, o in card]
+
+
+def tile(steps=240):
+    """The app-icon rounded square, as a superellipse, whose corners curve smoothly as Apple's do."""
+    half, n = TILE / 2, 5
+    points = []
+    for i in range(steps):
+        t = 2 * math.pi * i / steps
+        c, s = math.cos(t), math.sin(t)
+        points.append(
+            (
+                512 + half * math.copysign(abs(c) ** (2 / n), c),
+                512 + half * math.copysign(abs(s) ** (2 / n), s),
+            )
+        )
+    return points
 
 
 def draw_icon(size=1024):
