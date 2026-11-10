@@ -113,6 +113,12 @@ class TestTitleAndParsing(unittest.TestCase):
         self.assertEqual(model.menu_title(Snapshot(running=False)), "📷 Off")
         self.assertEqual(model.menu_title(Snapshot(running=True, transfer=True)), "📷 ↻")
 
+    def test_beside_the_app_icon_the_title_is_only_the_state(self):
+        self.assertEqual(model.menu_title(Snapshot(running=True), icon=True), "")
+        self.assertEqual(model.menu_title(Snapshot(running=True, paused=True), icon=True), " ⏸")
+        self.assertEqual(model.menu_title(Snapshot(running=False), icon=True), " Off")
+        self.assertEqual(model.menu_title(Snapshot(running=True, transfer=True), icon=True), " ↻")
+
     def test_parse_status_output(self):
         output = "Service:  running\nMenu bar: running\nImports:  paused\nTransfer: in progress\n"
         snap = model.parse_status(output, 0, usb=True)

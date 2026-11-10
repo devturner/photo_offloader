@@ -29,13 +29,17 @@ BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / config.USB_BACKUP
 USB_VOLUME = Path("/Volumes/Photos")
 UI_LABEL = "com.user.photooffloader.menubar"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
+ICON = Path(__file__).with_name("icon.png")  # drawn by macos/draw_icon.py
 
 
 class PhotoOffloaderMenuBar(rumps.App):
     """The menu bar stays alive whether or not the service runs, so it can always offer Start."""
 
     def __init__(self) -> None:
-        super().__init__("Photo Offloader", title="📷", quit_button=None)
+        icon = str(ICON) if ICON.is_file() else None  # without it, the title shows a 📷
+        super().__init__(
+            "Photo Offloader", title=None if icon else "📷", icon=icon, quit_button=None
+        )
         self.handlers = {
             "open_dashboard": self.open_dashboard,
             "copy_usb": self.copy_to_usb,
@@ -74,7 +78,7 @@ class PhotoOffloaderMenuBar(rumps.App):
         if snapshot == self._snapshot:
             return  # rebuilding an open menu would close it under the user's cursor
         self._snapshot = snapshot
-        self.title = menu_title(snapshot)
+        self.title = menu_title(snapshot, icon=self.icon is not None)
         self.menu.clear()
         for entry in menu_entries(snapshot):
             if entry.key is None:

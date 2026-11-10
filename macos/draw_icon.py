@@ -1,13 +1,16 @@
 """Photo Offloader's icon, drawn from scratch: an SD card with a gold arrow lifting off it.
 
-    .venv/bin/python macos/draw_icon.py     writes macos/AppIcon.png, the app bundles' icon
+    .venv/bin/python macos/draw_icon.py     writes the two images below
+
+macos/AppIcon.png                      the app bundles' icon: the card on a dark tile
+photo_offloader/menubar/icon.png       the menu bar's: the card alone, filling the height
 
 The dashboard header shows the same shapes as inline SVG (``svg()``); a test checks that the copy
 in photo_offloader/dashboard/web/index.html still matches.
 """
 
 import math
-import sys
+from pathlib import Path
 from typing import List, Tuple
 
 Point = Tuple[float, float]
@@ -96,8 +99,11 @@ def swoop():
     return offset(-sw / 2) + head + offset(sw / 2)[::-1]
 
 
-def shapes() -> List[Tuple[List[Point], Color, bool]]:
-    """Every shape, back to front, as (points, fill, outlined)."""
+Shape = Tuple[List[Point], Color, bool]  # points, fill, outlined
+
+
+def card_shapes() -> List[Shape]:
+    """The card, back to front, on the 1024 grid it was drawn on."""
     card = [(card_outline(), BLUE, True)]
     # Gold contacts: four tall pads and a shorter one under the cut corner.
     for i, x in enumerate((268, 362, 456, 550, 644)):
@@ -109,13 +115,27 @@ def shapes() -> List[Tuple[List[Point], Color, bool]]:
         (rounded_polygon([(256, 520), (768, 520), (768, 868), (256, 868)], 30), LABEL, False)
     )
     card.append((swoop(), GOLD, False))
-    # Centre the card's outline (x 174-828, y 112-916) on the tile.
+    return card
+
+
+def centred_card(scale: float) -> List[Shape]:
+    """The card scaled about its centre (its outline spans x 174-828, y 112-916) onto 512, 512."""
     cx, cy = (174 + 828) / 2, (112 + 916) / 2
 
     def place(points):
-        return [(512 + (x - cx) * CARD_SCALE, 512 + (y - cy) * CARD_SCALE) for x, y in points]
+        return [(512 + (x - cx) * scale, 512 + (y - cy) * scale) for x, y in points]
 
-    return [(tile(), BACKGROUND, False)] + [(place(pts), fill, o) for pts, fill, o in card]
+    return [(place(points), fill, outline) for points, fill, outline in card_shapes()]
+
+
+def shapes() -> List[Shape]:
+    """The app icon: the card on a dark tile."""
+    return [(tile(), BACKGROUND, False)] + centred_card(CARD_SCALE)
+
+
+def menubar_shapes() -> List[Shape]:
+    """The menu-bar icon: the card alone, as tall as the square allows with its outline."""
+    return centred_card(1000 / (916 - 112 + W))
 
 
 def tile(steps=240):
@@ -134,12 +154,12 @@ def tile(steps=240):
     return points
 
 
-def draw_icon(size=1024):
-    from PIL import Image, ImageDraw  # only the PNG needs Pillow
+def draw_icon(size=1024, parts=shapes):
+    from PIL import Image, ImageDraw  # only the PNGs need Pillow
 
     big = Image.new("RGBA", (1024 * S, 1024 * S), (0, 0, 0, 0))
     d = ImageDraw.Draw(big)
-    for points, fill, outline in shapes():
+    for points, fill, outline in parts():
         sp = scaled(points)
         if outline:  # the fill covers the inner half of the line, as paint-order does in svg()
             d.line(sp + sp[:2], fill=OUTLINE, width=W * S, joint="curve")
@@ -171,4 +191,7 @@ def svg() -> str:
 
 
 if __name__ == "__main__":
-    draw_icon().save(sys.argv[1] if len(sys.argv) > 1 else "macos/AppIcon.png")
+    root = Path(__file__).resolve().parents[1]
+    draw_icon().save(root / "macos" / "AppIcon.png")
+    # rumps shows a menu-bar image 20 points square; 40 pixels is sharp on Retina screens.
+    draw_icon(40, menubar_shapes).save(root / "photo_offloader" / "menubar" / "icon.png")

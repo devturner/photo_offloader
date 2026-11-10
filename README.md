@@ -51,7 +51,7 @@ From a clone of this repository:
 ./uninstall.sh                 # uninstall; your photos and catalog stay
 ```
 
-The dashboard opens when the install finishes, and a 📷 appears in the menu bar. Insert a card
+The dashboard opens when the install finishes, and its icon, an SD card, appears in the menu bar. Insert a card
 to start. To open it again later, double-click **Photo Offloader** on your Desktop or in
 `~/Applications`.
 

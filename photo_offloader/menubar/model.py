@@ -42,14 +42,17 @@ def parse_status(output: str, returncode: int, usb: bool = False) -> Snapshot:
     )
 
 
-def menu_title(snapshot: Snapshot) -> str:
+def menu_title(snapshot: Snapshot, icon: bool = False) -> str:
+    """The text in the menu bar. Beside the app's icon it is only the state; without it, a 📷."""
     if not snapshot.running:
-        return "📷 Off"
-    if snapshot.paused:
-        return "📷 ⏸"
-    if snapshot.transfer:
-        return "📷 ↻"
-    return "📷"
+        state = " Off"
+    elif snapshot.paused:
+        state = " ⏸"
+    elif snapshot.transfer:
+        state = " ↻"
+    else:
+        state = ""
+    return state if icon else "📷" + state
 
 
 def menu_entries(snapshot: Snapshot) -> List[Entry]:
