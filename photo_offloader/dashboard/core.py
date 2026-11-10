@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from xml.parsers.expat import ExpatError
 
-from photo_offloader import catalog, google_photos, jsonfile, logs, run_report, verify_report
+from photo_offloader import card, catalog, google_photos, jsonfile, logs, run_report, verify_report
 from photo_offloader.dashboard import display
 from photo_offloader.dashboard.paths import Paths
 from photo_offloader.google_photos import parse_rclone_stats_line
@@ -45,6 +45,45 @@ EVENTS_LOG_MAX_BYTES = 512 * 1024
 THEMES = ("system", "light", "dark")
 REPORT_STYLES = ("basic", "advanced")
 SPEED_WINDOW_SAMPLES = 10
+
+
+def _type_counts(db: sqlite3.Connection, roots: List[str]) -> Dict[str, int]:
+    """How many JPG, RAW and video files the catalog has under ``roots``.
+
+    Grouped by the end of each name in SQL, so a big archive is a few hundred rows, not one
+    per file. Six characters hold any extension the importer knows, with its dot.
+    """
+    counts = {"JPG": 0, "RAW": 0, "VIDEO": 0}
+    marks = ",".join("?" * len(roots))
+    for tail, count in db.execute(
+        f"""SELECT lower(substr(relative_path, -6)), COUNT(*) FROM file_locations
+            WHERE root IN ({marks}) GROUP BY 1""",
+        roots,
+    ):
+        kind = card.MEDIA_EXTENSIONS.get(os.path.splitext(str(tail))[1])
+        if kind:
+            counts[kind] += count
+    return counts
+
+
+def _missed_imports(db: sqlite3.Connection) -> int:
+    """Imports saved on the Mac since the USB drive last got everything.
+
+    A backup gets everything, and so does an import that backed up to the drive as it went,
+    which makes that import the last backup itself.
+    """
+    try:
+        return db.execute(
+            """SELECT COUNT(*) FROM import_history
+               WHERE kind = 'import'
+                 AND (outcome = 'complete' OR details LIKE '%"local_verified": true%')
+                 AND finished_at > COALESCE((
+                     SELECT MAX(finished_at) FROM import_history
+                     WHERE outcome = 'complete'
+                       AND (kind = 'usb_backup' OR (kind = 'import' AND usb = 1))), 0)"""
+        ).fetchone()[0]
+    except sqlite3.OperationalError:
+        return 0  # a catalog from before the run history
 
 
 class DashboardCore:
@@ -390,8 +429,9 @@ class DashboardCore:
                     "local": 0,
                     "usb": 0,
                     "usb_waiting": 0,
-                    "usb_waiting_bytes": 0,
-                    "usb_last_backup": None,
+                    "local_types": {"JPG": 0, "RAW": 0, "VIDEO": 0},
+                    "usb_types": {"JPG": 0, "RAW": 0, "VIDEO": 0},
+                    "missed_imports": 0,
                     "uploaded": 0,
                     "local_updated": None,
                     "usb_updated": None,
@@ -410,16 +450,16 @@ class DashboardCore:
                         "SELECT COUNT(*) FROM file_locations WHERE root = ?", (usb_roots[0],)
                     ).fetchone()[0]
                     # By name, so extra files on the drive can't hide a missing one.
-                    waiting, waiting_bytes = db.execute(
-                        f"""SELECT COUNT(*), COALESCE(SUM(size), 0) FROM file_locations AS mac
+                    waiting = db.execute(
+                        f"""SELECT COUNT(*) FROM file_locations AS mac
                             WHERE root IN ({marks}) AND NOT EXISTS (
                                 SELECT 1 FROM file_locations AS drive
                                 WHERE drive.root = ? AND drive.relative_path = mac.relative_path)""",
                         [*local_roots, usb_roots[0]],
-                    ).fetchone()
-                    last_backup = db.execute(
-                        "SELECT MAX(indexed_at) FROM file_locations WHERE root = ?", (usb_roots[0],)
                     ).fetchone()[0]
+                    local_types = _type_counts(db, local_roots)
+                    usb_types = _type_counts(db, usb_roots[:1])
+                    missed = _missed_imports(db)
                     try:
                         uploaded = db.execute(
                             "SELECT COUNT(*) FROM google_photos_uploads"
@@ -446,8 +486,9 @@ class DashboardCore:
                 "local": local,
                 "usb": usb,
                 "usb_waiting": waiting,
-                "usb_waiting_bytes": waiting_bytes,
-                "usb_last_backup": last_backup,
+                "local_types": local_types,
+                "usb_types": usb_types,
+                "missed_imports": missed,
                 "uploaded": uploaded,
                 "local_updated": newest(local_roots),
                 "usb_updated": newest(usb_roots),

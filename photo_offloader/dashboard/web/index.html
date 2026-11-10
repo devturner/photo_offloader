@@ -174,8 +174,14 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 
 /* pipeline */
 .pipeline { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
-.step { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 2px; min-height: 118px; transition: border-color .2s; }
+/* Tall enough for a card with type columns and buttons, so the row keeps one height. */
+.step { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 2px; min-height: 146px; transition: border-color .2s; }
 .step[data-state="active"] { border-color: var(--accent); }
+.step .mix { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin-top: 3px; line-height: 1.2; }
+.step .mix b { display: block; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.step .mix span { display: block; font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; }
+.step .mix.stale b { color: var(--text-2); font-weight: 550; }
+.step .mix b.more { color: var(--accent); }
 .step-head { display: flex; align-items: center; justify-content: space-between; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); }
 .step[data-state="ok"] .dot { background: var(--ok); }
@@ -752,13 +758,19 @@ function stepActions(st) {
   ];
 }
 
+// The Mac archive and USB backup cards: a column per file type (the user's option B, 2026-11-10).
+function stepMix(st) {
+  return h("div", { class: "mix" + (st.mix_stale ? " stale" : "") },
+    ...st.mix.map(m => h("div", {}, h("b", { class: m.more ? "more" : null, text: fmtCount(m.count) }), h("span", { text: m.label }))));
+}
 function renderPipeline(s) {
   if (!s.pipeline.some(st => st.actions.some(ac => ac.id === askingAction))) askingAction = null;
   if (!changed("pipeline", [s.pipeline, askingAction])) return;
   $("#pipeline").replaceChildren(...s.pipeline.map(st => h("div", { class: "step", "data-state": st.state },
     h("div", { class: "step-head" }, h("span", { text: st.label }), h("span", { class: "dot", "aria-hidden": "true" })),
     h("h3", { text: st.headline }),
-    h("div", { class: "detail", text: st.detail }),
+    st.mix ? stepMix(st) : null,
+    st.detail || !st.mix ? h("div", { class: "detail", text: st.detail }) : null,
     st.percent != null && h("div", { class: "mini" }, h("div", { style: `width:${Math.max(2, st.percent)}%` })),
     stepActions(st))));
 }

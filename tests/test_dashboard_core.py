@@ -1147,12 +1147,37 @@ class TestPipeline(Fixture):
         states = {step["id"]: step["state"] for step in self.core.state()["pipeline"]}
         self.assertEqual(states, {"card": "off", "archive": "ok", "usb": "off", "cloud": "off"})
 
+    def mix(self, step_id):
+        step = self.pipeline(step_id)
+        return [(m["label"], m["count"], m["more"]) for m in step["mix"]], step["mix_stale"]
+
     def test_archive_and_usb_counts_come_from_the_catalog(self):
         self.seed_files(local={"a": 1, "b": 1, "c": 1}, usb={"a": 1, "b": 1, "c": 1})
         self.usb.mkdir()
-        self.assertEqual(self.pipeline("archive")["detail"], "3 files indexed")
-        self.assertEqual(self.pipeline("usb")["detail"], "All 3 files are on the drive")
-        self.assertEqual(self.pipeline("usb")["headline"], "Up to date")
+        self.assertEqual(self.pipeline("archive")["headline"], "3 files")
+        self.assertEqual(self.pipeline("usb")["headline"], "3 files")
+        self.assertEqual(self.pipeline("usb")["state"], "ok")
+
+    def test_each_card_counts_jpg_raw_and_video(self):
+        # Chosen by the user 2026-11-10 (option B): the total, then a column for each type.
+        files = {"a.JPG": 1, "b.jpeg": 1, "c.NEF": 1, "d.mov": 1, "NC_FLLST.DAT": 1}
+        self.seed_files(local=files, usb=files)
+        self.usb.mkdir()
+        self.assertEqual(self.pipeline("archive")["headline"], "5 files", "other files count too")
+        self.assertEqual(
+            self.mix("archive"),
+            ([("JPG", 2, False), ("RAW", 1, False), ("Video", 1, False)], False),
+        )
+        self.assertEqual(self.mix("usb")[0], self.mix("archive")[0])
+        self.assertEqual(self.pipeline("archive")["detail"], "")
+
+    def test_the_drive_marks_a_type_it_holds_more_of_than_the_mac(self):
+        # RAW files deleted from the Mac to save space are still on the drive.
+        self.seed_files(local={"a.jpg": 1, "b.nef": 1}, usb={"a.jpg": 1, "b.nef": 1, "c.nef": 1})
+        self.usb.mkdir()
+        self.assertEqual(
+            self.mix("usb")[0], [("JPG", 1, False), ("RAW", 2, True), ("Video", 0, False)]
+        )
 
     def test_a_connected_drive_says_how_far_behind_it_is(self):
         self.seed_files(local={"a": 1, "b": 1024, "c": 2048}, usb={"a": 1})
@@ -1160,7 +1185,7 @@ class TestPipeline(Fixture):
         step = self.pipeline("usb")
         self.assertEqual(step["state"], "warn")
         self.assertEqual(step["headline"], "2 files behind")
-        self.assertEqual(step["detail"], "3.0 KB not on the drive yet")
+        self.assertEqual(step["detail"], "", "the columns take its place")
         self.assertEqual(self.action_ids("usb"), ["usb_backup", "eject_usb"])
 
     def test_one_file_behind_reads_naturally(self):
@@ -1173,16 +1198,58 @@ class TestPipeline(Fixture):
         self.usb.mkdir()
         self.assertEqual(self.pipeline("usb")["headline"], "1 file behind")
 
-    def test_an_unplugged_drive_says_what_is_waiting_and_when_it_last_got_files(self):
-        last = datetime(2026, 10, 21, 12).timestamp()
-        self.seed_files(local={"a": 1, "b": 2048}, usb={"a": 1}, usb_indexed_at=last)
+    def backed_up_then_imported(self, imports):
+        self.record(
+            kind="usb_backup", usb=True, started_at=self.now - 900, finished_at=self.now - 890
+        )
+        for index in range(imports):
+            self.record(
+                usb=False, started_at=self.now - 500 + index, finished_at=self.now - 400 + index
+            )
+
+    def test_an_unplugged_drive_counts_the_imports_it_missed(self):
+        self.seed_files(local={"a.jpg": 1, "b.jpg": 2048}, usb={"a.jpg": 1})
+        self.backed_up_then_imported(2)
         step = self.pipeline("usb")
-        self.assertEqual(step["state"], "warn")
-        self.assertEqual(step["headline"], "Not connected")
         self.assertEqual(
-            step["detail"], "1 file (2.0 KB) not on the drive yet. Last backup Oct 21."
+            (step["state"], step["headline"], step["detail"]),
+            ("warn", "Not connected", "2 missed imports"),
+        )
+        self.assertEqual(
+            self.mix("usb"), ([("JPG", 1, False), ("RAW", 0, False), ("Video", 0, False)], True)
         )
         self.assertEqual(step["actions"], [])
+
+    def test_imports_before_the_last_backup_are_not_missed(self):
+        self.seed_files(local={"a.jpg": 1}, usb={"a.jpg": 1})
+        self.record(usb=False, started_at=self.now - 3000, finished_at=self.now - 2900)
+        self.backed_up_then_imported(0)
+        step = self.pipeline("usb")
+        self.assertEqual((step["state"], step["detail"]), ("off", ""))
+
+    def test_one_missed_import_reads_naturally(self):
+        self.seed_files(local={"a.jpg": 1, "b.jpg": 1}, usb={"a.jpg": 1})
+        self.backed_up_then_imported(1)
+        self.assertEqual(self.pipeline("usb")["detail"], "1 missed import")
+
+    def test_an_import_that_backed_up_as_it_went_is_not_missed(self):
+        self.seed_files(local={"a.jpg": 1}, usb={"a.jpg": 1})
+        self.backed_up_then_imported(0)
+        self.record(usb=True, started_at=self.now - 100, finished_at=self.now - 90)
+        step = self.pipeline("usb")
+        self.assertEqual((step["state"], step["detail"]), ("off", ""))
+        self.assertTrue(step["mix_stale"])
+
+    def test_an_import_whose_usb_copy_failed_is_missed(self):
+        self.seed_files(local={"a.jpg": 1, "b.jpg": 1}, usb={"a.jpg": 1})
+        self.backed_up_then_imported(0)
+        self.record(
+            usb=True,
+            outcome="failed",
+            message="USB backup failed: the drive was removed",
+            details={"local_verified": True},
+        )
+        self.assertEqual(self.pipeline("usb")["detail"], "1 missed import")
 
     def test_someone_who_has_never_used_a_drive_is_not_warned(self):
         self.seed_files(local={"a": 1}, usb={})

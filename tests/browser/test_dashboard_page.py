@@ -462,6 +462,42 @@ class TestMenu(PageTestCase):
         self.assert_acted(("service_stop", {"mode": "wait"}))
 
 
+class TestArchiveCards(PageTestCase):
+    """Option B, chosen by the user 2026-11-10: a total and a column for each type."""
+
+    def card(self, label):
+        return self.page.locator("#pipeline .step").filter(has_text=label)
+
+    def columns(self, label):
+        return self.card(label).locator(".mix b")
+
+    def test_the_mac_and_the_drive_show_a_column_for_each_type(self):
+        self.show("usb_up_to_date")
+        expect(self.card("Mac archive").locator("h3")).to_have_text("3,159 files")
+        expect(self.card("Mac archive").locator(".mix span")).to_have_text(["JPG", "RAW", "Video"])
+        expect(self.columns("Mac archive")).to_have_text(["1,580", "1,548", "31"])
+        expect(self.card("USB backup").locator("h3")).to_have_text("3,297 files")
+        expect(self.columns("USB backup")).to_have_text(["1,580", "1,686", "31"])
+
+    def test_the_drive_marks_the_raws_deleted_from_the_mac(self):
+        self.show("usb_up_to_date")
+        expect(self.card("USB backup").locator(".mix b.more")).to_have_text(["1,686"])
+
+    def test_an_unplugged_drive_shows_its_last_counts_and_the_missed_imports(self):
+        self.show("usb_unplugged_behind")
+        card = self.card("USB backup")
+        expect(card.locator("h3")).to_have_text("Not connected")
+        expect(card.locator(".mix")).to_have_class("mix stale")
+        expect(card.locator(".detail")).to_have_text("2 missed imports")
+
+    def test_plugging_the_drive_in_or_out_does_not_move_the_row(self):
+        heights = set()
+        for state in ("usb_up_to_date", "usb_behind", "usb_unplugged_behind", "idle"):
+            self.show(state)
+            heights.add(self.page.locator("#pipeline").bounding_box()["height"])
+        self.assertEqual(len(heights), 1, heights)
+
+
 class TestUploadControl(PageTestCase):
     def open_menu(self, state):
         self.show(state)

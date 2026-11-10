@@ -235,21 +235,48 @@ def _card_step(
     return _step("card", "Camera card", "off", "No card", "Insert a card to begin")
 
 
-def _archive_step(activity: Optional[Dict[str, Any]], local: Optional[int]) -> Dict[str, Any]:
-    detail = (
-        (f"{local:,} files indexed" if local else "Nothing indexed yet")
-        if local is not None
-        else "Catalog unavailable"
-    )
+TYPE_COLUMNS = (("JPG", "JPG"), ("RAW", "RAW"), ("VIDEO", "Video"))
+
+
+def _with_mix(
+    step: Dict[str, Any],
+    types: Dict[str, int],
+    compare: Optional[Dict[str, int]] = None,
+    stale: bool = False,
+) -> Dict[str, Any]:
+    """Add a column for each file type. ``more`` marks a type the drive holds more of than
+    ``compare``, the Mac, such as RAW files deleted from the Mac to save space."""
+    step["mix"] = [
+        {
+            "label": label,
+            "count": types.get(kind, 0),
+            "more": bool(compare is not None and types.get(kind, 0) > compare.get(kind, 0)),
+        }
+        for kind, label in TYPE_COLUMNS
+    ]
+    step["mix_stale"] = stale  # counts from the last backup: the drive isn't connected
+    return step
+
+
+def _archive_step(
+    activity: Optional[Dict[str, Any]], counts: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    local = counts["local"] if counts else None
     if activity and activity["kind"] == "import" and activity.get("stage") == "copy":
         return _step(
             "archive",
             "Mac archive",
             "active",
             "Checking" if activity["title"] == CHECKING_TITLE else "Copying",
-            activity["detail"] or detail,
+            activity["detail"] or (plural(local, "file") if local else ""),
         )
-    return _step("archive", "Mac archive", "ok", "Up to date" if local else "Empty", detail)
+    if local is None:
+        return _step("archive", "Mac archive", "ok", "Empty", "Catalog unavailable")
+    if not local:
+        return _step("archive", "Mac archive", "ok", "Empty", "Nothing indexed yet")
+    return _with_mix(
+        _step("archive", "Mac archive", "ok", plural(local, "file"), ""), counts["local_types"]
+    )
 
 
 def _usb_step(
@@ -283,22 +310,26 @@ def _usb_step(
             [] if busy else [_action("usb_backup", "Back up now"), _action("eject_usb", "Eject")]
         )
         if waiting:
-            size = format_bytes(counts["usb_waiting_bytes"])
-            return _step(
-                "usb",
-                "USB backup",
-                "warn",
-                f"{plural(waiting, 'file')} behind",
-                f"{size} not on the drive yet",
-                actions,
+            behind = _step(
+                "usb", "USB backup", "warn", f"{plural(waiting, 'file')} behind", "", actions
             )
+            return _with_mix(behind, counts["usb_types"], counts["local_types"])
         if usb:
-            return _step("usb", "USB backup", "ok", "Up to date", _all_on_drive(usb), actions)
+            up_to_date = _step("usb", "USB backup", "ok", plural(usb, "file"), "", actions)
+            return _with_mix(up_to_date, counts["usb_types"], counts["local_types"])
         return _step("usb", "USB backup", "ok", "Connected", "Ready to back up", actions)
     # With no files ever recorded on a drive, nobody has one to plug in yet: don't nag.
-    if waiting and usb:
-        return _step("usb", "USB backup", "warn", "Not connected", _waiting_while_unplugged(counts))
-    return _step("usb", "USB backup", "off", "Not connected", "Plug in the backup drive")
+    if not usb:
+        return _step("usb", "USB backup", "off", "Not connected", "Plug in the backup drive")
+    missed = counts["missed_imports"]
+    unplugged = _step(
+        "usb",
+        "USB backup",
+        "warn" if missed or waiting else "off",
+        "Not connected",
+        f"{missed:,} missed import{'' if missed == 1 else 's'}" if missed else "",
+    )
+    return _with_mix(unplugged, counts["usb_types"], counts["local_types"], stale=True)
 
 
 def _lane_figures(eta_seconds: Optional[float], speed_bps: float) -> str:
@@ -348,19 +379,6 @@ def upload_lane(progress: Optional[Dict[str, Any]], eta_seconds: Optional[float]
 def done_lane(label: str) -> Dict[str, Any]:
     """Stays on show until the other job ends, so the panel doesn't jump."""
     return {"label": label, "percent": 100, "left": "Done", "right": ""}
-
-
-def _all_on_drive(files: int) -> str:
-    return "The 1 file is on the drive" if files == 1 else f"All {files:,} files are on the drive"
-
-
-def _waiting_while_unplugged(counts: Dict[str, Any]) -> str:
-    size = format_bytes(counts["usb_waiting_bytes"])
-    text = f"{plural(counts['usb_waiting'], 'file')} ({size}) not on the drive yet."
-    if not counts["usb_last_backup"]:
-        return text
-    last = datetime.fromtimestamp(counts["usb_last_backup"])
-    return f"{text} Last backup {last:%b} {last.day}."
 
 
 def _cloud_step(
@@ -449,7 +467,7 @@ def pipeline(
     """The four steps a photo moves through (card, Mac, USB, Google) and what each can do now."""
     return [
         _card_step(card, activity, busy, can_reimport, card_unsaved),
-        _archive_step(activity, counts["local"] if counts else None),
+        _archive_step(activity, counts),
         _usb_step(activity, usb_mounted, counts, busy, drive_in_use, usb_paused, auto_backup),
         _cloud_step(
             google,

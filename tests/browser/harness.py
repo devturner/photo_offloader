@@ -323,15 +323,21 @@ def _upload_retrying(s: Sandbox) -> None:
     s.paths.google_retry_file.write_text(f"2 {int(s.now - 60)}\n")  # 5 min after the 2nd try
 
 
-def _drive_files(s: Sandbox, on_both: int, only_on_mac: int) -> None:
-    """Catalog rows for files on the Mac and the drive, 28 MB each."""
+def _drive_files(s: Sandbox, on_both: int, only_on_mac: int, only_on_drive: int = 0) -> None:
+    """Catalog rows for files on the Mac and the drive, 28 MB each: JPG and RAW pairs and a few
+    videos. Files only on the drive are RAWs deleted from the Mac to save space."""
     mac, drive = s.paths.local_archives[0].resolve(), s.paths.usb_archives[0].resolve()
     rows = []
     for index in range(on_both + only_on_mac):
-        name = f"DSC_{index:04}.JPG"
+        name = f"DSC_{index // 2:04}" + (
+            ".MOV" if index % 100 == 99 else (".JPG", ".NEF")[index % 2]
+        )
         rows.append((str(mac / name), str(mac), name))
         if index < on_both:
             rows.append((str(drive / name), str(drive), name))
+    for index in range(only_on_drive):
+        name = f"OLD_{index:04}.NEF"
+        rows.append((str(drive / name), str(drive), name))
     db = catalog.catalog_connection()
     with db:
         db.executemany(
@@ -350,7 +356,15 @@ def _usb_behind(s: Sandbox) -> None:
 
 def _usb_unplugged_behind(s: Sandbox) -> None:
     s.status(state="idle")
-    _drive_files(s, on_both=3147, only_on_mac=12)
+    _drive_files(s, on_both=3147, only_on_mac=12, only_on_drive=138)
+    s.record(
+        kind="usb_backup",
+        usb=True,
+        finished_at=s.now - 9 * 86400,
+        started_at=s.now - 9 * 86400 - 60,
+    )
+    for days in (5, 2):  # two cards imported with the drive unplugged
+        s.record(usb=False, finished_at=s.now - days * 86400, started_at=s.now - days * 86400 - 90)
 
 
 def _backup_paused(s: Sandbox) -> None:
@@ -389,7 +403,7 @@ def _backup_and_upload(s: Sandbox) -> None:
 def _usb_up_to_date(s: Sandbox) -> None:
     s.add_usb()
     s.status(state="idle")
-    _drive_files(s, on_both=3159, only_on_mac=0)
+    _drive_files(s, on_both=3159, only_on_mac=0, only_on_drive=138)
 
 
 def _already_imported(s: Sandbox) -> None:

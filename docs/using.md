@@ -47,8 +47,8 @@ The USB and Google steps are skipped if the drive isn't connected or Google Phot
 | Card | Shows | Buttons, when they apply |
 | --- | --- | --- |
 | **Camera card** | The mounted card, or *No card* | **Import now**, **Eject** |
-| **Mac archive** | How many files are indexed | None |
-| **USB backup** | Whether the drive is connected, how many files aren't on it yet, and when a backup is paused or waiting | **Back up now**, **Eject** |
+| **Mac archive** | How many files are on the Mac, with the JPG, RAW and video counts | None |
+| **USB backup** | How many files are on the drive, with the same counts, or how many files it's behind. A count in blue means the drive holds more of that type than the Mac, such as RAW files you deleted from the Mac to save space. Unplugged, it shows the counts from the last backup in grey, and how many imports it has missed since then. It also says when a backup is paused or waiting | **Back up now**, **Eject** |
 | **Google Photos** | Setup and upload state, *Paused*, or when it will try again | **Sync now**, **Pause**, **Resume**, **Retry now** |
 
 Buttons that use a card or drive are hidden while a transfer is running. *Not set up* on the
