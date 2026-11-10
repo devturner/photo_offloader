@@ -223,9 +223,14 @@ def parse_rclone_stats_line(line: str) -> Optional[dict[str, object]]:
 
 
 def publish_status(
-    state: str, message: str, new_run: bool = False, waiting: Optional[int] = None
+    state: str,
+    message: str,
+    new_run: bool = False,
+    waiting: Optional[int] = None,
+    needs_setup: bool = False,
 ) -> None:
-    """``waiting``: for a stopped upload, how many of its files it didn't send."""
+    """``waiting``: for a stopped upload, how many of its files it didn't send.
+    ``needs_setup``: a failure only a change to the setup can fix, so not worth retrying."""
     previous = jsonfile.read_object(config.GOOGLE_STATUS_PATH)
     payload = {
         "state": state,
@@ -235,6 +240,8 @@ def publish_status(
     }
     if waiting is not None:
         payload["waiting"] = waiting
+    if needs_setup:
+        payload["needs_setup"] = True
     if state == "complete":
         payload["last_success"] = payload["updated_at"]
     if state == "running":
@@ -308,7 +315,35 @@ def uploads_paused() -> bool:
     return config.GOOGLE_PAUSED_PATH.exists()
 
 
+def _retry_attempts() -> int:
+    try:
+        return int(config.GOOGLE_RETRY_PATH.read_text(encoding="ascii").split()[0])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def _note_attempt() -> None:
+    """Say an upload is under way. Left behind if it doesn't finish, so the trigger retries it,
+    waiting longer the more attempts it shows. A crash or power cut leaves it too."""
+    try:
+        config.GOOGLE_RETRY_PATH.write_text(
+            f"{_retry_attempts() + 1} {int(time.time())}\n", encoding="ascii"
+        )
+    except OSError as exc:
+        log_sync_event(f"Could not note the upload for a retry: {exc}")
+
+
+def _clear_retry() -> None:
+    try:
+        config.GOOGLE_RETRY_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        log_sync_event(f"Could not clear the upload retry: {exc}")
+
+
 def _publish_paused(waiting: Optional[int] = None) -> None:
+    _clear_retry()  # Resume uploads starts the sync again
     previous = jsonfile.read_object(config.GOOGLE_STATUS_PATH)
     if waiting is None and previous.get("state") == "paused":
         return  # keep the count the paused upload saved
@@ -443,7 +478,11 @@ def _ensure_album(rclone: str, destination: str) -> Optional[int]:
         return 1
 
     if album.returncode != 0:
-        publish_status("failed", _album_failure_message(album.stderr))
+        publish_status(
+            "failed",
+            _album_failure_message(album.stderr),
+            needs_setup=setup_problem(album.stderr) is not None,
+        )
         return album.returncode or 1
     return None
 
@@ -541,23 +580,44 @@ def _record_upload(pending: List[str]) -> int:
 COPIED_LINE = re.compile(r"^(\d{4}/\d\d/\d\d \d\d:\d\d:\d\d) INFO\s+: (.+): Copied \(")
 
 
-def sent_since(pending: Sequence[str], started_at: float) -> List[str]:
-    """The files of ``pending`` that rclone's log says it copied since ``started_at``."""
-    wanted, sent = set(pending), []
+LOG_STAMP = re.compile(r"^(\d{4}/\d\d/\d\d \d\d:\d\d:\d\d) ")
+
+
+def _log_lines_since(started_at: float) -> List[str]:
+    """The sync log's lines stamped at or after ``started_at``."""
     try:
         lines = config.GOOGLE_LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as exc:
-        log_sync_event(f"Could not read the log to see what was sent: {exc}")
+        log_sync_event(f"Could not read the sync log: {exc}")
         return []
+    recent = []
     for line in lines:
-        match = COPIED_LINE.match(line)
-        if not match or match.group(2) not in wanted:
+        match = LOG_STAMP.match(line)
+        if not match:
             continue
         stamp = datetime.strptime(match.group(1), "%Y/%m/%d %H:%M:%S").timestamp()
         if stamp >= int(started_at):  # the log has whole seconds
+            recent.append(line)
+    return recent
+
+
+def sent_since(pending: Sequence[str], started_at: float) -> List[str]:
+    """The files of ``pending`` that rclone's log says it copied since ``started_at``."""
+    wanted, sent = set(pending), []
+    for line in _log_lines_since(started_at):
+        match = COPIED_LINE.match(line)
+        if match and match.group(2) in wanted:
             sent.append(match.group(2))
             wanted.discard(match.group(2))
     return sent
+
+
+def _needs_setup(started_at: float) -> bool:
+    """Whether the sync that started at ``started_at`` failed in a way only setup can fix."""
+    status = jsonfile.read_object(config.GOOGLE_STATUS_PATH)
+    if status.get("state") == "not_configured" or status.get("needs_setup"):
+        return True
+    return setup_problem("\n".join(_log_lines_since(started_at))) is not None
 
 
 def _upload_stopped(pending: List[str], started_at: float) -> int:
@@ -606,6 +666,7 @@ def _sync(lock_fd: Optional[int] = None) -> int:
             "not_configured",
             "rclone is not installed. Install it and configure a Google Photos remote named 'gphotos'.",
         )
+        _clear_retry()
         return 2
 
     if not config.LOCAL_DEST_ROOT.is_dir():
@@ -624,16 +685,20 @@ def _sync(lock_fd: Optional[int] = None) -> int:
         # there is nothing new to send.
         log_sync_event("Google Photos sync skipped: no new JPG/video files to upload.")
         publish_status("complete", f"Google Photos is up to date for album '{ALBUM_NAME}'.")
+        _clear_retry()
         return 0
     # Say so before the slower rclone checks, so the dashboard shows the upload straight away.
     publish_status(
         "running", f"Preparing to upload {len(pending):,} JPG/video file(s).", new_run=True
     )
     started_at = time.time()
+    _note_attempt()
     try:
         code = _send_pending(rclone, pending, lock_fd)
     except Stopped:
         return _upload_stopped(pending, started_at)
+    if code == 0 or _needs_setup(started_at):
+        _clear_retry()
     _record_on_import("complete" if code == 0 else "failed", pending, started_at)
     return code
 
@@ -693,8 +758,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args == ["--check"]:
         return run_setup_check()
+    if args == ["--retry"]:
+        # Photo Offloader opening: carry on with an unfinished upload without waiting for the
+        # trigger's next retry. Nothing to do if none is owed.
+        return run_sync() if config.GOOGLE_RETRY_PATH.exists() else 0
     if args not in ([], ["--sync"]):
-        print("Usage: photo-offloader-google-sync [--sync | --check]", file=sys.stderr)
+        print("Usage: photo-offloader-google-sync [--sync | --retry | --check]", file=sys.stderr)
         return 2
     return run_sync(args)
 

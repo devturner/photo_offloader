@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -325,6 +326,7 @@ class TestGooglePhotosSync(unittest.TestCase):
             patch.object(config, "GOOGLE_LOCK_PATH", root / ".google-photos-sync.lock"),
             patch.object(config, "GOOGLE_QUEUE_LOCK_PATH", root / ".google-photos-sync.queue.lock"),
             patch.object(config, "GOOGLE_PAUSED_PATH", root / ".google-photos-paused"),
+            patch.object(config, "GOOGLE_RETRY_PATH", root / ".google-photos-retry"),
             patch.object(config, "GOOGLE_LOG_PATH", root / "google_photos_sync.log"),
             patch.object(config, "LOCAL_DEST_ROOT", photos),
             patch.object(config, "PREFERENCES_PATH", root / "preferences.json"),
@@ -574,6 +576,92 @@ class TestGooglePhotosSync(unittest.TestCase):
             self.assertIn(
                 "quota exceeded", json.loads(config.GOOGLE_STATUS_PATH.read_text())["message"]
             )
+
+    # ------------------------------------------ automatic retry (scripts/trigger.sh)
+    def sync_with(self, root, copy_returncode=0, mkdir_stderr=None, retry=None):
+        """Run a sync of one new photo; the retry marker it leaves, as text, or None."""
+        photos = self.sync_environment(root)
+        (photos / "a.jpg").write_bytes(b"a")
+        if retry is not None:
+            (root / ".google-photos-retry").write_text(retry)
+        run, _ = self.fake_rclone(copy_returncode=copy_returncode)
+
+        def rclone(command, *args, **kwargs):
+            if command[1] == "mkdir" and mkdir_stderr:
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr=mkdir_stderr)
+            return run(command, *args, **kwargs)
+
+        with self.rclone(rclone):
+            sync.run_sync()
+        marker = root / ".google-photos-retry"
+        return marker.read_text() if marker.exists() else None
+
+    def test_an_upload_that_fails_for_a_network_reason_is_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = self.sync_with(Path(tmp), copy_returncode=5)
+        attempts, last = marker.split()
+        self.assertEqual(attempts, "1")
+        self.assertAlmostEqual(int(last), time.time(), delta=60)
+
+    def test_each_attempt_is_counted_so_retries_wait_longer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = self.sync_with(Path(tmp), copy_returncode=5, retry="2 100\n")
+        self.assertEqual(marker.split()[0], "3")
+
+    def test_a_finished_upload_needs_no_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(self.sync_with(Path(tmp), retry="2 100\n"))
+
+    def test_a_setup_problem_is_not_retried(self):
+        # Trying again can't fix an expired sign-in; the dashboard says what to do instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(self.sync_with(Path(tmp), mkdir_stderr=EXPIRED_TOKEN, retry="1 1\n"))
+
+    def test_a_setup_problem_found_by_the_upload_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            photos = self.sync_environment(root)
+            (photos / "a.jpg").write_bytes(b"a")
+            run, _ = self.fake_rclone(
+                on_copy=lambda _command: self.write_sync_log(
+                    datetime.now().strftime("%Y/%m/%d %H:%M:%S") + " ERROR : " + EXPIRED_TOKEN
+                ),
+                copy_returncode=1,
+            )
+            with patch.object(sync.catalog, "google_photos_album_used", return_value=False):
+                with self.rclone(run):
+                    sync.run_sync()
+            self.assertFalse((root / ".google-photos-retry").exists())
+
+    def test_nothing_to_send_needs_no_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.sync_environment(root)
+            (root / ".google-photos-retry").write_text("1 1\n")
+            run, _ = self.fake_rclone()
+            with self.rclone(run):
+                sync.run_sync()
+            self.assertFalse((root / ".google-photos-retry").exists())
+
+    def test_paused_uploads_are_not_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.sync_environment(root)
+            (root / ".google-photos-retry").write_text("1 1\n")
+            (root / ".google-photos-paused").touch()
+            sync.run_sync()
+            self.assertFalse((root / ".google-photos-retry").exists())
+
+    def test_retry_runs_a_sync_only_when_one_is_owed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.sync_environment(root)
+            with patch.object(sync, "run_sync", return_value=0) as run_sync:
+                self.assertEqual(sync.main(["--retry"]), 0)
+                run_sync.assert_not_called()
+                (root / ".google-photos-retry").write_text("4 1\n")
+                self.assertEqual(sync.main(["--retry"]), 0)
+                run_sync.assert_called_once()
 
 
 # What rclone really prints when Google refuses the saved sign-in.

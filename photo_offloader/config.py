@@ -71,6 +71,8 @@ GOOGLE_LOCK_PATH = INSTALL_DIR / ".google-photos-sync.lock"
 # Held by the one sync waiting for a running upload to finish, so others don't stack up.
 GOOGLE_QUEUE_LOCK_PATH = INSTALL_DIR / ".google-photos-sync.queue.lock"
 GOOGLE_PAUSED_PATH = INSTALL_DIR / ".google-photos-paused"  # Pause uploads; kept over restarts
+# "attempts last_attempt_epoch" while an upload is unfinished; scripts/trigger.sh retries it.
+GOOGLE_RETRY_PATH = INSTALL_DIR / ".google-photos-retry"
 PREFERENCES_PATH = DATA_DIR / "preferences.json"
 RCLONE_CONFIG_PATH = HOME / ".config" / "rclone" / "rclone.conf"  # rclone's own; read only
 
