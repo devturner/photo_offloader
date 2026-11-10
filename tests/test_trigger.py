@@ -284,7 +284,8 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
     # ---- Google Photos: trying an unfinished upload again by itself ----
     def owe_upload_retry(self, attempts, seconds_ago, booted_seconds_ago=86400):
         """The sync's marker for an unfinished upload, and a Mac started that long ago."""
-        shutil.rmtree(self.card)  # nothing to import, so only the retry is in question
+        # Nothing to import, so only the retry is in question.
+        shutil.rmtree(self.card, ignore_errors=True)
         now = int(time.time())
         (self.install / ".google-photos-retry").write_text(f"{attempts} {now - seconds_ago}\n")
         self.google_sync = self.install / "bin" / "photo-offloader-google-sync"
@@ -321,19 +322,20 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertFalse(self.upload_retried())
 
     def test_each_failed_attempt_waits_longer(self):
+        # A minute either side of each wait: the trigger reads the clock after the test does,
+        # and a busy CI runner can take more than a second to get there.
         for attempts, waited, due in (
-            (2, 299, False),
-            (2, 301, True),
-            (3, 899, False),
-            (3, 901, True),
-            (7, 3599, False),
-            (7, 3601, True),
+            (2, 240, False),
+            (2, 360, True),
+            (3, 840, False),
+            (3, 960, True),
+            (7, 3540, False),
+            (7, 3660, True),
         ):
             with self.subTest(attempts=attempts, waited=waited):
                 self.owe_upload_retry(attempts=attempts, seconds_ago=waited)
                 self.assertEqual(self.upload_retried(), due)
                 self.sync_args.unlink(missing_ok=True)
-                self.card.mkdir()  # owe_upload_retry takes it away again
 
     def test_an_upload_cut_off_by_a_restart_is_tried_again_straight_away(self):
         self.owe_upload_retry(attempts=6, seconds_ago=120, booted_seconds_ago=60)
