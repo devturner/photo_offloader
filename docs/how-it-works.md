@@ -120,7 +120,11 @@ These are separate programs that share files:
    It looks for volumes with `DCIM`. With two cards mounted, they import one after the other.
 2. The trigger starts the **importer** as its own background job. The importer writes its progress to
    `status.json`.
-3. After a successful import, the importer starts the **Google sync** in the background.
+3. After a successful import, the importer starts the **Google sync** in the background. One upload
+   runs at a time. A sync started during one waits for it, then sends what's new; a third gives up,
+   since the waiting one lists every file. While an upload is unfinished the sync leaves a marker
+   (`.google-photos-retry`), and the trigger uses it to try again later. Pausing writes
+   `.google-photos-paused`, which stops any sync from starting.
 4. The **dashboard** and **menu bar** never copy files. They show that state and start the same
    programs when you press a button.
 

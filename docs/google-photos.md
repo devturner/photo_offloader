@@ -134,6 +134,8 @@ To see the result, open [Google Photos](https://photos.google.com) and go to **A
 - **Original quality.** Uploads count against your Google storage, because the API has no
   storage-saver mode.
 - A failed upload never affects your verified local copies or USB backup.
+- **Pause uploads** in the ⋯ menu stops an upload until you resume. See
+  [Pausing uploads](using.md#pausing-uploads).
 
 ## Albums
 
@@ -186,5 +188,6 @@ Run the [check command](#google-photos-setup) first. It recognises the problems 
 For anything else, read the upload log: **⋯ › View logs › Google** in the dashboard, or
 `~/Library/Application Support/PhotoOffloader/google_photos_sync.log`.
 
-After fixing a problem, press **Retry** on the Google Photos card. Files that didn't finish are
-sent on the next sync.
+After fixing a problem, press **Retry now** on the Google Photos card. Files that didn't finish are
+sent on the next sync. An upload cut off by the network, a restart or a power cut tries again by
+itself; see [Pausing uploads](using.md#pausing-uploads).
