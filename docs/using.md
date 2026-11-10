@@ -142,17 +142,20 @@ to fold it away. Runs from before this version show a dash for anything that was
 ## The menu bar
 
 The 📷 changes to show the state: `↻` during a transfer, `⏸` when paused, `Off` when stopped. Its
-menu has **Open Dashboard**, **Copy to USB Drive** (when a drive is connected), **Pause / Resume
-Automatic Imports**, **View Import Log**, **Stop Photo Offloader…** and **Quit Menu Bar**. Quitting
-the menu bar leaves the service running.
+menu has **Open Dashboard**, **Close Dashboard** (when one is open), **Copy to USB Drive** (when a
+drive is connected), **Pause / Resume Automatic Imports**, **View Import Log**, **Stop Service…** or
+**Start Service**, and **Stop and Exit…**.
 
 ## Pause, stop and start
 
 **Pause** before inserting a card you don't want imported. It doesn't interrupt a copy already
 running. **Resume** re-checks any card that is mounted.
 
-**Stop** turns off card detection. It refuses to stop during a transfer unless you choose to.
-Stopped, the service comes back at your next login. From a terminal:
+**Stop Service** turns off card detection and leaves the menu bar and dashboard open, so you can
+start it again from either. **Stop and Exit** also closes the dashboard and the menu bar. Both ask
+what to do if a card is being imported: stop once it finishes, or cancel it now. A Google Photos
+upload, USB backup or check of saved copies that is already running finishes on its own. Stopped,
+Photo Offloader comes back at your next login. From a terminal:
 
 ```bash
 SERVICE=~/Library/Application\ Support/PhotoOffloader/scripts/service.sh

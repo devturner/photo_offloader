@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """What the menu-bar menu offers in each state. Pure logic, no rumps/AppKit, so it is testable.
 
-The menu bar stays alive whether or not the background service is running. When the service
-is stopped the menu says so and offers Start; nothing is greyed out except the explanatory line.
+The menu bar stays alive whether or not the background service is running, so it can always
+offer Start. Items that don't apply are left out rather than greyed out.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ class Snapshot:
     paused: bool = False
     transfer: bool = False
     usb: bool = False
+    dashboard: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,34 +52,23 @@ def menu_title(snapshot: Snapshot) -> str:
     return "📷"
 
 
-VIEW_LOG = Entry("view_log", "View Import Log")
-
-
 def menu_entries(snapshot: Snapshot) -> List[Entry]:
-    quit_entry = Entry(
-        "quit", "Quit Menu Bar (Service Keeps Running)" if snapshot.running else "Quit Menu Bar"
-    )
-    if not snapshot.running:
-        return [
-            Entry("info", "Photo Offloader is stopped", enabled=False),
-            Entry("start", "Start Photo Offloader"),
-            Entry("open_dashboard", "Open Dashboard"),
-            Entry(None),
-            VIEW_LOG,
-            Entry(None),
-            quit_entry,
-        ]
     entries = [Entry("open_dashboard", "Open Dashboard")]
-    if snapshot.usb and not snapshot.transfer:
-        entries.append(Entry("copy_usb", "Copy to USB Drive"))
+    if snapshot.dashboard:
+        entries.append(Entry("close_dashboard", "Close Dashboard"))
+    entries.append(Entry(None))
+    if snapshot.running:
+        if snapshot.usb and not snapshot.transfer:
+            entries.append(Entry("copy_usb", "Copy to USB Drive"))
+        entries.append(
+            Entry(
+                "pause",
+                "Resume Automatic Imports" if snapshot.paused else "Pause Automatic Imports",
+            )
+        )
+    entries += [Entry("view_log", "View Import Log"), Entry(None)]
     entries.append(
-        Entry("pause", "Resume Automatic Imports" if snapshot.paused else "Pause Automatic Imports")
+        Entry("stop", "Stop Service…") if snapshot.running else Entry("start", "Start Service")
     )
-    entries += [
-        Entry(None),
-        VIEW_LOG,
-        Entry(None),
-        Entry("stop", "Stop Photo Offloader…"),
-        quit_entry,
-    ]
+    entries.append(Entry("stop_exit", "Stop and Exit…"))
     return entries
