@@ -13,7 +13,7 @@ Python 3.9, and CI runs 3.9, 3.11, 3.13 and 3.14 on macOS.
 ## Repository layout
 
 ```text
-bin/              entry points: photo-offloader-import, -dashboard, -menubar, -google-sync, -usb-backup
+bin/              entry points: photo-offloader-import, -dashboard, -app, -menubar, -google-sync, -usb-backup
 photo_offloader/
     config        every path and setting
     importer      the import command line
@@ -33,6 +33,7 @@ docs/             these pages, which GitHub Pages also publishes as the project 
 index.html        the website's landing page, which is not the dashboard page
 _config.yml, _layouts/, assets/    the website's settings, page layout and styles
 install.sh        installs the same layout into ~/Library/Application Support/PhotoOffloader
+macos/            launcher.c, AppIcon.png (drawn by draw_icon.py) and build_app.sh, which install.sh uses to build the two app bundles
 ```
 
 ## Running the tests

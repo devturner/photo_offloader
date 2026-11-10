@@ -54,8 +54,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* header */
 header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
 .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.logo { width: 36px; height: 36px; border-radius: 10px; background: var(--accent); color: #fff; display: grid; place-items: center; }
-.logo .icon { width: 20px; height: 20px; }
+.logo { width: 44px; height: 44px; flex: none; }
+.logo .app-icon { width: 100%; height: 100%; display: block; }
 .brand h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
 .brand small { color: var(--text-3); font-size: 12px; }
 .tools { display: flex; align-items: center; gap: 8px; position: relative; }
@@ -323,7 +323,7 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
 <div class="wrap">
   <header>
     <div class="brand">
-      <div class="logo"><svg class="icon" data-icon="camera"></svg></div>
+      <div class="logo"><!-- drawn by macos/draw_icon.py: paste its svg() here after a change --><svg class="app-icon" viewBox="0 0 1024 1024" aria-hidden="true"><path d="M924 512L924 608L924 639L923 661L923 679L923 694L922 708L921 721L920 732L919 742L918 752L917 761L916 770L914 778L913 785L911 793L909 799L907 806L905 812L903 818L901 824L899 830L896 835L893 840L891 845L888 850L884 854L881 859L878 863L874 867L871 871L867 874L863 878L859 881L854 884L850 888L845 891L840 893L835 896L830 899L824 901L818 903L812 905L806 907L799 909L793 911L785 913L778 914L770 916L761 917L752 918L742 919L732 920L721 921L708 922L694 923L679 923L661 923L639 924L608 924L512 924L416 924L385 924L363 923L345 923L330 923L316 922L303 921L292 920L282 919L272 918L263 917L254 916L246 914L239 913L231 911L225 909L218 907L212 905L206 903L200 901L194 899L189 896L184 893L179 891L174 888L170 884L165 881L161 878L157 874L153 871L150 867L146 863L143 859L140 854L136 850L133 845L131 840L128 835L125 830L123 824L121 818L119 812L117 806L115 799L113 793L111 785L110 778L108 770L107 761L106 752L105 742L104 732L103 721L102 708L101 694L101 679L101 661L100 639L100 608L100 512L100 416L100 385L101 363L101 345L101 330L102 316L103 303L104 292L105 282L106 272L107 263L108 254L110 246L111 239L113 231L115 225L117 218L119 212L121 206L123 200L125 194L128 189L131 184L133 179L136 174L140 170L143 165L146 161L150 157L153 153L157 150L161 146L165 143L170 140L174 136L179 133L184 131L189 128L194 125L200 123L206 121L212 119L218 117L225 115L231 113L239 111L246 110L254 108L263 107L272 106L282 105L292 104L303 103L316 102L330 101L345 101L363 101L385 100L416 100L512 100L608 100L639 100L661 101L679 101L694 101L708 102L721 103L732 104L742 105L752 106L761 107L770 108L778 110L785 111L793 113L799 115L806 117L812 119L818 121L824 123L830 125L835 128L840 131L845 133L850 136L854 140L859 143L863 146L867 150L871 153L874 157L878 161L881 165L884 170L888 174L891 179L893 184L896 189L899 194L901 200L903 206L905 212L907 218L909 225L911 231L913 239L914 246L916 254L917 263L918 272L919 282L920 292L921 303L922 316L923 330L923 345L923 363L924 385L924 416Z" fill="#22262e"/><path d="M305 262L305 258L305 255L306 252L307 249L309 247L310 244L312 243L315 241L318 240L321 239L324 239L328 239L609 239L613 239L617 239L620 240L624 240L627 241L631 243L634 244L637 246L640 248L643 250L646 252L649 255L718 324L721 327L723 330L725 333L727 336L729 339L730 342L732 346L733 349L733 353L734 356L734 360L734 364L734 762L734 766L734 769L733 772L732 775L730 777L729 780L726 781L724 783L721 784L718 785L715 785L711 785L328 785L324 785L321 785L318 784L315 783L312 781L310 780L309 777L307 775L306 772L305 769L305 766L305 762L305 490L305 488L304 487L304 486L304 485L303 485L303 484L302 483L301 483L300 483L299 482L298 482L297 482L297 482L296 482L295 482L294 482L293 481L292 481L292 480L291 480L290 479L290 478L290 477L290 476L290 475L290 394L290 393L290 392L290 391L290 390L291 389L292 389L292 388L293 388L294 387L295 387L296 387L297 387L297 387L298 387L299 387L300 386L301 386L302 386L303 385L303 384L304 384L304 383L304 382L305 381L305 379Z" fill="#4270a8" stroke="#2c2e34" stroke-width="22" stroke-linejoin="round" paint-order="stroke"/><path d="M354 282L354 281L354 280L354 279L354 278L355 277L356 276L356 275L357 275L358 275L359 274L360 274L362 274L389 274L390 274L391 274L392 275L393 275L394 275L395 276L396 277L396 278L397 279L397 280L397 281L397 282L397 381L397 383L397 384L397 385L396 386L396 387L395 388L394 388L393 389L392 389L391 389L390 390L389 390L362 390L360 390L359 389L358 389L357 389L356 388L356 388L355 387L354 386L354 385L354 384L354 383L354 381Z" fill="#e0c370" stroke="#2c2e34" stroke-width="22" stroke-linejoin="round" paint-order="stroke"/><path d="M417 282L418 281L418 280L418 279L418 278L419 277L420 276L420 275L421 275L422 275L423 274L424 274L426 274L453 274L454 274L455 274L456 275L457 275L458 275L459 276L460 277L460 278L460 279L461 280L461 281L461 282L461 381L461 383L461 384L460 385L460 386L460 387L459 388L458 388L457 389L456 389L455 389L454 390L453 390L426 390L424 390L423 389L422 389L421 389L420 388L420 388L419 387L418 386L418 385L418 384L418 383L417 381Z" fill="#e0c370" stroke="#2c2e34" stroke-width="22" stroke-linejoin="round" paint-order="stroke"/><path d="M481 282L481 281L482 280L482 279L482 278L483 277L483 276L484 275L485 275L486 275L487 274L488 274L490 274L517 274L518 274L519 274L520 275L521 275L522 275L523 276L524 277L524 278L524 279L525 280L525 281L525 282L525 381L525 383L525 384L524 385L524 386L524 387L523 388L522 388L521 389L520 389L519 389L518 390L517 390L490 390L488 390L487 389L486 389L485 389L484 388L483 388L483 387L482 386L482 385L482 384L481 383L481 381Z" fill="#e0c370" stroke="#2c2e34" stroke-width="22" stroke-linejoin="round" paint-order="stroke"/><path d="M545 282L545 281L546 280L546 279L546 278L547 277L547 276L548 275L549 275L550 275L551 274L552 274L553 274L581 274L582 274L583 274L584 275L585 275L586 275L587 276L587 277L588 278L588 279L589 280L589 281L589 282L589 381L589 383L589 384L588 385L588 386L587 387L587 388L586 388L585 389L584 389L583 389L582 390L581 390L553 390L552 390L551 389L550 389L549 389L548 388L547 388L547 387L546 386L546 385L546 384L545 383L545 381Z" fill="#e0c370" stroke="#2c2e34" stroke-width="22" stroke-linejoin="round" paint-order="stroke"/><path d="M609 282L609 281L609 280L610 279L610 278L611 277L611 276L612 275L613 275L614 275L615 274L616 274L617 274L645 274L646 274L647 274L648 275L649 275L650 275L651 276L651 277L652 278L652 279L653 280L653 281L653 282L653 354L653 356L653 357L652 358L652 359L651 360L651 360L650 361L649 361L648 362L647 362L646 362L645 362L617 362L616 362L615 362L614 362L613 361L612 361L611 360L611 360L610 359L610 358L609 357L609 356L609 354Z" fill="#e0c370" stroke="#2c2e34" stroke-width="22" stroke-linejoin="round" paint-order="stroke"/><path d="M345 536L346 533L346 530L347 528L348 525L349 523L350 521L352 520L354 518L357 517L360 517L363 516L366 516L673 516L676 516L679 517L682 517L684 518L687 520L688 521L690 523L691 525L692 528L693 530L693 533L694 536L694 732L693 736L693 739L692 741L691 744L690 746L688 748L687 749L684 750L682 751L679 752L676 753L673 753L366 753L363 753L360 752L357 751L354 750L352 749L350 748L349 746L348 744L347 741L346 739L346 736L345 732Z" fill="#2c2e34"/><path d="M375 737L539 737L543 737L548 737L553 736L557 735L562 734L566 733L571 731L575 729L580 727L584 725L588 722L592 720L595 717L599 714L602 711L606 707L609 704L612 700L614 696L617 692L619 688L621 683L623 679L625 675L626 670L627 665L628 661L628 656L629 651L629 647L629 625L672 625L612 545L552 625L595 625L595 647L595 650L595 653L594 655L594 658L593 661L592 664L591 667L590 670L589 672L587 675L586 677L584 680L582 682L580 684L578 687L576 689L574 691L572 692L569 694L567 696L564 697L561 698L559 699L556 700L553 701L550 702L547 702L544 703L541 703L539 703L375 703Z" fill="#e0c370"/></svg></div>
       <div><h1>Photo Offloader</h1><small id="version"></small></div>
     </div>
     <div class="tools">
@@ -363,6 +363,7 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
         </div>
         <hr>
         <button role="menuitem" id="m-service" class="danger"></button>
+        <button role="menuitem" id="m-exit" class="danger"><svg class="icon" data-icon="x"></svg><span class="label">Stop and exit…</span></button>
       </div>
     </div>
   </header>
@@ -847,7 +848,7 @@ function renderMenu(s) {
   $("#m-eject").setAttribute("aria-checked", String(s.settings.auto_eject));
   $("#m-auto-usb").setAttribute("aria-checked", String(s.settings.auto_usb_backup));
   $("#m-terminal").setAttribute("aria-checked", String(s.settings.terminal_output));
-  set("#m-service", run_ ? "Stop Photo Offloader…" : "Start Photo Offloader", run_ ? "power" : "play", false);
+  set("#m-service", run_ ? "Stop service…" : "Start service", run_ ? "power" : "play", false);
   $("#m-service").className = run_ ? "danger" : "";
   if (!themePending) applyTheme(s.settings.theme || "system");
   document.querySelectorAll("[data-report-choice]").forEach(b => b.setAttribute("aria-checked", String(b.dataset.reportChoice === reportStyle)));
@@ -940,18 +941,22 @@ $("#m-eject").onclick = () => run("toggle_auto_eject");
 $("#m-auto-usb").onclick = () => run("toggle_auto_usb_backup");
 $("#m-terminal").onclick = () => run("toggle_terminal_output");
 $("#banner-start").onclick = () => run("service_start");
-$("#m-service").onclick = () => { if (LAST && LAST.service.running) askStop(); else run("service_start"); };
+$("#m-service").onclick = () => { if (LAST && LAST.service.running) askStop(false); else run("service_start"); };
+$("#m-exit").onclick = () => askStop(true);
 
-function askStop() {
+// exiting: also close this window and the menu bar (Stop and exit), not just card detection.
+function askStop(exiting) {
   const dlg = $("#stop-dialog"), actions = $("#stop-actions"), busy = LAST && LAST.activity;
-  $("#stop-title").textContent = busy ? "A transfer is in progress" : "Stop Photo Offloader?";
+  const action = exiting ? "service_stop_exit" : "service_stop";
+  $("#stop-title").textContent = busy ? "A transfer is in progress" : exiting ? "Stop and exit Photo Offloader?" : "Stop the service?";
   $("#stop-text").textContent = busy ? "Stop once it finishes, or cancel it now. A canceled copy is safe to resume later."
-    : "Camera cards will not be imported until you start it again. You can start it from this window or the menu bar.";
+    : exiting ? "Camera cards won't be imported, and this window and the menu bar close, until you open Photo Offloader again or log in again."
+    : "Camera cards won't be imported until you start it again. You can start it from this window or the menu bar.";
   const close = () => dlg.close();
   const choice = (label, cls, fn) => h("button", { class: "btn " + cls, onclick: () => { close(); fn(); } }, label);
   actions.replaceChildren(h("button", { class: "btn secondary", onclick: close }, busy ? "Keep running" : "Cancel"),
-    ...(busy ? [choice("Cancel transfer and stop", "danger", () => run("service_stop", { mode: "force" })), choice("Stop after transfer", "", () => run("service_stop", { mode: "wait" }))]
-             : [choice("Stop", "danger", () => run("service_stop", {}))]));
+    ...(busy ? [choice("Cancel transfer and stop", "danger", () => run(action, { mode: "force" })), choice("Stop after transfer", "", () => run(action, { mode: "wait" }))]
+             : [choice(exiting ? "Stop and exit" : "Stop", "danger", () => run(action, {}))]));
   dlg.showModal();
 }
 

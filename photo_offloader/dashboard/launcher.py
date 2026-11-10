@@ -13,6 +13,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import subprocess
 import sys
 import webbrowser
 from pathlib import Path
@@ -144,6 +145,37 @@ def main(
         _remove_own_record(record)
         server.stop()
     return 0
+
+
+def _start_service(paths: Paths) -> None:
+    result = DashboardCore(paths).act("service_start")
+    if not result.get("ok"):
+        print(f"Photo Offloader could not start: {result.get('message')}", file=sys.stderr)
+
+
+def app_main(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    start_service: Optional[Callable[[], None]] = None,
+    **kwargs: Any,
+) -> int:
+    """The program of Photo Offloader.app, which also shows the dashboard window.
+
+    Opened from Finder, the Dock or Spotlight it gets no arguments: start the service and menu
+    bar if they're off, then show the dashboard. Programs that only want the dashboard pass
+    ``--dashboard`` or ``--if-closed``. Run inside the app, the window carries its name and icon.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        try:
+            if start_service:
+                start_service()
+            else:
+                _start_service(kwargs.get("paths") or Paths.default())
+        except (OSError, subprocess.SubprocessError) as exc:
+            # The dashboard still opens: it says the service is stopped and offers Start.
+            print(f"Photo Offloader could not start: {exc}", file=sys.stderr)
+    return main([arg for arg in args if arg != "--dashboard"], **kwargs)
 
 
 if __name__ == "__main__":

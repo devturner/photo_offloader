@@ -12,6 +12,8 @@ PYTHON="${PHOTO_OFFLOADER_PYTHON:-$INSTALL_DIR/venv/bin/python3}"
 IMPORTER="${PHOTO_OFFLOADER_IMPORTER:-$INSTALL_DIR/bin/photo-offloader-import}"
 DASHBOARD="${PHOTO_OFFLOADER_DASHBOARD:-$INSTALL_DIR/bin/photo-offloader-dashboard}"
 OPEN_DASHBOARD="${PHOTO_OFFLOADER_OPEN_DASHBOARD:-1}"
+# Photo Offloader.app shows the dashboard under its own name and icon (config.APP_BUNDLE).
+APP_PROGRAM="${PHOTO_OFFLOADER_APP:-$HOME/Applications/Photo Offloader.app}/Contents/MacOS/photo-offloader"
 LOG="${PHOTO_OFFLOADER_TRIGGER_LOG:-$HOME/.camera_transfer_trigger.log}"
 LOG_MAX_BYTES="${PHOTO_OFFLOADER_LOG_MAX_BYTES:-1048576}"
 LOG_BACKUPS="${PHOTO_OFFLOADER_LOG_BACKUPS:-2}"
@@ -517,7 +519,11 @@ printf '%s\n' "$camera_identity" > "$IDENTITY_FILE"
 # single-instance and `--if-closed` makes it a no-op while a window or tab is already showing
 # the dashboard. Best-effort: a UI failure must never block a safe copy.
 if [[ "$OPEN_DASHBOARD" == "1" && -f "$DASHBOARD" ]]; then
-    nohup "$PYTHON" "$DASHBOARD" --if-closed >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
+    if [[ -x "$APP_PROGRAM" ]]; then
+        nohup "$APP_PROGRAM" --if-closed >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
+    else
+        nohup "$PYTHON" "$DASHBOARD" --if-closed >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
+    fi
     log "Requested progress dashboard for: $camera_dcim"
 fi
 

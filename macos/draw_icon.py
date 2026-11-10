@@ -1,0 +1,197 @@
+"""Photo Offloader's icon, drawn from scratch: an SD card with a gold arrow lifting off it.
+
+    .venv/bin/python macos/draw_icon.py     writes the two images below
+
+macos/AppIcon.png                      the app bundles' icon: the card on a dark tile
+photo_offloader/menubar/icon.png       the menu bar's: the card alone, filling the height
+
+The dashboard header shows the same shapes as inline SVG (``svg()``); a test checks that the copy
+in photo_offloader/dashboard/web/index.html still matches.
+"""
+
+import math
+from pathlib import Path
+from typing import List, Tuple
+
+Point = Tuple[float, float]
+Color = Tuple[int, int, int]
+
+S = 4  # supersampling, for smooth edges
+OUTLINE = (44, 46, 52)
+BLUE = (66, 112, 168)
+GOLD = (224, 195, 112)
+LABEL = (44, 46, 52)
+BACKGROUND = (34, 38, 46)
+W = 22  # outline width
+# Apple's icon grid: the rounded square fills 824 of 1024 pixels. An icon that doesn't fill it is
+# shown on a grey plate in the Dock (macOS 26 and later).
+TILE = 824
+CARD_SCALE = 0.68  # the card is drawn on a 1024 grid, then shrunk onto the tile
+
+
+def scaled(points):
+    return [(x * S, y * S) for x, y in points]
+
+
+def rounded_polygon(points, radius, steps=12):
+    """Round every corner of a polygon with a small arc."""
+    out = []
+    n = len(points)
+    for i in range(n):
+        p0, p1, p2 = points[i - 1], points[i], points[(i + 1) % n]
+        v1 = (p0[0] - p1[0], p0[1] - p1[1])
+        v2 = (p2[0] - p1[0], p2[1] - p1[1])
+        l1, l2 = math.hypot(*v1), math.hypot(*v2)
+        r = min(radius, l1 / 2, l2 / 2)
+        a = (p1[0] + v1[0] / l1 * r, p1[1] + v1[1] / l1 * r)
+        b = (p1[0] + v2[0] / l2 * r, p1[1] + v2[1] / l2 * r)
+        for k in range(steps + 1):  # quadratic Bezier through the corner
+            t = k / steps
+            out.append(
+                (
+                    (1 - t) ** 2 * a[0] + 2 * (1 - t) * t * p1[0] + t**2 * b[0],
+                    (1 - t) ** 2 * a[1] + 2 * (1 - t) * t * p1[1] + t**2 * b[1],
+                )
+            )
+    return out
+
+
+def card_outline():
+    # A card with a cut top-right corner and a write-protect step on the left edge.
+    left, right, top, bottom, cut = 196, 828, 112, 916, 150
+    return rounded_polygon(
+        [
+            (left, top),
+            (right - cut, top),
+            (right, top + cut),
+            (right, bottom),
+            (left, bottom),
+            (left, 470),
+            (left - 22, 470),
+            (left - 22, 330),
+            (left, 330),
+        ],
+        34,
+    )
+
+
+def swoop():
+    """A gold arrow that runs along the label, then curves up."""
+    sw, head_w, head_h = 50, 176, 118
+    x0, y0, xc, r, base = 300, 820, 540, 108, 680
+    line = [(x0, y0), (xc, y0)]
+    for i in range(1, 31):
+        a = math.pi / 2 - (math.pi / 2) * i / 30
+        line.append((xc + r * math.cos(a), y0 - r + r * math.sin(a)))
+    line.append((xc + r, base))
+
+    def offset(d):
+        pts = []
+        for i, (x, y) in enumerate(line):
+            p, q = line[max(i - 1, 0)], line[min(i + 1, len(line) - 1)]
+            dx, dy = q[0] - p[0], q[1] - p[1]
+            n = math.hypot(dx, dy)
+            pts.append((x + dy / n * d, y - dx / n * d))
+        return pts
+
+    tx = line[-1][0]
+    head = [(tx + head_w / 2, base), (tx, base - head_h), (tx - head_w / 2, base)]
+    return offset(-sw / 2) + head + offset(sw / 2)[::-1]
+
+
+Shape = Tuple[List[Point], Color, bool]  # points, fill, outlined
+
+
+def card_shapes() -> List[Shape]:
+    """The card, back to front, on the 1024 grid it was drawn on."""
+    card = [(card_outline(), BLUE, True)]
+    # Gold contacts: four tall pads and a shorter one under the cut corner.
+    for i, x in enumerate((268, 362, 456, 550, 644)):
+        height = 170 if i < 4 else 130
+        pad = [(x, 164), (x + 64, 164), (x + 64, 164 + height), (x, 164 + height)]
+        card.append((rounded_polygon(pad, 12), GOLD, True))
+    # The label, with the arrow on it.
+    card.append(
+        (rounded_polygon([(256, 520), (768, 520), (768, 868), (256, 868)], 30), LABEL, False)
+    )
+    card.append((swoop(), GOLD, False))
+    return card
+
+
+def centred_card(scale: float) -> List[Shape]:
+    """The card scaled about its centre (its outline spans x 174-828, y 112-916) onto 512, 512."""
+    cx, cy = (174 + 828) / 2, (112 + 916) / 2
+
+    def place(points):
+        return [(512 + (x - cx) * scale, 512 + (y - cy) * scale) for x, y in points]
+
+    return [(place(points), fill, outline) for points, fill, outline in card_shapes()]
+
+
+def shapes() -> List[Shape]:
+    """The app icon: the card on a dark tile."""
+    return [(tile(), BACKGROUND, False)] + centred_card(CARD_SCALE)
+
+
+def menubar_shapes() -> List[Shape]:
+    """The menu-bar icon: the card alone, as tall as the square allows with its outline."""
+    return centred_card(1000 / (916 - 112 + W))
+
+
+def tile(steps=240):
+    """The app-icon rounded square, as a superellipse, whose corners curve smoothly as Apple's do."""
+    half, n = TILE / 2, 5
+    points = []
+    for i in range(steps):
+        t = 2 * math.pi * i / steps
+        c, s = math.cos(t), math.sin(t)
+        points.append(
+            (
+                512 + half * math.copysign(abs(c) ** (2 / n), c),
+                512 + half * math.copysign(abs(s) ** (2 / n), s),
+            )
+        )
+    return points
+
+
+def draw_icon(size=1024, parts=shapes):
+    from PIL import Image, ImageDraw  # only the PNGs need Pillow
+
+    big = Image.new("RGBA", (1024 * S, 1024 * S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(big)
+    for points, fill, outline in parts():
+        sp = scaled(points)
+        if outline:  # the fill covers the inner half of the line, as paint-order does in svg()
+            d.line(sp + sp[:2], fill=OUTLINE, width=W * S, joint="curve")
+        d.polygon(sp, fill=fill)
+    return big.resize((size, size), Image.LANCZOS)
+
+
+def svg() -> str:
+    """The icon as one line of inline SVG, for the dashboard header."""
+
+    def color(rgb: Color) -> str:
+        return "#%02x%02x%02x" % rgb
+
+    paths = []
+    for points, fill, outline in shapes():
+        d = "M" + "L".join(f"{x:.0f} {y:.0f}" for x, y in points) + "Z"
+        stroke = (
+            f' stroke="{color(OUTLINE)}" stroke-width="{W}" stroke-linejoin="round"'
+            ' paint-order="stroke"'
+            if outline
+            else ""
+        )
+        paths.append(f'<path d="{d}" fill="{color(fill)}"{stroke}/>')
+    return (
+        '<svg class="app-icon" viewBox="0 0 1024 1024" aria-hidden="true">'
+        + "".join(paths)
+        + "</svg>"
+    )
+
+
+if __name__ == "__main__":
+    root = Path(__file__).resolve().parents[1]
+    draw_icon().save(root / "macos" / "AppIcon.png")
+    # rumps shows a menu-bar image 20 points square; 40 pixels is sharp on Retina screens.
+    draw_icon(40, menubar_shapes).save(root / "photo_offloader" / "menubar" / "icon.png")

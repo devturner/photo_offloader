@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import signal
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 try:
     import rumps
@@ -28,20 +29,25 @@ BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / config.USB_BACKUP
 USB_VOLUME = Path("/Volumes/Photos")
 UI_LABEL = "com.user.photooffloader.menubar"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
+ICON = Path(__file__).with_name("icon.png")  # drawn by macos/draw_icon.py
 
 
 class PhotoOffloaderMenuBar(rumps.App):
     """The menu bar stays alive whether or not the service runs, so it can always offer Start."""
 
     def __init__(self) -> None:
-        super().__init__("Photo Offloader", title="📷", quit_button=None)
+        icon = str(ICON) if ICON.is_file() else None  # without it, the title shows a 📷
+        super().__init__(
+            "Photo Offloader", title=None if icon else "📷", icon=icon, quit_button=None
+        )
         self.handlers = {
             "open_dashboard": self.open_dashboard,
             "copy_usb": self.copy_to_usb,
             "pause": self.toggle_pause,
+            "close_dashboard": self.close_dashboard,
             "stop": self.stop_service,
+            "stop_exit": self.stop_and_exit,
             "start": self.start_service,
-            "quit": self.quit_app,
             "view_log": self.view_log,
         }
         self._snapshot: Optional[Snapshot] = None
@@ -53,6 +59,7 @@ class PhotoOffloaderMenuBar(rumps.App):
     @staticmethod
     def read_snapshot() -> Snapshot:
         usb = USB_VOLUME.is_mount()
+        dashboard = bool(dashboard_pids())
         try:
             result = subprocess.run(
                 ["/bin/bash", str(SERVICE_SCRIPT), "status"],
@@ -62,15 +69,16 @@ class PhotoOffloaderMenuBar(rumps.App):
                 timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired):
-            return Snapshot(running=False, usb=usb)
-        return parse_status(result.stdout, result.returncode, usb=usb)
+            return Snapshot(running=False, usb=usb, dashboard=dashboard)
+        snapshot = parse_status(result.stdout, result.returncode, usb=usb)
+        return dataclasses.replace(snapshot, dashboard=dashboard)
 
     def refresh(self, _sender: object = None) -> None:
         snapshot = self.read_snapshot()
         if snapshot == self._snapshot:
             return  # rebuilding an open menu would close it under the user's cursor
         self._snapshot = snapshot
-        self.title = menu_title(snapshot)
+        self.title = menu_title(snapshot, icon=self.icon is not None)
         self.menu.clear()
         for entry in menu_entries(snapshot):
             if entry.key is None:
@@ -103,11 +111,23 @@ class PhotoOffloaderMenuBar(rumps.App):
             rumps.notification("Photo Offloader", "Could not start USB backup", str(exc))
 
     def open_dashboard(self, _sender: object = None) -> None:
+        # In Photo Offloader.app the window carries the app's name and icon, not Python's.
+        app = config.APP_BUNDLE / config.APP_PROGRAM
+        command = [str(app), "--dashboard"] if os.access(app, os.X_OK) else None
         subprocess.Popen(
-            [str(PYTHON), str(DASHBOARD_SCRIPT)],
+            command or [str(PYTHON), str(DASHBOARD_SCRIPT)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+
+    def close_dashboard(self, _sender: object = None) -> None:
+        """Close every dashboard of this installation. Transfers carry on; they run elsewhere."""
+        for pid in dashboard_pids():
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                continue  # already gone, or not ours to stop
+        self.refresh()
 
     def view_log(self, _sender: object = None) -> None:
         """Open the import log in Console, which follows new lines as they are written."""
@@ -178,13 +198,11 @@ class PhotoOffloaderMenuBar(rumps.App):
             return False
         return bool(result.stdout.strip())
 
-    def stop_service(self, _sender: object = None) -> None:
-        """Stop the background service (the trigger that watches for cards).
+    def ask_how_to_stop(self, exiting: bool) -> Optional[List[str]]:
+        """The service.sh stop flags the user chose, or None if they cancelled.
 
-        The menu bar and any open dashboard stay alive so they can show "stopped" and offer
-        Start. A running transfer is only interrupted if the user explicitly chooses to cancel it.
+        A running transfer is only interrupted if the user explicitly chooses to cancel it.
         """
-        flags: list[str] = []
         if self.transfer_running():
             choice = rumps.alert(
                 title="A transfer is in progress",
@@ -195,24 +213,31 @@ class PhotoOffloaderMenuBar(rumps.App):
                 other="Cancel Transfer and Stop",
             )
             if choice == 0:
-                return
-            flags = ["--wait"] if choice == 1 else ["--force"]
-        elif (
-            rumps.alert(
-                title="Stop Photo Offloader?",
-                message="Cards will no longer be detected until you start it again "
-                "(or log in again).",
-                ok="Stop",
-                cancel="Cancel",
+                return None
+            return ["--wait"] if choice == 1 else ["--force"]
+        if exiting:
+            title, message, ok = (
+                "Stop and exit Photo Offloader?",
+                "Cards won't be imported, and the menu bar and dashboard close, until you "
+                "open Photo Offloader again or log in again.",
+                "Stop and Exit",
             )
-            != 1
-        ):
-            return
+        else:
+            title, message, ok = (
+                "Stop the service?",
+                "Cards won't be imported until you start it again (or log in again).",
+                "Stop",
+            )
+        if rumps.alert(title=title, message=message, ok=ok, cancel="Cancel") != 1:
+            return None
+        return []
+
+    def run_stop(self, args: List[str]) -> bool:
         try:
-            # --keep-ui: only the trigger stops. This menu bar stays alive (showing "stopped"
-            # with a Start item) instead of being torn down along with the service.
+            # A new session: stopping everything also ends this menu bar, and the stop
+            # has to carry on after it.
             subprocess.Popen(
-                ["/bin/bash", str(SERVICE_SCRIPT), "stop", "--keep-ui", *flags],
+                ["/bin/bash", str(SERVICE_SCRIPT), "stop", *args],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -220,8 +245,24 @@ class PhotoOffloaderMenuBar(rumps.App):
             )
         except OSError as exc:
             rumps.notification("Photo Offloader", "Could not stop the service", str(exc))
+            return False
+        return True
+
+    def stop_service(self, _sender: object = None) -> None:
+        """Stop only the card watcher. This menu bar stays to show "stopped" and offer Start."""
+        flags = self.ask_how_to_stop(exiting=False)
+        if flags is not None and self.run_stop(["--keep-ui", *flags]):
+            self.refresh()
+
+    def stop_and_exit(self, _sender: object = None) -> None:
+        """Stop the card watcher, close every dashboard and end this menu bar."""
+        flags = self.ask_how_to_stop(exiting=True)
+        if flags is None or not self.run_stop(flags):
             return
-        self.refresh()
+        # service.sh ends this menu bar by unloading its LaunchAgent (KeepAlive would restart
+        # a plain exit). Started some other way, there's no agent to unload, so exit here.
+        if not menubar_agent_loaded() and "--wait" not in flags:
+            rumps.quit_application()
 
     def start_service(self, _sender: object = None) -> None:
         try:
@@ -247,45 +288,38 @@ class PhotoOffloaderMenuBar(rumps.App):
             )
         self.refresh()
 
-    def quit_app(self, _sender: object = None) -> None:
-        """Stop the dashboard and unload the KeepAlive menu-bar agent before exiting."""
-        # launchd has KeepAlive=true for login startup. Simply quitting the process
-        # makes launchd immediately restart it, so unload the agent first.
-        try:
-            subprocess.run(
-                ["/bin/launchctl", "bootout", f"gui/{os.getuid()}/{UI_LABEL}"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            rumps.notification(
-                "Photo Offloader", "Could not disable menu-bar auto-restart", str(exc)
-            )
-            return
 
-        # The dashboard is a separate process. Close dashboard instances started
-        # from this installation, but deliberately leave any active importer/backup
-        # running so quitting the UI cannot interrupt a photo transfer or catalog write.
+def dashboard_pids() -> List[int]:
+    """Processes showing this installation's dashboard, as a script or in Photo Offloader.app."""
+    own, pids = {os.getpid(), os.getppid()}, []
+    for program in (DASHBOARD_SCRIPT, config.APP_BUNDLE / config.APP_PROGRAM):
         try:
             result = subprocess.run(
-                ["/usr/bin/pgrep", "-f", str(DASHBOARD_SCRIPT)],
+                ["/usr/bin/pgrep", "-f", str(program)],
                 check=False,
                 capture_output=True,
                 text=True,
                 timeout=3,
             )
-            for line in result.stdout.splitlines():
-                try:
-                    pid = int(line)
-                    if pid != os.getpid() and pid != os.getppid():
-                        os.kill(pid, signal.SIGTERM)
-                except (ValueError, ProcessLookupError, PermissionError):
-                    continue  # already gone, or not ours to stop
         except (OSError, subprocess.TimeoutExpired) as exc:
-            logger.warning("Could not look for the dashboard to close it: %s", exc)
-        rumps.quit_application()
+            logger.warning("Could not look for an open dashboard: %s", exc)
+            continue
+        pids += [int(n) for n in result.stdout.split() if n.isdigit() and int(n) not in own]
+    return pids
+
+
+def menubar_agent_loaded() -> bool:
+    try:
+        result = subprocess.run(
+            ["/bin/launchctl", "print", f"gui/{os.getuid()}/{UI_LABEL}"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True  # assume launchd will end us, rather than exit and be restarted
+    return result.returncode == 0
 
 
 def log_build_provenance() -> None:

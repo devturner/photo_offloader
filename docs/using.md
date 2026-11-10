@@ -5,7 +5,8 @@ with a top-level `DCIM` folder counts as a camera card, whatever its name or mak
 
 ## The dashboard
 
-Open it from the 📷 menu bar item with **Open Dashboard**. It follows macOS light or dark mode
+Double-click **Photo Offloader** on your Desktop or in `~/Applications`, which also starts the
+service if it's stopped, or choose **Open Dashboard** from the menu bar item, an SD card. It follows macOS light or dark mode
 unless you choose otherwise under **⋯ › Appearance**. It runs only on your Mac, in its own window
 or in a browser tab if the native window isn't available.
 
@@ -137,22 +138,26 @@ to fold it away. Runs from before this version show a dash for anything that was
 - **View logs:** opens a log in Console, where it updates live. **Import** is what each import
   did, **Cards** is card detection, **Google** is uploads, and **Dashboard** is what the dashboard
   showed and why.
-- **Stop / Start Photo Offloader**.
+- **Stop service** or **Start service**, and **Stop and exit**, which also closes this window and
+  the menu bar. See [Pause, stop and start](#pause-stop-and-start).
 
 ## The menu bar
 
-The 📷 changes to show the state: `↻` during a transfer, `⏸` when paused, `Off` when stopped. Its
-menu has **Open Dashboard**, **Copy to USB Drive** (when a drive is connected), **Pause / Resume
-Automatic Imports**, **View Import Log**, **Stop Photo Offloader…** and **Quit Menu Bar**. Quitting
-the menu bar leaves the service running.
+The SD card in the menu bar is followed by the state: `↻` during a transfer, `⏸` when paused, `Off` when stopped. Its
+menu has **Open Dashboard**, **Close Dashboard** (when one is open), **Copy to USB Drive** (when a
+drive is connected), **Pause / Resume Automatic Imports**, **View Import Log**, **Stop Service…** or
+**Start Service**, and **Stop and Exit…**.
 
 ## Pause, stop and start
 
 **Pause** before inserting a card you don't want imported. It doesn't interrupt a copy already
 running. **Resume** re-checks any card that is mounted.
 
-**Stop** turns off card detection. It refuses to stop during a transfer unless you choose to.
-Stopped, the service comes back at your next login. From a terminal:
+**Stop Service** turns off card detection and leaves the menu bar and dashboard open, so you can
+start it again from either. **Stop and Exit** also closes the dashboard and the menu bar. Both ask
+what to do if a card is being imported: stop once it finishes, or cancel it now. A Google Photos
+upload, USB backup or check of saved copies that is already running finishes on its own. Stopped,
+Photo Offloader comes back at your next login. From a terminal:
 
 ```bash
 SERVICE=~/Library/Application\ Support/PhotoOffloader/scripts/service.sh

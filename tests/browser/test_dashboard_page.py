@@ -417,11 +417,38 @@ class TestMenu(PageTestCase):
         expect(self.page.locator("#m-usb")).to_be_disabled()
         expect(self.page.locator('.step[data-state="warn"] h3')).to_have_text("Not connected")
 
+    def test_the_menu_ends_with_the_service_and_stop_and_exit(self):
+        self.open_menu("already_imported")
+        expect(self.page.locator("#m-service")).to_have_text("Stop service…")
+        expect(self.page.locator("#m-exit")).to_have_text("Stop and exit…")
+        self.open_menu("stopped")
+        expect(self.page.locator("#m-service")).to_have_text("Start service")
+        expect(self.page.locator("#m-exit")).to_be_enabled()
+
+    def test_stop_and_exit_asks_first_and_offers_a_choice_during_a_transfer(self):
+        self.open_menu("already_imported")
+        self.page.click("#m-exit")
+        expect(self.page.locator("#menu")).to_be_hidden()
+        expect(self.page.locator("#stop-title")).to_have_text("Stop and exit Photo Offloader?")
+        self.click_action(
+            self.page.locator("#stop-actions").get_by_role("button", name="Stop and exit"),
+            "service_stop_exit",
+        )
+        self.assert_acted(("service_stop_exit", {}))
+
+        self.open_menu("copying")
+        self.page.click("#m-exit")
+        expect(self.page.locator("#stop-title")).to_have_text("A transfer is in progress")
+        self.click_action(
+            self.page.get_by_role("button", name="Stop after transfer"), "service_stop_exit"
+        )
+        self.assert_acted(("service_stop_exit", {"mode": "wait"}))
+
     def test_stop_asks_first_and_offers_a_choice_during_a_transfer(self):
         self.open_menu("already_imported")
         self.page.click("#m-service")
         expect(self.page.locator("#menu")).to_be_hidden()
-        expect(self.page.locator("#stop-title")).to_have_text("Stop Photo Offloader?")
+        expect(self.page.locator("#stop-title")).to_have_text("Stop the service?")
         self.assert_acted()
         self.click_action(
             self.page.locator("#stop-actions").get_by_role("button", name="Stop"), "service_stop"

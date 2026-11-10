@@ -11,6 +11,29 @@ Camera card  →  Mac (verified)  →  USB drive (optional)  →  Google Photos 
 
 ![The Photo Offloader dashboard during an import](docs/images/dashboard.png)
 
+## Features
+
+- **Imports by itself.** Insert a card and the import starts, with no clicks. Pause automatic
+  imports when you insert a card you don't want imported.
+- **Verified copies.** Every file is checked with SHA-256 against the card before it gets its final
+  name, and the copy to the USB drive is checked the same way.
+- **Nothing lost or overwritten.** Nothing is ever written to or deleted from a card. A different
+  file with the same name is kept next to the old one, never in its place.
+- **Only new files.** A catalog remembers what you've imported, so a card you insert again only
+  copies what's new.
+- **A tidy archive.** Files are sorted by month and camera, with RAW files in their own folder.
+- **USB backup.** The archive is mirrored to a USB drive after each import, or by itself when the
+  drive connects if you turn that on. The dashboard says how far behind the drive is.
+- **Google Photos.** JPGs and videos can be uploaded to an album through rclone. RAW files stay
+  on your disks.
+- **A dashboard and a menu bar.** Follow each import's progress, speed and time left, see what
+  happened in past runs, and start, pause or stop Photo Offloader.
+- **Clear failure reports.** When something goes wrong, the dashboard says which files weren't saved
+  and why, and a card it couldn't fully read is never called done.
+- **Check saved copies.** Reread everything on the Mac and the USB drive and compare it with the
+  hashes saved at import time, to catch damaged or missing files.
+- **Eject after import.** The card can be ejected for you once its copy to the Mac is verified.
+
 ## Requirements
 
 - macOS (the only supported system for now) with Python 3.9 or newer
@@ -28,8 +51,14 @@ From a clone of this repository:
 ./uninstall.sh                 # uninstall; your photos and catalog stay
 ```
 
-The dashboard opens when the install finishes, and a 📷 appears in the menu bar. Insert a card
-to start.
+The dashboard opens when the install finishes, and its icon, an SD card, appears in the menu bar. Insert a card
+to start. To open it again later, double-click **Photo Offloader** on your Desktop or in
+`~/Applications`.
+
+macOS may ask whether Photo Offloader can find devices on your local network. It doesn't need to:
+cards and the USB drive are local disks, Google Photos is reached over the internet, and the
+dashboard only talks to Photo Offloader on your own Mac. You can choose **Don't Allow**, and change
+it later in System Settings › Privacy & Security › Local Network.
 
 Treat this as backup infrastructure, not your only copy. After installing or upgrading, check
 the files in the archive before you format a card.

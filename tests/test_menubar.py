@@ -12,11 +12,50 @@ def keys(snapshot):
 
 
 class TestMenuEntries(unittest.TestCase):
-    def test_running_menu_is_short(self):
+    def test_running_menu_follows_the_agreed_layout(self):
+        # Layout the user chose on 2026-11-09: dashboard, then everyday actions, then the
+        # service controls with Stop and Exit last.
         self.assertEqual(
-            keys(Snapshot(running=True)),
-            ["open_dashboard", "pause", None, "view_log", None, "stop", "quit"],
+            keys(Snapshot(running=True, dashboard=True)),
+            [
+                "open_dashboard",
+                "close_dashboard",
+                None,
+                "pause",
+                "view_log",
+                None,
+                "stop",
+                "stop_exit",
+            ],
         )
+
+    def test_stopped_menu_offers_start_and_stop_and_exit(self):
+        self.assertEqual(
+            keys(Snapshot(running=False)),
+            ["open_dashboard", None, "view_log", None, "start", "stop_exit"],
+        )
+
+    def test_service_items_say_service_and_stop_and_exit_asks_first(self):
+        titles = {e.key: e.title for e in model.menu_entries(Snapshot(running=True))}
+        self.assertEqual(titles["stop"], "Stop Service…")
+        self.assertEqual(titles["stop_exit"], "Stop and Exit…")
+        titles = {e.key: e.title for e in model.menu_entries(Snapshot(running=False))}
+        self.assertEqual(titles["start"], "Start Service")
+
+    def test_close_dashboard_is_offered_only_while_one_is_open(self):
+        for running in (True, False):
+            self.assertIn("close_dashboard", keys(Snapshot(running=running, dashboard=True)))
+            self.assertNotIn("close_dashboard", keys(Snapshot(running=running)))
+
+    def test_stop_and_exit_is_always_offered(self):
+        for running in (True, False):
+            for transfer in (True, False):
+                entry = next(
+                    e
+                    for e in model.menu_entries(Snapshot(running=running, transfer=transfer))
+                    if e.key == "stop_exit"
+                )
+                self.assertTrue(entry.enabled)
 
     def test_the_import_log_can_always_be_opened(self):
         # User question 2026-11-04: the old UI had a debug/log view.
@@ -39,31 +78,15 @@ class TestMenuEntries(unittest.TestCase):
         entries = {e.key: e for e in model.menu_entries(Snapshot(running=True))}
         self.assertEqual(entries["pause"].title, "Pause Automatic Imports")
 
-    def test_a_stopped_service_can_always_be_started_and_the_menu_bar_can_always_be_quit(self):
+    def test_nothing_selectable_is_disabled_when_the_service_is_stopped(self):
         # Regression: after "Stop Photo Offloader" every item was greyed out, including Quit,
         # and there was no way to start the service again.
-        entries = model.menu_entries(Snapshot(running=False))
-        actionable = {e.key: e for e in entries if e.key not in (None, "info")}
-        self.assertTrue(actionable["start"].enabled)
-        self.assertTrue(actionable["quit"].enabled)
-        self.assertTrue(actionable["open_dashboard"].enabled)
-        self.assertTrue(
-            all(e.enabled for e in actionable.values()),
-            "nothing selectable may be disabled when the service is stopped",
-        )
+        entries = model.menu_entries(Snapshot(running=False, dashboard=True))
+        self.assertTrue(all(e.enabled for e in entries if e.key is not None))
 
-    def test_a_stopped_menu_explains_itself_and_hides_irrelevant_actions(self):
+    def test_a_stopped_menu_hides_irrelevant_actions(self):
         entries = model.menu_entries(Snapshot(running=False, usb=True))
-        info = [e for e in entries if e.key == "info"]
-        self.assertEqual(len(info), 1)
-        self.assertIn("stopped", info[0].title.lower())
-        self.assertFalse(info[0].enabled)
         self.assertEqual([e.key for e in entries if e.key in ("pause", "stop", "copy_usb")], [])
-
-    def test_quit_is_labelled_so_it_cannot_be_mistaken_for_stopping(self):
-        for snapshot in (Snapshot(running=True), Snapshot(running=False)):
-            quit_entry = next(e for e in model.menu_entries(snapshot) if e.key == "quit")
-            self.assertIn("Menu Bar", quit_entry.title)
 
     def test_a_transfer_in_progress_does_not_disable_stopping(self):
         entries = {e.key: e for e in model.menu_entries(Snapshot(running=True, transfer=True))}
@@ -74,10 +97,13 @@ class TestMenuEntries(unittest.TestCase):
             for paused in (True, False):
                 for usb in (True, False):
                     for transfer in (True, False):
-                        ks = keys(Snapshot(running, paused, transfer, usb))
-                        self.assertNotEqual(ks[-1], None)
-                        self.assertNotEqual(ks[0], None)
-                        self.assertFalse(any(a is None and b is None for a, b in zip(ks, ks[1:])))
+                        for dashboard in (True, False):
+                            ks = keys(Snapshot(running, paused, transfer, usb, dashboard))
+                            self.assertNotEqual(ks[-1], None)
+                            self.assertNotEqual(ks[0], None)
+                            self.assertFalse(
+                                any(a is None and b is None for a, b in zip(ks, ks[1:]))
+                            )
 
 
 class TestTitleAndParsing(unittest.TestCase):
@@ -86,6 +112,12 @@ class TestTitleAndParsing(unittest.TestCase):
         self.assertEqual(model.menu_title(Snapshot(running=True, paused=True)), "📷 ⏸")
         self.assertEqual(model.menu_title(Snapshot(running=False)), "📷 Off")
         self.assertEqual(model.menu_title(Snapshot(running=True, transfer=True)), "📷 ↻")
+
+    def test_beside_the_app_icon_the_title_is_only_the_state(self):
+        self.assertEqual(model.menu_title(Snapshot(running=True), icon=True), "")
+        self.assertEqual(model.menu_title(Snapshot(running=True, paused=True), icon=True), " ⏸")
+        self.assertEqual(model.menu_title(Snapshot(running=False), icon=True), " Off")
+        self.assertEqual(model.menu_title(Snapshot(running=True, transfer=True), icon=True), " ↻")
 
     def test_parse_status_output(self):
         output = "Service:  running\nMenu bar: running\nImports:  paused\nTransfer: in progress\n"

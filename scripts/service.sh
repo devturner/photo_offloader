@@ -39,6 +39,8 @@ IMPORT_LABEL="com.user.photooffloader.import"
 DOMAIN="gui/$(id -u)"
 IMPORTER="$INSTALL_DIR/bin/photo-offloader-import"
 DASHBOARD="$INSTALL_DIR/bin/photo-offloader-dashboard"
+# Photo Offloader.app also shows the dashboard (config.APP_BUNDLE).
+APP_PROGRAM="${PHOTO_OFFLOADER_APP:-$HOME/Applications/Photo Offloader.app}/Contents/MacOS/photo-offloader"
 PAUSE_FILE="${PHOTO_OFFLOADER_PAUSE_FILE:-$INSTALL_DIR/.paused}"
 
 usage() {
@@ -83,9 +85,11 @@ unload() {
 }
 
 close_dashboards() {
-    local pid
-    for pid in $("$PGREP" -f "$DASHBOARD" 2>/dev/null || true); do
-        "$KILL" -TERM "$pid" 2>/dev/null || true
+    local program pid
+    for program in "$DASHBOARD" "$APP_PROGRAM"; do
+        for pid in $("$PGREP" -f "$program" 2>/dev/null || true); do
+            "$KILL" -TERM "$pid" 2>/dev/null || true
+        done
     done
 }
 
