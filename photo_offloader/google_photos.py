@@ -406,7 +406,6 @@ def _wait_in_queue(lock_fd: int) -> bool:
 
 
 def run_sync(argv: Optional[Sequence[str]] = None) -> int:
-    signal.signal(signal.SIGTERM, _stop_on_sigterm)
     config.INSTALL_DIR.mkdir(parents=True, exist_ok=True)
     if uploads_paused():
         _publish_paused()
@@ -777,6 +776,9 @@ def _send_pending(rclone: str, pending: List[str], lock_fd: Optional[int] = None
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    # Pause uploads stops the sync with SIGTERM: stop rclone and say paused, rather than die.
+    # Set here, in the program, so a test that calls run_sync keeps its own SIGTERM.
+    signal.signal(signal.SIGTERM, _stop_on_sigterm)
     if args == ["--check"]:
         return run_setup_check()
     if args == ["--retry"]:

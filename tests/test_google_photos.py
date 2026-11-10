@@ -3,6 +3,7 @@ import fcntl
 import io
 import json
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -24,6 +25,8 @@ class TestGooglePhotosSync(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         support.isolate_config(self, Path(tmp.name))
+        # main() sets the sync's SIGTERM handler; the test runner keeps its own.
+        self.addCleanup(signal.signal, signal.SIGTERM, signal.getsignal(signal.SIGTERM))
 
     def test_filters_jpg_and_video_but_not_raw(self):
         for ext in ("*.jpg", "*.jpeg", "*.mov", "*.mp4"):
@@ -678,6 +681,7 @@ class TestSetupCheck(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         support.isolate_config(self, self.root)
+        self.addCleanup(signal.signal, signal.SIGTERM, signal.getsignal(signal.SIGTERM))
         self.commands = []
         self.remotes = "gphotos:\n"
         self.albums = "Holiday/\nPhoto Offloader/\n"
