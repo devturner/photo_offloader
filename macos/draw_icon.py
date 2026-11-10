@@ -2,6 +2,7 @@
 
 import math
 import sys
+
 from PIL import Image, ImageDraw
 
 S = 4  # supersampling, for smooth edges
