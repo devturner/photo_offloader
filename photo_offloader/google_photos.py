@@ -568,7 +568,7 @@ def _upload_stopped(pending: List[str], started_at: float) -> int:
             [config.LOCAL_DEST_ROOT / name for name in sent], REMOTE_NAME, ALBUM_NAME
         )
     except (OSError, sqlite3.Error) as exc:
-        # rclone skips names already in the album, so these are only sent again by name.
+        # The next sync lists them again; rclone skips names already in the album.
         log_sync_event(f"Could not save which files were sent before the upload stopped: {exc}")
     waiting = len(pending) - len(sent)
     paused = uploads_paused()
@@ -579,7 +579,9 @@ def _upload_stopped(pending: List[str], started_at: float) -> int:
         _publish_paused(waiting)
     else:
         publish_status("interrupted", "The upload was stopped before it finished.", waiting=waiting)
-    _record_on_import("paused" if paused else "stopped", sent, started_at)
+    # Stopped after the last file, the upload is done: a later sync would have nothing to send.
+    outcome = "complete" if not waiting else "paused" if paused else "stopped"
+    _record_on_import(outcome, sent, started_at)
     return 0 if paused else 1
 
 

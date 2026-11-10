@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -267,6 +268,35 @@ class TestGooglePhotosSync(unittest.TestCase):
                 {entry["started_at"] for entry in seen if entry["state"] == "running"},
                 {seen[0]["started_at"]},
             )
+
+    def write_sync_log(self, *lines):
+        config.GOOGLE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        config.GOOGLE_LOG_PATH.write_text("".join(f"{line}\n" for line in lines))
+
+    def test_what_was_sent_comes_from_this_uploads_lines_in_the_log(self):
+        self.write_sync_log(
+            "2026/11/09 09:59:59 INFO  : 2026-11/old.jpg: Copied (new)",  # an earlier upload
+            "2026/11/09 10:00:01 INFO  : 2026-11/a.jpg: Copied (new)",
+            "2026/11/09 10:00:01 INFO  : 2026-11/other.jpg: Copied (new)",  # not in this list
+            "2026/11/09 10:00:02 INFO  :   1 MiB / 2 MiB, 50%, 1 MiB/s, ETA 1s (xfr#1/2)",
+        )
+        started = datetime(2026, 11, 9, 10, 0, 0).timestamp()
+        self.assertEqual(
+            sync.sent_since(["2026-11/old.jpg", "2026-11/a.jpg", "2026-11/b.jpg"], started),
+            ["2026-11/a.jpg"],
+        )
+
+    def test_a_pause_after_every_file_got_through_reports_the_upload_complete(self):
+        started = datetime(2026, 11, 9, 10, 0, 0).timestamp()
+        self.write_sync_log("2026/11/09 10:00:01 INFO  : a.jpg: Copied (new)")
+        config.GOOGLE_PAUSED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        config.GOOGLE_PAUSED_PATH.touch()
+        with (
+            patch.object(sync.catalog, "mark_google_photos_uploaded_many"),
+            patch.object(sync.catalog, "record_upload_on_import") as record,
+        ):
+            sync._upload_stopped(["a.jpg"], started)
+        self.assertEqual(record.call_args[0][0]["outcome"], "complete")
 
     def test_missing_rclone_reports_not_configured(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -487,6 +487,21 @@ def _report_step(step_id: str, label: str, place: str, state: str, result: str, 
 
 def _upload_report_step(details: Dict[str, Any], state: str) -> Dict[str, Any]:
     upload = details.get("upload")
+    if isinstance(upload, dict) and upload.get("outcome") in ("paused", "stopped"):
+        # These count what got through, from rclone's log.
+        sent = int(upload.get("files", 0) or 0)
+        paused = upload["outcome"] == "paused"
+        word = "Paused" if paused else "Stopped"
+        return _report_step(
+            "upload",
+            "Upload to Google Photos",
+            "Google Photos",
+            "skipped" if paused else "error",
+            f"{word} after {plural(sent, 'file')}" if sent else word,
+            files=sent,
+            bytes=upload.get("bytes"),
+            seconds=upload.get("seconds"),
+        )
     if isinstance(upload, dict):
         if upload.get("outcome") != "complete":
             # Its size is what it set out to send, which says nothing about what got there.

@@ -200,6 +200,30 @@ class TestCatalog(support.CardFixtureTestCase):
             catalog.list_import_history()[0]["details"]["upload"]["outcome"], "complete"
         )
 
+    def test_a_resume_long_after_a_paused_upload_adds_to_it(self):
+        # Pause and automatic retry can resume an upload hours later; its files are still
+        # the import's, and the report should count them all.
+        self.imported()
+        catalog.record_upload_on_import(
+            {"outcome": "paused", "files": 1, "bytes": 10, "seconds": 5.0},
+            started_at=1001.0,
+            within_seconds=60,
+        )
+        catalog.record_upload_on_import(
+            {"outcome": "complete", "files": 2, "bytes": 20, "seconds": 3.0},
+            started_at=9000.0,
+            within_seconds=60,
+        )
+        self.assertEqual(
+            catalog.list_import_history()[0]["details"]["upload"],
+            {"outcome": "complete", "files": 3, "bytes": 30, "seconds": 8.0},
+        )
+
+    def test_a_retry_long_after_a_failed_upload_replaces_it(self):
+        # A failed upload's count is what it set out to send, so it isn't added.
+        self.imported(details={"upload": {"outcome": "failed", "files": 5, "bytes": 50}})
+        self.assertEqual(self.saved_upload(started_at=9000.0)["upload"]["files"], 2)
+
     def uploaded_to(self, remote, album):
         with catalog.catalog_db() as db:
             db.execute(

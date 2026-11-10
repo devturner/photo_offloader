@@ -231,16 +231,35 @@ def google_photos_album_used(remote: str, album: str) -> bool:
     return row is not None
 
 
+def _resumed_upload(earlier: Dict[str, object], upload: Dict[str, object]) -> Dict[str, object]:
+    """``upload`` plus what a paused or stopped upload of the same import already sent.
+
+    A failed upload's figures are what it set out to send, so they are not added.
+    """
+    if earlier.get("outcome") not in ("paused", "stopped"):
+        return upload
+    combined = dict(upload)
+    for key in ("files", "bytes", "seconds"):
+        total = _number(earlier.get(key)) + _number(upload.get(key))
+        combined[key] = round(total, 1) if key == "seconds" else int(total)
+    return combined
+
+
+def _number(value: object) -> float:
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
 def record_upload_on_import(
     upload: Dict[str, object], *, started_at: float, within_seconds: float
 ) -> None:
     """Keep an upload with the import it followed, since the sync's status file is overwritten.
 
     The newest import counts if its photos were verified on the Mac (a USB failure doesn't stop
-    the upload) no more than ``within_seconds`` before the upload began, and it has no finished
-    upload already. It may finish after the upload began:
-    the importer starts the sync, then writes its history row. Like all history, a database
-    problem is logged and swallowed.
+    the upload) and it has no finished upload already. It must have finished no more than
+    ``within_seconds`` before the upload began, unless an upload of it was paused, stopped or
+    failed: then this one is that upload resumed, however late. It may finish after the upload
+    began: the importer starts the sync, then writes its history row. Like all history, a
+    database problem is logged and swallowed.
     """
     try:
         with catalog_db() as db:
@@ -250,12 +269,15 @@ def record_upload_on_import(
                      AND (outcome = 'complete' OR details LIKE '%"local_verified": true%')
                    ORDER BY id DESC LIMIT 1"""
             ).fetchone()
-            if row is None or started_at - float(row[1]) > within_seconds:
+            if row is None:
                 return
             details = json.loads(row[2] or "{}")
-            if (details.get("upload") or {}).get("outcome") == "complete":
+            earlier = details.get("upload") or {}
+            if earlier.get("outcome") == "complete":
                 return
-            details["upload"] = upload
+            if not earlier and started_at - float(row[1]) > within_seconds:
+                return
+            details["upload"] = _resumed_upload(earlier, upload)
             db.execute(
                 "UPDATE import_history SET details = ? WHERE id = ?",
                 (json.dumps(details, sort_keys=True), row[0]),

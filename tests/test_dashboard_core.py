@@ -960,6 +960,24 @@ class TestRunFlow(Fixture):
         )
         self.assertIsNone(step["bytes"], "what it set out to send isn't what got there")
 
+    def upload_step(self, outcome, files):
+        upload = {"outcome": outcome, "files": files, "bytes": 300, "seconds": 7.0}
+        return self.step(self.report({**self.REAL_RUN, "upload": upload}), "upload")
+
+    def test_a_paused_upload_says_how_far_it_got(self):
+        step = self.upload_step("paused", 3)
+        self.assertEqual(
+            (step["state"], step["result"], step["files"], step["bytes"]),
+            ("skipped", "Paused after 3 files", 3, 300),
+        )
+
+    def test_a_stopped_upload_says_how_far_it_got(self):
+        step = self.upload_step("stopped", 1)
+        self.assertEqual(
+            (step["state"], step["result"], step["files"]), ("error", "Stopped after 1 file", 1)
+        )
+        self.assertEqual(self.upload_step("stopped", 0)["result"], "Stopped")
+
     def test_an_import_with_nothing_for_google_photos_says_so(self):
         report = self.report({"new": {"RAW": 3}, "new_bytes": 5, "copy_seconds": 1.0})
         self.assertEqual(self.step(report, "upload")["result"], "Nothing to send")
