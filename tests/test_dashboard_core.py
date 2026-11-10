@@ -1807,7 +1807,24 @@ class TestActions(Fixture):
 
     def test_stop_rejects_unknown_modes(self):
         self.assertFalse(self.core.act("service_stop", {"mode": "rm -rf"})["ok"])
+        self.assertFalse(self.core.act("service_stop_exit", {"mode": "rm -rf"})["ok"])
         self.assertEqual(self.spawned, [])
+
+    def test_stop_and_exit_also_closes_the_dashboard_and_menu_bar(self):
+        result = self.core.act("service_stop_exit")
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.spawned[-1][-1], "stop")
+        self.assertNotIn("--keep-ui", self.spawned[-1])
+
+    def test_stop_and_exit_asks_before_interrupting_a_transfer(self):
+        self.importer_up = True
+        result = self.core.act("service_stop_exit")
+        self.assertTrue(result["needs_choice"])
+        self.assertEqual(self.spawned, [])
+        self.core.act("service_stop_exit", {"mode": "wait"})
+        self.assertEqual(self.spawned[-1][-2:], ["stop", "--wait"])
+        self.core.act("service_stop_exit", {"mode": "force"})
+        self.assertEqual(self.spawned[-1][-2:], ["stop", "--force"])
 
     def test_start_runs_the_service_script(self):
         result = self.core.act("service_start")

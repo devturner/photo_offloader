@@ -363,6 +363,7 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
         </div>
         <hr>
         <button role="menuitem" id="m-service" class="danger"></button>
+        <button role="menuitem" id="m-exit" class="danger"><svg class="icon" data-icon="x"></svg><span class="label">Stop and exit…</span></button>
       </div>
     </div>
   </header>
@@ -847,7 +848,7 @@ function renderMenu(s) {
   $("#m-eject").setAttribute("aria-checked", String(s.settings.auto_eject));
   $("#m-auto-usb").setAttribute("aria-checked", String(s.settings.auto_usb_backup));
   $("#m-terminal").setAttribute("aria-checked", String(s.settings.terminal_output));
-  set("#m-service", run_ ? "Stop Photo Offloader…" : "Start Photo Offloader", run_ ? "power" : "play", false);
+  set("#m-service", run_ ? "Stop service…" : "Start service", run_ ? "power" : "play", false);
   $("#m-service").className = run_ ? "danger" : "";
   if (!themePending) applyTheme(s.settings.theme || "system");
   document.querySelectorAll("[data-report-choice]").forEach(b => b.setAttribute("aria-checked", String(b.dataset.reportChoice === reportStyle)));
@@ -940,18 +941,22 @@ $("#m-eject").onclick = () => run("toggle_auto_eject");
 $("#m-auto-usb").onclick = () => run("toggle_auto_usb_backup");
 $("#m-terminal").onclick = () => run("toggle_terminal_output");
 $("#banner-start").onclick = () => run("service_start");
-$("#m-service").onclick = () => { if (LAST && LAST.service.running) askStop(); else run("service_start"); };
+$("#m-service").onclick = () => { if (LAST && LAST.service.running) askStop(false); else run("service_start"); };
+$("#m-exit").onclick = () => askStop(true);
 
-function askStop() {
+// exiting: also close this window and the menu bar (Stop and exit), not just card detection.
+function askStop(exiting) {
   const dlg = $("#stop-dialog"), actions = $("#stop-actions"), busy = LAST && LAST.activity;
-  $("#stop-title").textContent = busy ? "A transfer is in progress" : "Stop Photo Offloader?";
+  const action = exiting ? "service_stop_exit" : "service_stop";
+  $("#stop-title").textContent = busy ? "A transfer is in progress" : exiting ? "Stop and exit Photo Offloader?" : "Stop the service?";
   $("#stop-text").textContent = busy ? "Stop once it finishes, or cancel it now. A canceled copy is safe to resume later."
-    : "Camera cards will not be imported until you start it again. You can start it from this window or the menu bar.";
+    : exiting ? "Camera cards won't be imported, and this window and the menu bar close, until you open Photo Offloader again or log in again."
+    : "Camera cards won't be imported until you start it again. You can start it from this window or the menu bar.";
   const close = () => dlg.close();
   const choice = (label, cls, fn) => h("button", { class: "btn " + cls, onclick: () => { close(); fn(); } }, label);
   actions.replaceChildren(h("button", { class: "btn secondary", onclick: close }, busy ? "Keep running" : "Cancel"),
-    ...(busy ? [choice("Cancel transfer and stop", "danger", () => run("service_stop", { mode: "force" })), choice("Stop after transfer", "", () => run("service_stop", { mode: "wait" }))]
-             : [choice("Stop", "danger", () => run("service_stop", {}))]));
+    ...(busy ? [choice("Cancel transfer and stop", "danger", () => run(action, { mode: "force" })), choice("Stop after transfer", "", () => run(action, { mode: "wait" }))]
+             : [choice(exiting ? "Stop and exit" : "Stop", "danger", () => run(action, {}))]));
   dlg.showModal();
 }
 

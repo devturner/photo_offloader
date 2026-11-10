@@ -137,7 +137,8 @@ to fold it away. Runs from before this version show a dash for anything that was
 - **View logs:** opens a log in Console, where it updates live. **Import** is what each import
   did, **Cards** is card detection, **Google** is uploads, and **Dashboard** is what the dashboard
   showed and why.
-- **Stop / Start Photo Offloader**.
+- **Stop service** or **Start service**, and **Stop and exit**, which also closes this window and
+  the menu bar. See [Pause, stop and start](#pause-stop-and-start).
 
 ## The menu bar
 

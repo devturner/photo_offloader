@@ -932,6 +932,9 @@ class DashboardCore:
             ),
             "service_start": self._service_start,
             "service_stop": lambda: self._service_stop(str(params.get("mode", ""))),
+            "service_stop_exit": lambda: self._service_stop(
+                str(params.get("mode", "")), exiting=True
+            ),
             "dismiss_last": self._dismiss_last,
             "clear_history": self._clear_history,
             "set_theme": lambda: self._set_theme(str(params.get("theme", ""))),
@@ -1238,7 +1241,8 @@ class DashboardCore:
             }
         return {"ok": True, "message": "Photo Offloader started."}
 
-    def _service_stop(self, mode: str) -> Dict[str, Any]:
+    def _service_stop(self, mode: str, exiting: bool = False) -> Dict[str, Any]:
+        """Stop card detection. ``exiting`` also closes every dashboard and the menu bar."""
         if not self.paths.service_script.is_file():
             return {"ok": False, "message": "The service script is missing. Re-run install.sh."}
         if mode not in ("", "wait", "force"):
@@ -1249,21 +1253,18 @@ class DashboardCore:
                 "needs_choice": True,
                 "message": "A transfer is in progress. Stop after it finishes, or cancel it now?",
             }
-        # --keep-ui: the dashboard and menu bar stay open so you can start it again.
-        argv = ["/bin/bash", str(self.paths.service_script), "stop", "--keep-ui"]
+        argv = ["/bin/bash", str(self.paths.service_script), "stop"]
+        if not exiting:
+            argv.append("--keep-ui")  # the dashboard and menu bar stay to offer Start
         if mode:
             argv.append(f"--{mode}")
         self._spawn(argv)
-        return {
-            "ok": True,
-            "message": "Stopping Photo Offloader…"
-            if not mode
-            else (
-                "Will stop when the transfer finishes."
-                if mode == "wait"
-                else "Canceling the transfer and stopping…"
-            ),
+        messages = {
+            "": "Stopping and closing Photo Offloader…" if exiting else "Stopping Photo Offloader…",
+            "wait": "Will stop when the transfer finishes.",
+            "force": "Canceling the transfer and stopping…",
         }
+        return {"ok": True, "message": messages[mode]}
 
     def _dismiss_last(self) -> Dict[str, Any]:
         rows = catalog.list_import_history(limit=1)
