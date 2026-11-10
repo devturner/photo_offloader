@@ -70,6 +70,9 @@ def _test_locations(root: Path) -> dict:
         "GOOGLE_LOG_PATH": install / "google_photos_sync.log",
         "GOOGLE_LAUNCHER_LOG_PATH": install / "google_photos_sync_launcher.log",
         "GOOGLE_LOCK_PATH": install / ".google-photos-sync.lock",
+        "GOOGLE_QUEUE_LOCK_PATH": install / ".google-photos-sync.queue.lock",
+        "GOOGLE_PAUSED_PATH": install / ".google-photos-paused",
+        "GOOGLE_RETRY_PATH": install / ".google-photos-retry",
         "PREFERENCES_PATH": data / "preferences.json",
         "RCLONE_CONFIG_PATH": root / "rclone" / "rclone.conf",
     }

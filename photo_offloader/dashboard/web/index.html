@@ -174,8 +174,14 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 
 /* pipeline */
 .pipeline { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
-.step { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 2px; min-height: 118px; transition: border-color .2s; }
+/* Tall enough for a card with type columns and buttons, so the row keeps one height. */
+.step { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 2px; min-height: 146px; transition: border-color .2s; }
 .step[data-state="active"] { border-color: var(--accent); }
+.step .mix { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin-top: 3px; line-height: 1.2; }
+.step .mix b { display: block; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.step .mix span { display: block; font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; }
+.step .mix.stale b { color: var(--text-2); font-weight: 550; }
+.step .mix b.more { color: var(--accent); }
 .step-head { display: flex; align-items: center; justify-content: space-between; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); }
 .step[data-state="ok"] .dot { background: var(--ok); }
@@ -229,6 +235,9 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 dialog h3 { margin: 0 0 6px; font-size: 17px; }
 dialog p { margin: 0 0 18px; color: var(--text-2); }
 dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+dialog p.stop-note { display: flex; gap: 8px; align-items: flex-start; margin-top: -6px; padding: 9px 11px; border-radius: 10px; background: var(--surface-2); font-size: 13px; }
+dialog p.stop-note[hidden] { display: none; }
+.stop-note .icon { width: 16px; height: 16px; margin-top: 1px; color: var(--accent); }
 .lost { background: var(--err-soft); color: var(--err); }
 #verify-dialog p { margin-bottom: 10px; }
 #verify-dialog .verify-time { color: var(--text); font-weight: 600; }
@@ -421,6 +430,7 @@ dialog .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: fle
 <dialog id="stop-dialog">
   <h3 id="stop-title">Stop Photo Offloader?</h3>
   <p id="stop-text"></p>
+  <p class="stop-note" id="stop-note" hidden><svg class="icon" data-icon="up"></svg><span></span></p>
   <div class="actions" id="stop-actions"></div>
 </dialog>
 
@@ -748,13 +758,19 @@ function stepActions(st) {
   ];
 }
 
+// The Mac archive and USB backup cards: a column per file type (the user's option B, 2026-11-10).
+function stepMix(st) {
+  return h("div", { class: "mix" + (st.mix_stale ? " stale" : "") },
+    ...st.mix.map(m => h("div", {}, h("b", { class: m.more ? "more" : null, text: fmtCount(m.count) }), h("span", { text: m.label }))));
+}
 function renderPipeline(s) {
   if (!s.pipeline.some(st => st.actions.some(ac => ac.id === askingAction))) askingAction = null;
   if (!changed("pipeline", [s.pipeline, askingAction])) return;
   $("#pipeline").replaceChildren(...s.pipeline.map(st => h("div", { class: "step", "data-state": st.state },
     h("div", { class: "step-head" }, h("span", { text: st.label }), h("span", { class: "dot", "aria-hidden": "true" })),
     h("h3", { text: st.headline }),
-    h("div", { class: "detail", text: st.detail }),
+    st.mix ? stepMix(st) : null,
+    st.detail || !st.mix ? h("div", { class: "detail", text: st.detail }) : null,
     st.percent != null && h("div", { class: "mini" }, h("div", { style: `width:${Math.max(2, st.percent)}%` })),
     stepActions(st))));
 }
@@ -843,7 +859,14 @@ function renderMenu(s) {
   set("#m-pause", s.service.paused ? "Resume automatic imports" : "Pause automatic imports", s.service.paused ? "play" : "pause", !run_);
   $("#m-catalog").disabled = busy || !run_;
   $("#m-usb").disabled = !usb.actions.some(ac => ac.id === "usb_backup");
-  $("#m-google").disabled = busy || cloud.state === "off" || cloud.state === "active";
+  // One row for the upload: Pause while it runs or waits to retry, Resume while paused.
+  const g = s.google || {}, gb = $("#m-google");
+  const gMode = g.state === "paused" ? "resume" : g.state === "running" || g.state === "retrying" ? "pause" : "sync";
+  const gLabel = h("span", { class: "label", text: { resume: "Resume uploads", pause: "Pause uploads", sync: "Sync Google Photos now" }[gMode] },
+    gMode === "resume" && g.waiting ? h("small", { text: `${fmtCount(g.waiting)} ${g.waiting === 1 ? "file" : "files"} waiting` }) : null);
+  gb.replaceChildren(icon({ resume: "play", pause: "pause", sync: "cloud" }[gMode]), gLabel);
+  gb.dataset.action = { resume: "google_resume", pause: "google_pause", sync: "google_sync" }[gMode];
+  gb.disabled = gMode === "sync" && (busy || cloud.state === "off" || cloud.state === "active");
   $("#m-verify").disabled = busy || !!s.verify;
   $("#m-eject").setAttribute("aria-checked", String(s.settings.auto_eject));
   $("#m-auto-usb").setAttribute("aria-checked", String(s.settings.auto_usb_backup));
@@ -926,7 +949,7 @@ $("#m-pause").onclick = () => run(LAST && LAST.service.paused ? "resume" : "paus
 $("#m-catalog").onclick = () => run("update_catalog");
 document.querySelectorAll("[data-log]").forEach(b => b.addEventListener("click", () => run("open_log", { log: b.dataset.log })));
 $("#m-usb").onclick = () => run("usb_backup");
-$("#m-google").onclick = () => run("google_sync");
+$("#m-google").onclick = (e) => run(e.currentTarget.dataset.action || "google_sync");
 $("#m-verify").onclick = async () => {
   const w = await run("verify_warning", {}, true);
   if (!w) return;
@@ -945,18 +968,26 @@ $("#m-service").onclick = () => { if (LAST && LAST.service.running) askStop(fals
 $("#m-exit").onclick = () => askStop(true);
 
 // exiting: also close this window and the menu bar (Stop and exit), not just card detection.
+// Only a card import is "a transfer" here: stopping leaves a Google Photos upload running, so
+// the dialog says so, and Stop and exit offers to pause it.
 function askStop(exiting) {
-  const dlg = $("#stop-dialog"), actions = $("#stop-actions"), busy = LAST && LAST.activity;
+  const dlg = $("#stop-dialog"), actions = $("#stop-actions"), importing = !!(LAST && LAST.busy);
+  const uploading = !!(LAST && LAST.google && LAST.google.state === "running");
   const action = exiting ? "service_stop_exit" : "service_stop";
-  $("#stop-title").textContent = busy ? "A transfer is in progress" : exiting ? "Stop and exit Photo Offloader?" : "Stop the service?";
-  $("#stop-text").textContent = busy ? "Stop once it finishes, or cancel it now. A canceled copy is safe to resume later."
+  $("#stop-title").textContent = importing ? "A card import is in progress" : exiting ? "Stop and exit Photo Offloader?" : "Stop the service?";
+  $("#stop-text").textContent = importing ? "Stop once it finishes, or cancel it now. A canceled copy is safe to resume later."
     : exiting ? "Camera cards won't be imported, and this window and the menu bar close, until you open Photo Offloader again or log in again."
     : "Camera cards won't be imported until you start it again. You can start it from this window or the menu bar.";
+  $("#stop-note").hidden = !uploading;
+  $("#stop-note span").textContent = importing ? "The Google Photos upload keeps going either way."
+    : exiting ? "A Google Photos upload is running."
+    : "The Google Photos upload keeps going. To stop it, choose Pause uploads in the ⋯ menu.";
   const close = () => dlg.close();
   const choice = (label, cls, fn) => h("button", { class: "btn " + cls, onclick: () => { close(); fn(); } }, label);
-  actions.replaceChildren(h("button", { class: "btn secondary", onclick: close }, busy ? "Keep running" : "Cancel"),
-    ...(busy ? [choice("Cancel transfer and stop", "danger", () => run(action, { mode: "force" })), choice("Stop after transfer", "", () => run(action, { mode: "wait" }))]
-             : [choice(exiting ? "Stop and exit" : "Stop", "danger", () => run(action, {}))]));
+  const buttons = importing ? [choice("Cancel import and stop", "danger", () => run(action, { mode: "force" })), choice("Stop after import", "", () => run(action, { mode: "wait" }))]
+    : exiting && uploading ? [choice("Pause upload and exit", "secondary", () => run(action, { pause_upload: true })), choice("Exit, keep uploading", "danger", () => run(action, {}))]
+    : [choice(exiting ? "Stop and exit" : "Stop", "danger", () => run(action, {}))];
+  actions.replaceChildren(h("button", { class: "btn secondary", onclick: close }, importing ? "Keep running" : "Cancel"), ...buttons);
   dlg.showModal();
 }
 

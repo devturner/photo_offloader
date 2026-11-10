@@ -3,10 +3,12 @@ import csv
 import fcntl
 import hashlib
 import io
+import itertools
 import os
 import shutil
 import sqlite3
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -768,6 +770,104 @@ class TestProgressFile(VerifyTestCase):
         self.assertEqual(left, 61)
 
 
+class TestDriveSpeed(VerifyTestCase):
+    """Each check saves how fast it read, so the next estimate fits this Mac and this drive."""
+
+    def run_slowly(self):
+        """Every look at the clock 20 s on, so each place reads for long enough to measure."""
+        ticks = itertools.count(0.0, 20.0)
+        with patch.object(verify.time, "monotonic", side_effect=lambda: next(ticks)):
+            return self.run_main()
+
+    def test_a_check_saves_each_places_speed_and_which_drive_it_was(self):
+        self.save(content=b"x" * 100_000)
+        self.run_slowly()
+        details = self.last_run()["details"]
+        self.assertEqual(set(details["speeds"]), {verify.MAC, verify.USB})
+        self.assertGreater(details["speeds"][verify.USB], 0)
+        self.assertEqual(details["drive_id"], "volume-test")
+
+    def test_a_quick_read_saves_no_speed(self):
+        """A few seconds mostly measures opening files, not the disk."""
+        self.save()
+        self.run_main()
+        self.assertNotIn("speeds", self.last_run()["details"])
+
+    def test_a_drive_that_went_away_saves_no_drive_speed(self):
+        files = [self.save(f"2026-10/a/Photos/{index}.jpg", b"x%d" % index) for index in range(3)]
+        files[2][1].unlink()
+        self.usb_is_mounted.side_effect = [True, False]
+        self.run_slowly()
+        self.assertNotIn(verify.USB, self.last_run()["details"]["speeds"])
+
+    def test_the_time_left_starts_from_this_drives_last_speed(self):
+        self.save(content=b"x" * 100)
+        catalog.record_import_run(
+            kind="verify",
+            outcome="complete",
+            started_at=time.time() - 60,
+            finished_at=time.time() - 30,
+            usb=True,
+            details={
+                "whole": True,
+                "drive_id": "volume-test",
+                "speeds": {verify.MAC: 10.0, verify.USB: 2.0},
+            },
+        )
+        saved = []
+        with patch.object(verify, "_write_status", side_effect=lambda **f: saved.append(f)):
+            self.run_main()
+        first = next(fields for fields in saved if fields["where"] == verify.MAC)
+        # 100 bytes on the Mac at 10 a second, then 100 on the drive at 2 a second.
+        self.assertEqual(first["seconds_left"], 60)
+
+    def test_another_drives_speed_is_not_used(self):
+        self.save(content=b"x" * 100)
+        catalog.record_import_run(
+            kind="verify",
+            outcome="complete",
+            started_at=time.time() - 60,
+            finished_at=time.time() - 30,
+            usb=True,
+            details={"whole": True, "drive_id": "another", "speeds": {verify.USB: 2.0}},
+        )
+        saved = []
+        with patch.object(verify, "_write_status", side_effect=lambda **f: saved.append(f)):
+            self.run_main()
+        first = next(fields for fields in saved if fields["where"] == verify.MAC)
+        self.assertEqual(first["seconds_left"], 0)
+
+
+class TestMeasuredSpeeds(unittest.TestCase):
+    @staticmethod
+    def row(drive_id, **speeds):
+        return {"kind": "verify", "details": {"drive_id": drive_id, "speeds": speeds}}
+
+    def test_the_newest_speed_of_each_place_wins(self):
+        rows = [
+            self.row("one", **{verify_report.MAC: 2e9}),
+            self.row("one", **{verify_report.MAC: 1e9, verify_report.USB: 400e6}),
+            self.row("one", **{verify_report.USB: 60e6}),
+        ]
+        self.assertEqual(
+            verify_report.measured_speeds(rows, "one"),
+            {verify_report.MAC: 2e9, verify_report.USB: 400e6},
+        )
+
+    def test_only_this_drives_speed_counts(self):
+        rows = [self.row("two", **{verify_report.USB: 400e6})]
+        self.assertEqual(verify_report.measured_speeds(rows, "one"), {})
+        self.assertEqual(verify_report.measured_speeds(rows, None), {})
+
+    def test_imports_and_odd_values_are_ignored(self):
+        rows = [
+            {"kind": "import", "details": {"drive_id": "one", "speeds": {verify_report.USB: 1.0}}},
+            {"kind": "verify", "details": {"drive_id": "one", "speeds": "fast"}},
+            self.row("one", **{verify_report.USB: "fast", verify_report.MAC: 0}),
+        ]
+        self.assertEqual(verify_report.measured_speeds(rows, "one"), {})
+
+
 class TestDashboardRow(unittest.TestCase):
     @staticmethod
     def row(outcome, message):
@@ -809,21 +909,31 @@ class TestDashboardRow(unittest.TestCase):
 
 
 class TestWarningText(unittest.TestCase):
-    def test_the_time_comes_from_the_last_check_when_there_was_one(self):
-        warning = display.verify_warning(True, 1090.0, 69e9, 69e9)
-        self.assertEqual(warning["time"], "About 18 minutes, going by your last check.")
+    MAC, USB = verify_report.MAC, verify_report.USB
+
+    def test_a_drive_checked_before_uses_its_own_speed(self):
+        warning = display.verify_warning(True, {self.MAC: 1e9, self.USB: 400e6}, 60e9, 60e9)
+        self.assertEqual(warning["time"], "About 4 minutes, going by this drive's last check.")
         self.assertTrue(warning["drive"])
 
-    def test_a_first_check_estimates_from_the_measured_speed(self):
-        warning = display.verify_warning(True, None, 69.4e9, 69.4e9)
+    def test_a_drive_never_checked_is_a_guess_that_allows_for_an_ssd(self):
+        warning = display.verify_warning(True, {self.MAC: 1e9}, 69.4e9, 69.4e9)
         self.assertEqual(
             warning["time"],
-            "This can take a while: about 25 minutes for every 100 GB on the USB drive, "
-            "so roughly 18 minutes for yours.",
+            "This drive hasn't been checked before, so this is a guess: roughly 18 minutes "
+            "for a hard drive, and much less for an SSD.",
+        )
+
+    def test_the_mac_alone_uses_its_last_speed(self):
+        warning = display.verify_warning(False, {self.MAC: 500e6}, 69.4e9, 69.4e9)
+        self.assertEqual(
+            warning["time"],
+            "About 2 minutes, going by your last check. "
+            "The USB drive isn't connected, so only the Mac will be checked.",
         )
 
     def test_without_the_drive_it_says_only_the_mac_is_checked(self):
-        warning = display.verify_warning(False, None, 69.4e9, 69.4e9)
+        warning = display.verify_warning(False, {}, 69.4e9, 69.4e9)
         self.assertEqual(
             warning["time"],
             "About a minute. The USB drive isn't connected, so only the Mac will be checked.",

@@ -31,9 +31,11 @@ OTHER_UNKNOWN = "not checked"
 OTHER_UNSURE = "can't tell which is right"
 OTHER_ONLY = "the only copy"
 
-# Measured on the first real check, 69.4 GB on each side: about 65 s on the Mac, 1,025 s on the drive.
+# Until a check has measured them. From the first real check, 69.4 GB on each side: about 65 s on
+# the Mac and 1,025 s on a 5,400 rpm hard drive. An SSD reads several times faster.
 MAC_BYTES_PER_SECOND = 1e9
 USB_BYTES_PER_SECOND = 68e6
+USUAL_SPEEDS = {MAC: MAC_BYTES_PER_SECOND, USB: USB_BYTES_PER_SECOND}
 
 REPORTS_KEPT = 20
 FILES_SHOWN = 20  # in a run's row; the saved list has them all
@@ -52,6 +54,28 @@ REPORT_COLUMNS = (
 
 def plural(count: int, noun: str) -> str:
     return f"{count:,} {noun}" + ("" if count == 1 else "s")
+
+
+def measured_speeds(rows: Iterable[Mapping[str, Any]], drive_id: Optional[str]) -> Dict[str, float]:
+    """The newest speed a check read the Mac at, and this drive at, from history rows newest first.
+
+    A drive's speed is its own: the disk, its cable and the port all set it, so another drive's
+    says nothing. A place with no measured speed is left out.
+    """
+    found: Dict[str, float] = {}
+    for row in rows:
+        details = row.get("details")
+        if row.get("kind") != "verify" or not isinstance(details, Mapping):
+            continue
+        speeds = details.get("speeds")
+        if not isinstance(speeds, Mapping):
+            continue
+        same_drive = bool(drive_id) and details.get("drive_id") == drive_id
+        for place in (MAC, USB) if same_drive else (MAC,):
+            speed = speeds.get(place)
+            if place not in found and isinstance(speed, (int, float)) and speed > 0:
+                found[place] = float(speed)
+    return found
 
 
 def problems_text(kinds: Sequence[str]) -> str:

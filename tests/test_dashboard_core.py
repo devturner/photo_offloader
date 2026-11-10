@@ -59,6 +59,7 @@ class Fixture(unittest.TestCase):
         self.service_up = True
         self.importer_up = False
         self.google_up = False
+        self.rclone_up = False  # an rclone our sync started, perhaps left by a killed sync
         self.verify_up = False
         self.spawned = []
         self.ran = []
@@ -70,6 +71,7 @@ class Fixture(unittest.TestCase):
             if argv[0].endswith("pgrep"):
                 alive = {
                     "photo-offloader-google-sync": self.google_up,
+                    ".upload-list-": self.rclone_up,
                     "photo-offloader-verify": self.verify_up,
                 }.get(argv[-1].rsplit("/", 1)[-1], self.importer_up)
                 return subprocess.CompletedProcess(argv, 0, "4242\n" if alive else "", "")
@@ -960,6 +962,24 @@ class TestRunFlow(Fixture):
         )
         self.assertIsNone(step["bytes"], "what it set out to send isn't what got there")
 
+    def upload_step(self, outcome, files):
+        upload = {"outcome": outcome, "files": files, "bytes": 300, "seconds": 7.0}
+        return self.step(self.report({**self.REAL_RUN, "upload": upload}), "upload")
+
+    def test_a_paused_upload_says_how_far_it_got(self):
+        step = self.upload_step("paused", 3)
+        self.assertEqual(
+            (step["state"], step["result"], step["files"], step["bytes"]),
+            ("skipped", "Paused after 3 files", 3, 300),
+        )
+
+    def test_a_stopped_upload_says_how_far_it_got(self):
+        step = self.upload_step("stopped", 1)
+        self.assertEqual(
+            (step["state"], step["result"], step["files"]), ("error", "Stopped after 1 file", 1)
+        )
+        self.assertEqual(self.upload_step("stopped", 0)["result"], "Stopped")
+
     def test_an_import_with_nothing_for_google_photos_says_so(self):
         report = self.report({"new": {"RAW": 3}, "new_bytes": 5, "copy_seconds": 1.0})
         self.assertEqual(self.step(report, "upload")["result"], "Nothing to send")
@@ -1127,12 +1147,37 @@ class TestPipeline(Fixture):
         states = {step["id"]: step["state"] for step in self.core.state()["pipeline"]}
         self.assertEqual(states, {"card": "off", "archive": "ok", "usb": "off", "cloud": "off"})
 
+    def mix(self, step_id):
+        step = self.pipeline(step_id)
+        return [(m["label"], m["count"], m["more"]) for m in step["mix"]], step["mix_stale"]
+
     def test_archive_and_usb_counts_come_from_the_catalog(self):
         self.seed_files(local={"a": 1, "b": 1, "c": 1}, usb={"a": 1, "b": 1, "c": 1})
         self.usb.mkdir()
-        self.assertEqual(self.pipeline("archive")["detail"], "3 files indexed")
-        self.assertEqual(self.pipeline("usb")["detail"], "All 3 files are on the drive")
-        self.assertEqual(self.pipeline("usb")["headline"], "Up to date")
+        self.assertEqual(self.pipeline("archive")["headline"], "3 files")
+        self.assertEqual(self.pipeline("usb")["headline"], "3 files")
+        self.assertEqual(self.pipeline("usb")["state"], "ok")
+
+    def test_each_card_counts_jpg_raw_and_video(self):
+        # Chosen by the user 2026-11-10 (option B): the total, then a column for each type.
+        files = {"a.JPG": 1, "b.jpeg": 1, "c.NEF": 1, "d.mov": 1, "NC_FLLST.DAT": 1}
+        self.seed_files(local=files, usb=files)
+        self.usb.mkdir()
+        self.assertEqual(self.pipeline("archive")["headline"], "5 files", "other files count too")
+        self.assertEqual(
+            self.mix("archive"),
+            ([("JPG", 2, False), ("RAW", 1, False), ("Video", 1, False)], False),
+        )
+        self.assertEqual(self.mix("usb")[0], self.mix("archive")[0])
+        self.assertEqual(self.pipeline("archive")["detail"], "")
+
+    def test_the_drive_marks_a_type_it_holds_more_of_than_the_mac(self):
+        # RAW files deleted from the Mac to save space are still on the drive.
+        self.seed_files(local={"a.jpg": 1, "b.nef": 1}, usb={"a.jpg": 1, "b.nef": 1, "c.nef": 1})
+        self.usb.mkdir()
+        self.assertEqual(
+            self.mix("usb")[0], [("JPG", 1, False), ("RAW", 2, True), ("Video", 0, False)]
+        )
 
     def test_a_connected_drive_says_how_far_behind_it_is(self):
         self.seed_files(local={"a": 1, "b": 1024, "c": 2048}, usb={"a": 1})
@@ -1140,7 +1185,7 @@ class TestPipeline(Fixture):
         step = self.pipeline("usb")
         self.assertEqual(step["state"], "warn")
         self.assertEqual(step["headline"], "2 files behind")
-        self.assertEqual(step["detail"], "3.0 KB not on the drive yet")
+        self.assertEqual(step["detail"], "", "the columns take its place")
         self.assertEqual(self.action_ids("usb"), ["usb_backup", "eject_usb"])
 
     def test_one_file_behind_reads_naturally(self):
@@ -1153,16 +1198,58 @@ class TestPipeline(Fixture):
         self.usb.mkdir()
         self.assertEqual(self.pipeline("usb")["headline"], "1 file behind")
 
-    def test_an_unplugged_drive_says_what_is_waiting_and_when_it_last_got_files(self):
-        last = datetime(2026, 10, 21, 12).timestamp()
-        self.seed_files(local={"a": 1, "b": 2048}, usb={"a": 1}, usb_indexed_at=last)
+    def backed_up_then_imported(self, imports):
+        self.record(
+            kind="usb_backup", usb=True, started_at=self.now - 900, finished_at=self.now - 890
+        )
+        for index in range(imports):
+            self.record(
+                usb=False, started_at=self.now - 500 + index, finished_at=self.now - 400 + index
+            )
+
+    def test_an_unplugged_drive_counts_the_imports_it_missed(self):
+        self.seed_files(local={"a.jpg": 1, "b.jpg": 2048}, usb={"a.jpg": 1})
+        self.backed_up_then_imported(2)
         step = self.pipeline("usb")
-        self.assertEqual(step["state"], "warn")
-        self.assertEqual(step["headline"], "Not connected")
         self.assertEqual(
-            step["detail"], "1 file (2.0 KB) not on the drive yet. Last backup Oct 21."
+            (step["state"], step["headline"], step["detail"]),
+            ("warn", "Not connected", "2 missed imports"),
+        )
+        self.assertEqual(
+            self.mix("usb"), ([("JPG", 1, False), ("RAW", 0, False), ("Video", 0, False)], True)
         )
         self.assertEqual(step["actions"], [])
+
+    def test_imports_before_the_last_backup_are_not_missed(self):
+        self.seed_files(local={"a.jpg": 1}, usb={"a.jpg": 1})
+        self.record(usb=False, started_at=self.now - 3000, finished_at=self.now - 2900)
+        self.backed_up_then_imported(0)
+        step = self.pipeline("usb")
+        self.assertEqual((step["state"], step["detail"]), ("off", ""))
+
+    def test_one_missed_import_reads_naturally(self):
+        self.seed_files(local={"a.jpg": 1, "b.jpg": 1}, usb={"a.jpg": 1})
+        self.backed_up_then_imported(1)
+        self.assertEqual(self.pipeline("usb")["detail"], "1 missed import")
+
+    def test_an_import_that_backed_up_as_it_went_is_not_missed(self):
+        self.seed_files(local={"a.jpg": 1}, usb={"a.jpg": 1})
+        self.backed_up_then_imported(0)
+        self.record(usb=True, started_at=self.now - 100, finished_at=self.now - 90)
+        step = self.pipeline("usb")
+        self.assertEqual((step["state"], step["detail"]), ("off", ""))
+        self.assertTrue(step["mix_stale"])
+
+    def test_an_import_whose_usb_copy_failed_is_missed(self):
+        self.seed_files(local={"a.jpg": 1, "b.jpg": 1}, usb={"a.jpg": 1})
+        self.backed_up_then_imported(0)
+        self.record(
+            usb=True,
+            outcome="failed",
+            message="USB backup failed: the drive was removed",
+            details={"local_verified": True},
+        )
+        self.assertEqual(self.pipeline("usb")["detail"], "1 missed import")
 
     def test_someone_who_has_never_used_a_drive_is_not_warned(self):
         self.seed_files(local={"a": 1}, usb={})
@@ -1833,6 +1920,147 @@ class TestActions(Fixture):
 
     def test_unknown_actions_are_refused(self):
         self.assertFalse(self.core.act("format_disk")["ok"])
+
+
+class TestUploadControl(Fixture):
+    def google(self, state, **fields):
+        (self.install / "google_photos_status.json").write_text(
+            json.dumps({"state": state, "message": fields.pop("message", ""), **fields})
+        )
+
+    def paused_flag(self):
+        return self.install / ".google-photos-paused"
+
+    def owe_retry(self, attempts, seconds_ago):
+        (self.install / ".google-photos-retry").write_text(
+            f"{attempts} {int(self.now - seconds_ago)}\n"
+        )
+
+    def actions(self, step):
+        return [(a["id"], a["label"]) for a in step["actions"]]
+
+    def stopped(self, pattern):
+        return ["/usr/bin/pkill", "-TERM", "-f", pattern] in self.ran
+
+    def test_an_rclone_left_by_a_killed_sync_is_still_uploading(self):
+        self.rclone_up = True
+        self.google("running")
+        self.assertEqual(self.pipeline("cloud")["state"], "active")
+
+    def test_a_running_upload_can_be_paused_from_its_card(self):
+        self.google_up = True
+        self.google("running")
+        self.assertEqual(self.actions(self.pipeline("cloud")), [("google_pause", "Pause")])
+        self.assertEqual(self.core.state()["google"], {"state": "running", "waiting": None})
+
+    def test_pausing_sets_the_flag_and_stops_the_sync(self):
+        self.google_up = True
+        self.assertTrue(self.core.act("google_pause")["ok"])
+        self.assertTrue(self.paused_flag().exists())
+        self.assertTrue(self.stopped(str(self.install / config.GOOGLE_SYNC)))
+        # The sync stops rclone itself, and says paused. Stopping rclone too could beat it to
+        # it, and the sync would take rclone's exit for a failed upload.
+        self.assertFalse(self.stopped(str(self.install / ".upload-list-")))
+
+    def test_pausing_stops_an_rclone_that_no_sync_is_looking_after(self):
+        self.rclone_up = True
+        self.core.act("google_pause")
+        self.assertTrue(self.stopped(str(self.install / ".upload-list-")))
+
+    def test_paused_uploads_say_how_many_files_wait_and_offer_resume(self):
+        self.paused_flag().touch()
+        self.google("paused", waiting=312)
+        step = self.pipeline("cloud")
+        self.assertEqual(
+            (step["state"], step["headline"], step["detail"]),
+            ("off", "Paused", "312 files waiting"),
+        )
+        self.assertEqual(self.actions(step), [("google_resume", "Resume")])
+        state = self.core.state()
+        self.assertEqual(state["google"], {"state": "paused", "waiting": 312})
+        self.assertNotIn("Google", state["headline"]["title"], "pausing is not a problem")
+
+    def test_paused_shows_at_once_even_before_the_sync_has_stopped(self):
+        self.google_up = True
+        self.paused_flag().touch()
+        self.google("running")
+        self.assertEqual(self.pipeline("cloud")["headline"], "Paused")
+
+    def test_resuming_clears_the_flag_and_starts_the_sync(self):
+        self.paused_flag().touch()
+        self.assertTrue(self.core.act("google_resume")["ok"])
+        self.assertFalse(self.paused_flag().exists())
+        self.assertIn(
+            [str(self.paths.python), str(self.install / config.GOOGLE_SYNC), "--sync"],
+            self.spawned,
+        )
+
+    def test_a_failed_upload_due_a_retry_says_when(self):
+        self.google("failed", message="Couldn't reach Google")
+        for attempts, seconds_ago, when in (
+            (1, 20, "Retrying in 1 min"),
+            (3, 60, "Retrying in 14 min"),
+            (1, 90, "Retrying soon"),
+        ):
+            with self.subTest(attempts=attempts, seconds_ago=seconds_ago):
+                self.owe_retry(attempts, seconds_ago)
+                self.core._cache.clear()
+                step = self.pipeline("cloud")
+                self.assertEqual(
+                    (step["state"], step["headline"], step["detail"]),
+                    ("warn", when, "Couldn't reach Google"),
+                )
+                self.assertEqual(
+                    self.actions(step), [("google_sync", "Retry now"), ("google_pause", "Pause")]
+                )
+
+    def test_an_interrupted_upload_due_a_retry_says_when(self):
+        self.google("interrupted", message="The upload was stopped before it finished.")
+        self.owe_retry(1, 20)
+        self.assertEqual(self.pipeline("cloud")["headline"], "Retrying in 1 min")
+        self.assertNotIn("Google", self.core.state()["headline"]["title"])
+
+    def test_a_sync_waiting_behind_the_upload_is_mentioned(self):
+        self.google_up = True
+        self.google("running")
+        (self.install / "google_photos_sync.log").write_text(
+            "2026/10/21 22:24:49 INFO  : 4 MiB / 17 MiB, 28%, 8 MiB/s, ETA 2s (xfr#6/15)\n"
+        )
+        queue = self.install / ".google-photos-sync.queue.lock"
+        queue.write_text("999999")  # a sync that has gone
+        self.assertEqual(self.pipeline("cloud")["detail"], "4 MiB of 17 MiB")
+        queue.write_text(str(os.getpid()))  # the waiting sync's process ID
+        self.core._cache.clear()
+        self.assertEqual(self.pipeline("cloud")["detail"], "More files queued")
+
+    def test_the_page_can_tell_an_upload_from_an_import(self):
+        self.google_up = True
+        self.google("running")
+        state = self.core.state()
+        self.assertFalse(state["busy"])
+        self.assertEqual(state["google"]["state"], "running")
+
+    def test_stop_and_exit_can_pause_the_upload_first(self):
+        self.google_up = True
+        self.assertTrue(self.core.act("service_stop_exit", {"pause_upload": True})["ok"])
+        self.assertTrue(self.paused_flag().exists())
+        self.assertTrue(self.stopped(str(self.install / config.GOOGLE_SYNC)))
+        self.assertIn(["/bin/bash", str(self.install / config.SERVICE), "stop"], self.spawned)
+
+    def test_stop_and_exit_leaves_the_upload_alone_unless_asked(self):
+        self.google_up = True
+        self.core.act("service_stop_exit", {})
+        self.assertFalse(self.paused_flag().exists())
+
+    def test_opening_photo_offloader_carries_on_an_owed_upload(self):
+        self.core.resume_owed_upload()
+        self.assertEqual(self.spawned, [])
+        self.owe_retry(5, 10)
+        self.core.resume_owed_upload()
+        self.assertEqual(
+            self.spawned,
+            [[str(self.paths.python), str(self.install / config.GOOGLE_SYNC), "--retry"]],
+        )
 
 
 class TestFormatting(unittest.TestCase):

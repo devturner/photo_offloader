@@ -148,9 +148,12 @@ def main(
 
 
 def _start_service(paths: Paths) -> None:
-    result = DashboardCore(paths).act("service_start")
+    dashboard = DashboardCore(paths)
+    result = dashboard.act("service_start")
     if not result.get("ok"):
         print(f"Photo Offloader could not start: {result.get('message')}", file=sys.stderr)
+    # Rather than wait for the trigger's next retry, which can be an hour away.
+    dashboard.resume_owed_upload()
 
 
 def app_main(

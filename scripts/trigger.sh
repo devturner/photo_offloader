@@ -58,6 +58,11 @@ AUTO_USB_DONE_FILE="$INSTALL_DIR/.auto-usb-backup-done"  # the drive already bac
 # The same two paths as config.USB_YIELD_PATH and config.USB_RESUME_PATH.
 USB_YIELD_FILE="$INSTALL_DIR/.usb-backup-yield"
 USB_RESUME_FILE="$INSTALL_DIR/.usb-backup-resume"
+GOOGLE_SYNC="${PHOTO_OFFLOADER_GOOGLE_SYNC:-$INSTALL_DIR/bin/photo-offloader-google-sync}"
+# The same paths as config.GOOGLE_RETRY_PATH and config.GOOGLE_PAUSED_PATH.
+GOOGLE_RETRY_FILE="$INSTALL_DIR/.google-photos-retry"
+GOOGLE_PAUSED_FILE="$INSTALL_DIR/.google-photos-paused"
+SYSCTL="${PHOTO_OFFLOADER_SYSCTL:-/usr/sbin/sysctl}"
 # launchd does not load interactive shell startup files. Keep common Homebrew
 # paths available to ExifTool, ffmpeg, and other optional media helpers.
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
@@ -237,6 +242,43 @@ printf '%s\n' "$$" > "$LOCK_DIR/pid"
 trap 'rm -f "$LOCK_DIR/pid"; rmdir "$LOCK_DIR" 2>/dev/null || true; flush_log' EXIT
 
 sleep "$SETTLE_SECONDS"
+
+# When the Mac started, in seconds since the epoch, or nothing.
+boot_time() {
+    "$SYSCTL" -n kern.boottime 2>/dev/null | sed -n 's/.*{ sec = \([0-9][0-9]*\).*/\1/p'
+}
+
+# How long to wait after the Nth attempt: 1, 5, 15, then every 60 minutes.
+retry_delay() {
+    case "$1" in
+        0|1) echo 60 ;;
+        2) echo 300 ;;
+        3) echo 900 ;;
+        *) echo 3600 ;;
+    esac
+}
+
+# Try an unfinished Google Photos upload again, after a network failure, a crash or a power cut.
+# The sync leaves GOOGLE_RETRY_FILE ("attempts last_attempt") while an upload is unfinished and
+# removes it once there's nothing to retry. Straight away after a restart; never while paused.
+retry_upload_if_due() {
+    [[ -f "$GOOGLE_RETRY_FILE" && ! -f "$GOOGLE_PAUSED_FILE" && -f "$GOOGLE_SYNC" ]] || return 0
+    "$PGREP" -f "$GOOGLE_SYNC" >/dev/null 2>&1 && return 0
+    local attempts="" last="" now booted
+    read -r attempts last < "$GOOGLE_RETRY_FILE" 2>/dev/null || true
+    [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=1
+    [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    now="$(date +%s)"
+    booted="$(boot_time)"
+    if [[ -z "$booted" || "$last" -ge "$booted" ]] && (( now - last < $(retry_delay "$attempts") )); then
+        return 0
+    fi
+    log "Trying the Google Photos upload again (attempt $((attempts + 1)))."
+    # In a session of its own: launchd ends this job's process group when the trigger exits.
+    "$PYTHON" -c 'import os, sys; os.setsid(); os.execv(sys.executable, [sys.executable] + sys.argv[1:])' \
+        "$GOOGLE_SYNC" --sync >> "$INSTALL_DIR/google_photos_sync_launcher.log" 2>&1 </dev/null &
+}
+retry_upload_if_due
 
 # Pause only blocks new automatic import sessions; an active copy is never killed.
 if [[ -f "$PAUSE_FILE" ]]; then

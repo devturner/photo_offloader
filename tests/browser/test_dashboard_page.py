@@ -438,9 +438,9 @@ class TestMenu(PageTestCase):
 
         self.open_menu("copying")
         self.page.click("#m-exit")
-        expect(self.page.locator("#stop-title")).to_have_text("A transfer is in progress")
+        expect(self.page.locator("#stop-title")).to_have_text("A card import is in progress")
         self.click_action(
-            self.page.get_by_role("button", name="Stop after transfer"), "service_stop_exit"
+            self.page.get_by_role("button", name="Stop after import"), "service_stop_exit"
         )
         self.assert_acted(("service_stop_exit", {"mode": "wait"}))
 
@@ -457,11 +457,114 @@ class TestMenu(PageTestCase):
 
         self.open_menu("copying")
         self.page.click("#m-service")
-        expect(self.page.locator("#stop-title")).to_have_text("A transfer is in progress")
-        self.click_action(
-            self.page.get_by_role("button", name="Stop after transfer"), "service_stop"
-        )
+        expect(self.page.locator("#stop-title")).to_have_text("A card import is in progress")
+        self.click_action(self.page.get_by_role("button", name="Stop after import"), "service_stop")
         self.assert_acted(("service_stop", {"mode": "wait"}))
+
+
+class TestArchiveCards(PageTestCase):
+    """Option B, chosen by the user 2026-11-10: a total and a column for each type."""
+
+    def card(self, label):
+        return self.page.locator("#pipeline .step").filter(has_text=label)
+
+    def columns(self, label):
+        return self.card(label).locator(".mix b")
+
+    def test_the_mac_and_the_drive_show_a_column_for_each_type(self):
+        self.show("usb_up_to_date")
+        expect(self.card("Mac archive").locator("h3")).to_have_text("3,159 files")
+        expect(self.card("Mac archive").locator(".mix span")).to_have_text(["JPG", "RAW", "Video"])
+        expect(self.columns("Mac archive")).to_have_text(["1,580", "1,548", "31"])
+        expect(self.card("USB backup").locator("h3")).to_have_text("3,297 files")
+        expect(self.columns("USB backup")).to_have_text(["1,580", "1,686", "31"])
+
+    def test_the_drive_marks_the_raws_deleted_from_the_mac(self):
+        self.show("usb_up_to_date")
+        expect(self.card("USB backup").locator(".mix b.more")).to_have_text(["1,686"])
+
+    def test_an_unplugged_drive_shows_its_last_counts_and_the_missed_imports(self):
+        self.show("usb_unplugged_behind")
+        card = self.card("USB backup")
+        expect(card.locator("h3")).to_have_text("Not connected")
+        expect(card.locator(".mix")).to_have_class("mix stale")
+        expect(card.locator(".detail")).to_have_text("2 missed imports")
+
+    def test_plugging_the_drive_in_or_out_does_not_move_the_row(self):
+        heights = set()
+        for state in ("usb_up_to_date", "usb_behind", "usb_unplugged_behind", "idle"):
+            self.show(state)
+            heights.add(self.page.locator("#pipeline").bounding_box()["height"])
+        self.assertEqual(len(heights), 1, heights)
+
+
+class TestUploadControl(PageTestCase):
+    def open_menu(self, state):
+        self.show(state)
+        self.page.click("#menu-button")
+        expect(self.page.locator("#menu")).to_be_visible()
+
+    def test_the_menu_pauses_a_running_upload(self):
+        self.open_menu("uploading")
+        expect(self.page.locator("#m-google")).to_have_text("Pause uploads")
+        self.click_action("#m-google", "google_pause")
+        self.assert_acted(("google_pause", {}))
+
+    def test_the_menu_resumes_paused_uploads_and_says_how_many_wait(self):
+        self.open_menu("upload_paused")
+        expect(self.page.locator("#m-google")).to_have_text("Resume uploads312 files waiting")
+        self.click_action("#m-google", "google_resume")
+        self.assert_acted(("google_resume", {}))
+
+    def test_the_menu_syncs_when_no_upload_is_running(self):
+        self.open_menu("finished")
+        expect(self.page.locator("#m-google")).to_have_text("Sync Google Photos now")
+
+    def test_the_card_says_paused_and_offers_resume(self):
+        self.show("upload_paused")
+        card = self.page.locator("#pipeline .step").filter(has_text="Google Photos")
+        expect(card.locator("h3")).to_have_text("Paused")
+        expect(card).to_contain_text("312 files waiting")
+        expect(card.get_by_role("button", name="Resume")).to_be_visible()
+
+    def test_the_card_says_when_it_retries(self):
+        self.show("upload_retrying")
+        card = self.page.locator("#pipeline .step").filter(has_text="Google Photos")
+        expect(card.locator("h3")).to_have_text("Retrying in 4 min")
+        expect(card.get_by_role("button", name="Retry now")).to_be_visible()
+        expect(card.get_by_role("button", name="Pause")).to_be_visible()
+
+    def test_the_card_says_more_files_follow_the_upload_without_growing(self):
+        self.show("uploading")
+        row = self.page.locator("#pipeline").bounding_box()["height"]
+        self.show("upload_queued")
+        card = self.page.locator("#pipeline .step").filter(has_text="Google Photos")
+        expect(card).to_contain_text("More files queued")
+        self.assertEqual(self.page.locator("#pipeline").bounding_box()["height"], row)
+
+    def test_stopping_during_an_upload_says_it_keeps_going(self):
+        self.open_menu("uploading")
+        self.page.click("#m-service")
+        expect(self.page.locator("#stop-title")).to_have_text("Stop the service?")
+        expect(self.page.locator("#stop-note")).to_contain_text("upload keeps going")
+        expect(self.page.locator("#stop-actions button")).to_have_text(["Cancel", "Stop"])
+
+    def test_stop_and_exit_during_an_upload_can_pause_it(self):
+        self.open_menu("uploading")
+        self.page.click("#m-exit")
+        expect(self.page.locator("#stop-title")).to_have_text("Stop and exit Photo Offloader?")
+        expect(self.page.locator("#stop-actions button")).to_have_text(
+            ["Cancel", "Pause upload and exit", "Exit, keep uploading"]
+        )
+        self.click_action(
+            self.page.get_by_role("button", name="Pause upload and exit"), "service_stop_exit"
+        )
+        self.assert_acted(("service_stop_exit", {"pause_upload": True}))
+
+    def test_no_upload_note_when_nothing_is_uploading(self):
+        self.open_menu("already_imported")
+        self.page.click("#m-service")
+        expect(self.page.locator("#stop-note")).to_be_hidden()
 
 
 class TestAppearance(PageTestCase):

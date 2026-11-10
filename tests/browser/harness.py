@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from unittest.mock import patch
 
-from photo_offloader import catalog, config, run_report, verify_report
+from photo_offloader import catalog, config, google_photos, run_report, verify_report
 from photo_offloader.dashboard import core
 from photo_offloader.dashboard.server import DashboardServer
 from tests import support
@@ -98,6 +98,8 @@ class Sandbox:
             alive = self.importer_up
             if argv[-1].endswith(config.GOOGLE_SYNC):
                 alive = self.google_up
+            elif argv[-1].endswith(google_photos.UPLOAD_LIST_PREFIX):
+                alive = False  # no rclone without its sync here
             elif argv[-1].endswith(config.VERIFY):
                 alive = self.verify_up
             return subprocess.CompletedProcess(argv, 0, "4242\n" if alive else "", "")
@@ -295,15 +297,47 @@ def _uploading(s: Sandbox) -> None:
         s.advance(1)
 
 
-def _drive_files(s: Sandbox, on_both: int, only_on_mac: int) -> None:
-    """Catalog rows for files on the Mac and the drive, 28 MB each."""
+def _upload_queued(s: Sandbox) -> None:
+    """A card was imported during the upload; its sync waits to send the new files."""
+    _uploading(s)
+    s.paths.google_queue_lock_file.write_text(str(os.getpid()))  # a live process
+
+
+def _upload_paused(s: Sandbox) -> None:
+    s.set_up_google()
+    s.status(state="complete", ago=600, usb_planned=False)
+    s.record(
+        finished_at=s.now - 599,
+        started_at=s.now - 700,
+        details={"upload": {"outcome": "paused", "files": 7, "bytes": 90 * MB, "seconds": 12.0}},
+    )
+    s.paths.google_paused_file.touch()
+    s.google_status("paused", ago=500, waiting=312, message="Uploads are paused.")
+
+
+def _upload_retrying(s: Sandbox) -> None:
+    s.set_up_google()
+    s.status(state="complete", ago=600, usb_planned=False)
+    s.record(finished_at=s.now - 599, started_at=s.now - 700)
+    s.google_status("failed", ago=60, message="rclone exited with status 5.")
+    s.paths.google_retry_file.write_text(f"2 {int(s.now - 60)}\n")  # 5 min after the 2nd try
+
+
+def _drive_files(s: Sandbox, on_both: int, only_on_mac: int, only_on_drive: int = 0) -> None:
+    """Catalog rows for files on the Mac and the drive, 28 MB each: JPG and RAW pairs and a few
+    videos. Files only on the drive are RAWs deleted from the Mac to save space."""
     mac, drive = s.paths.local_archives[0].resolve(), s.paths.usb_archives[0].resolve()
     rows = []
     for index in range(on_both + only_on_mac):
-        name = f"DSC_{index:04}.JPG"
+        name = f"DSC_{index // 2:04}" + (
+            ".MOV" if index % 100 == 99 else (".JPG", ".NEF")[index % 2]
+        )
         rows.append((str(mac / name), str(mac), name))
         if index < on_both:
             rows.append((str(drive / name), str(drive), name))
+    for index in range(only_on_drive):
+        name = f"OLD_{index:04}.NEF"
+        rows.append((str(drive / name), str(drive), name))
     db = catalog.catalog_connection()
     with db:
         db.executemany(
@@ -322,7 +356,15 @@ def _usb_behind(s: Sandbox) -> None:
 
 def _usb_unplugged_behind(s: Sandbox) -> None:
     s.status(state="idle")
-    _drive_files(s, on_both=3147, only_on_mac=12)
+    _drive_files(s, on_both=3147, only_on_mac=12, only_on_drive=138)
+    s.record(
+        kind="usb_backup",
+        usb=True,
+        finished_at=s.now - 9 * 86400,
+        started_at=s.now - 9 * 86400 - 60,
+    )
+    for days in (5, 2):  # two cards imported with the drive unplugged
+        s.record(usb=False, finished_at=s.now - days * 86400, started_at=s.now - days * 86400 - 90)
 
 
 def _backup_paused(s: Sandbox) -> None:
@@ -361,7 +403,7 @@ def _backup_and_upload(s: Sandbox) -> None:
 def _usb_up_to_date(s: Sandbox) -> None:
     s.add_usb()
     s.status(state="idle")
-    _drive_files(s, on_both=3159, only_on_mac=0)
+    _drive_files(s, on_both=3159, only_on_mac=0, only_on_drive=138)
 
 
 def _already_imported(s: Sandbox) -> None:
@@ -784,6 +826,9 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     ),
     "starting_upload": _starting_upload,
     "uploading": _uploading,
+    "upload_queued": _upload_queued,
+    "upload_paused": _upload_paused,
+    "upload_retrying": _upload_retrying,
     "finished": _finished,
     "finished_advanced": _finished_advanced,
     "failed": _failed,

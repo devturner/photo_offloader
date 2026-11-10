@@ -5,7 +5,7 @@ import unittest
 
 from tests import support
 
-SLOW = {"tests.test_trigger", "tests.test_service_control"}
+SLOW = {"tests.test_trigger", "tests.test_service_control", "tests.test_google_photos_process"}
 
 
 class TestTestScript(unittest.TestCase):

@@ -281,6 +281,88 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.run_trigger()
         self.assertEqual(self.backup_starts(), 0)
 
+    # ---- Google Photos: trying an unfinished upload again by itself ----
+    def owe_upload_retry(self, attempts, seconds_ago, booted_seconds_ago=86400):
+        """The sync's marker for an unfinished upload, and a Mac started that long ago."""
+        # Nothing to import, so only the retry is in question.
+        shutil.rmtree(self.card, ignore_errors=True)
+        now = int(time.time())
+        (self.install / ".google-photos-retry").write_text(f"{attempts} {now - seconds_ago}\n")
+        self.google_sync = self.install / "bin" / "photo-offloader-google-sync"
+        self.google_sync.write_text("# google sync test fixture\n")
+        self.sync_args = self.root / "google-sync-args.txt"
+        self.python.write_text(
+            "#!/bin/bash\n"
+            f'if [[ "$*" == *{self.google_sync}* ]]; then printf \'%s\\n\' "$@" > {self.sync_args}; fi\n'
+            "exit 0\n"
+        )
+        sysctl = self.install / "sysctl"
+        sysctl.write_text(
+            f"#!/bin/bash\necho '{{ sec = {now - booted_seconds_ago}, usec = 0 }} Mon Nov  9'\n"
+        )
+        sysctl.chmod(0o755)
+        self.retry_env = {"PHOTO_OFFLOADER_SYSCTL": str(sysctl)}
+
+    def upload_retried(self):
+        self.run_trigger(**self.retry_env)
+        self.wait_for_workers()
+        if not self.sync_args.exists():
+            return False
+        args = self.sync_args.read_text().split("\n")
+        self.assertIn(str(self.google_sync), args)
+        self.assertIn("--sync", args)
+        return True
+
+    def test_an_unfinished_upload_is_tried_again_after_a_minute(self):
+        self.owe_upload_retry(attempts=1, seconds_ago=61)
+        self.assertTrue(self.upload_retried())
+
+    def test_a_retry_waits_its_turn(self):
+        self.owe_upload_retry(attempts=1, seconds_ago=30)
+        self.assertFalse(self.upload_retried())
+
+    def test_each_failed_attempt_waits_longer(self):
+        # A minute either side of each wait: the trigger reads the clock after the test does,
+        # and a busy CI runner can take more than a second to get there.
+        for attempts, waited, due in (
+            (2, 240, False),
+            (2, 360, True),
+            (3, 840, False),
+            (3, 960, True),
+            (7, 3540, False),
+            (7, 3660, True),
+        ):
+            with self.subTest(attempts=attempts, waited=waited):
+                self.owe_upload_retry(attempts=attempts, seconds_ago=waited)
+                self.assertEqual(self.upload_retried(), due)
+                self.sync_args.unlink(missing_ok=True)
+
+    def test_an_upload_cut_off_by_a_restart_is_tried_again_straight_away(self):
+        self.owe_upload_retry(attempts=6, seconds_ago=120, booted_seconds_ago=60)
+        self.assertTrue(self.upload_retried())
+
+    def test_paused_uploads_are_not_retried(self):
+        self.owe_upload_retry(attempts=1, seconds_ago=600)
+        (self.install / ".google-photos-paused").touch()
+        self.assertFalse(self.upload_retried())
+
+    def test_a_running_sync_is_not_started_again(self):
+        self.owe_upload_retry(attempts=1, seconds_ago=600)
+        self.pgrep.write_text(
+            f'#!/bin/bash\n[[ "$*" == *{self.google_sync}* ]] && exit 0\nexit 1\n'
+        )
+        self.assertFalse(self.upload_retried())
+
+    def test_pausing_automatic_imports_does_not_hold_up_a_retry(self):
+        self.owe_upload_retry(attempts=1, seconds_ago=600)
+        (self.install / ".paused").touch()
+        self.assertTrue(self.upload_retried())
+
+    def test_nothing_is_retried_when_no_upload_is_owed(self):
+        self.owe_upload_retry(attempts=1, seconds_ago=600)
+        (self.install / ".google-photos-retry").unlink()
+        self.assertFalse(self.upload_retried())
+
     def test_a_diskutil_that_hangs_does_not_hold_up_the_trigger(self):
         self.diskutil.write_text("#!/bin/bash\nexec sleep 30\n")
         started = time.monotonic()

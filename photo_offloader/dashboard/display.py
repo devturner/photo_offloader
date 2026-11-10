@@ -5,6 +5,7 @@ Nothing here touches the machine, the clock or the files, so it can all be teste
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime
 from pathlib import Path
@@ -234,21 +235,48 @@ def _card_step(
     return _step("card", "Camera card", "off", "No card", "Insert a card to begin")
 
 
-def _archive_step(activity: Optional[Dict[str, Any]], local: Optional[int]) -> Dict[str, Any]:
-    detail = (
-        (f"{local:,} files indexed" if local else "Nothing indexed yet")
-        if local is not None
-        else "Catalog unavailable"
-    )
+TYPE_COLUMNS = (("JPG", "JPG"), ("RAW", "RAW"), ("VIDEO", "Video"))
+
+
+def _with_mix(
+    step: Dict[str, Any],
+    types: Dict[str, int],
+    compare: Optional[Dict[str, int]] = None,
+    stale: bool = False,
+) -> Dict[str, Any]:
+    """Add a column for each file type. ``more`` marks a type the drive holds more of than
+    ``compare``, the Mac, such as RAW files deleted from the Mac to save space."""
+    step["mix"] = [
+        {
+            "label": label,
+            "count": types.get(kind, 0),
+            "more": bool(compare is not None and types.get(kind, 0) > compare.get(kind, 0)),
+        }
+        for kind, label in TYPE_COLUMNS
+    ]
+    step["mix_stale"] = stale  # counts from the last backup: the drive isn't connected
+    return step
+
+
+def _archive_step(
+    activity: Optional[Dict[str, Any]], counts: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    local = counts["local"] if counts else None
     if activity and activity["kind"] == "import" and activity.get("stage") == "copy":
         return _step(
             "archive",
             "Mac archive",
             "active",
             "Checking" if activity["title"] == CHECKING_TITLE else "Copying",
-            activity["detail"] or detail,
+            activity["detail"] or (plural(local, "file") if local else ""),
         )
-    return _step("archive", "Mac archive", "ok", "Up to date" if local else "Empty", detail)
+    if local is None:
+        return _step("archive", "Mac archive", "ok", "Empty", "Catalog unavailable")
+    if not local:
+        return _step("archive", "Mac archive", "ok", "Empty", "Nothing indexed yet")
+    return _with_mix(
+        _step("archive", "Mac archive", "ok", plural(local, "file"), ""), counts["local_types"]
+    )
 
 
 def _usb_step(
@@ -282,22 +310,26 @@ def _usb_step(
             [] if busy else [_action("usb_backup", "Back up now"), _action("eject_usb", "Eject")]
         )
         if waiting:
-            size = format_bytes(counts["usb_waiting_bytes"])
-            return _step(
-                "usb",
-                "USB backup",
-                "warn",
-                f"{plural(waiting, 'file')} behind",
-                f"{size} not on the drive yet",
-                actions,
+            behind = _step(
+                "usb", "USB backup", "warn", f"{plural(waiting, 'file')} behind", "", actions
             )
+            return _with_mix(behind, counts["usb_types"], counts["local_types"])
         if usb:
-            return _step("usb", "USB backup", "ok", "Up to date", _all_on_drive(usb), actions)
+            up_to_date = _step("usb", "USB backup", "ok", plural(usb, "file"), "", actions)
+            return _with_mix(up_to_date, counts["usb_types"], counts["local_types"])
         return _step("usb", "USB backup", "ok", "Connected", "Ready to back up", actions)
     # With no files ever recorded on a drive, nobody has one to plug in yet: don't nag.
-    if waiting and usb:
-        return _step("usb", "USB backup", "warn", "Not connected", _waiting_while_unplugged(counts))
-    return _step("usb", "USB backup", "off", "Not connected", "Plug in the backup drive")
+    if not usb:
+        return _step("usb", "USB backup", "off", "Not connected", "Plug in the backup drive")
+    missed = counts["missed_imports"]
+    unplugged = _step(
+        "usb",
+        "USB backup",
+        "warn" if missed or waiting else "off",
+        "Not connected",
+        f"{missed:,} missed import{'' if missed == 1 else 's'}" if missed else "",
+    )
+    return _with_mix(unplugged, counts["usb_types"], counts["local_types"], stale=True)
 
 
 def _lane_figures(eta_seconds: Optional[float], speed_bps: float) -> str:
@@ -349,34 +381,44 @@ def done_lane(label: str) -> Dict[str, Any]:
     return {"label": label, "percent": 100, "left": "Done", "right": ""}
 
 
-def _all_on_drive(files: int) -> str:
-    return "The 1 file is on the drive" if files == 1 else f"All {files:,} files are on the drive"
-
-
-def _waiting_while_unplugged(counts: Dict[str, Any]) -> str:
-    size = format_bytes(counts["usb_waiting_bytes"])
-    text = f"{plural(counts['usb_waiting'], 'file')} ({size}) not on the drive yet."
-    if not counts["usb_last_backup"]:
-        return text
-    last = datetime.fromtimestamp(counts["usb_last_backup"])
-    return f"{text} Last backup {last:%b} {last.day}."
-
-
 def _cloud_step(
     google: Dict[str, Any], uploaded: int, busy: bool, setup_step: str, in_top_panel: bool
 ) -> Dict[str, Any]:
     state = google["state"]
     if not google["configured"]:
         return _step("cloud", "Google Photos", "off", "Not set up", setup_step)
+    if state == "paused":
+        waiting = google.get("waiting")
+        return _step(
+            "cloud",
+            "Google Photos",
+            "off",  # the user's choice, not a problem
+            "Paused",
+            f"{plural(waiting, 'file')} waiting" if waiting else "Uploads are paused",
+            [_action("google_resume", "Resume")],
+        )
+    if state == "retrying":
+        minutes = math.ceil(google["retry_in"] / 60)
+        return _step(
+            "cloud",
+            "Google Photos",
+            "warn",
+            f"Retrying in {minutes} min" if minutes else "Retrying soon",
+            google["message"] or "The upload didn't finish",
+            [_action("google_sync", "Retry now"), _action("google_pause", "Pause")],
+        )
     if state == "running":
         upload = google["progress"]
+        detail = f"{upload['transferred']} of {upload['total']}" if upload else "Preparing"
         return _step(
             "cloud",
             "Google Photos",
             "active",
             "Finishing upload" if upload and upload["finalizing"] else "Uploading",
-            f"{upload['transferred']} of {upload['total']}" if upload else "Preparing",
-            (),
+            # A card imported during the upload goes up after it. Short, so the card row
+            # keeps its height; the bar still shows how far this upload is.
+            "More files queued" if google.get("queued") else detail,
+            [_action("google_pause", "Pause")],
             # The top panel already has this bar, unless an import is using the panel.
             upload["percent"] if upload and not in_top_panel else None,
         )
@@ -425,7 +467,7 @@ def pipeline(
     """The four steps a photo moves through (card, Mac, USB, Google) and what each can do now."""
     return [
         _card_step(card, activity, busy, can_reimport, card_unsaved),
-        _archive_step(activity, counts["local"] if counts else None),
+        _archive_step(activity, counts),
         _usb_step(activity, usb_mounted, counts, busy, drive_in_use, usb_paused, auto_backup),
         _cloud_step(
             google,
@@ -487,6 +529,21 @@ def _report_step(step_id: str, label: str, place: str, state: str, result: str, 
 
 def _upload_report_step(details: Dict[str, Any], state: str) -> Dict[str, Any]:
     upload = details.get("upload")
+    if isinstance(upload, dict) and upload.get("outcome") in ("paused", "stopped"):
+        # These count what got through, from rclone's log.
+        sent = int(upload.get("files", 0) or 0)
+        paused = upload["outcome"] == "paused"
+        word = "Paused" if paused else "Stopped"
+        return _report_step(
+            "upload",
+            "Upload to Google Photos",
+            "Google Photos",
+            "skipped" if paused else "error",
+            f"{word} after {plural(sent, 'file')}" if sent else word,
+            files=sent,
+            bytes=upload.get("bytes"),
+            seconds=upload.get("seconds"),
+        )
     if isinstance(upload, dict):
         if upload.get("outcome") != "complete":
             # Its size is what it set out to send, which says nothing about what got there.
@@ -721,21 +778,25 @@ def _time_text(seconds: float) -> str:
 
 
 def verify_warning(
-    usb_mounted: bool, last_seconds: Optional[float], mac_bytes: int, usb_bytes: int
+    usb_mounted: bool, speeds: Dict[str, float], mac_bytes: int, usb_bytes: int
 ) -> Dict[str, Any]:
-    """What the page says before a check starts. A person's own last check beats any estimate."""
+    """What the page says before a check starts. Speeds a check measured beat the usual ones."""
     where = "on the Mac and the USB drive" if usb_mounted else "on the Mac"
     what = f"It rereads every photo {where} from the disk and compares it with the hash saved when it was copied."
-    expected = mac_bytes / verify_report.MAC_BYTES_PER_SECOND
+    known = {**verify_report.USUAL_SPEEDS, **speeds}
+    expected = mac_bytes / known[verify_report.MAC]
     if usb_mounted:
-        expected += usb_bytes / verify_report.USB_BYTES_PER_SECOND
-    if last_seconds is not None:
-        time_text = f"About {_time_text(last_seconds)}, going by your last check."
+        expected += usb_bytes / known[verify_report.USB]
+    if usb_mounted and verify_report.USB in speeds:
+        time_text = f"About {_time_text(expected)}, going by this drive's last check."
     elif usb_mounted:
+        # The usual speed is a hard drive's, so an SSD or a fast port is far quicker than this.
         time_text = (
-            "This can take a while: about 25 minutes for every 100 GB on the USB drive, "
-            f"so roughly {_time_text(expected)} for yours."
+            "This drive hasn't been checked before, so this is a guess: roughly "
+            f"{_time_text(expected)} for a hard drive, and much less for an SSD."
         )
+    elif verify_report.MAC in speeds:
+        time_text = f"About {_time_text(expected)}, going by your last check."
     else:
         time_text = f"About {_time_text(expected)}."
     if not usb_mounted:

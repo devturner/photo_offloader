@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from xml.parsers.expat import ExpatError
 
-from photo_offloader import catalog, google_photos, jsonfile, logs, run_report, verify_report
+from photo_offloader import card, catalog, google_photos, jsonfile, logs, run_report, verify_report
 from photo_offloader.dashboard import display
 from photo_offloader.dashboard.paths import Paths
 from photo_offloader.google_photos import parse_rclone_stats_line
@@ -45,6 +45,45 @@ EVENTS_LOG_MAX_BYTES = 512 * 1024
 THEMES = ("system", "light", "dark")
 REPORT_STYLES = ("basic", "advanced")
 SPEED_WINDOW_SAMPLES = 10
+
+
+def _type_counts(db: sqlite3.Connection, roots: List[str]) -> Dict[str, int]:
+    """How many JPG, RAW and video files the catalog has under ``roots``.
+
+    Grouped by the end of each name in SQL, so a big archive is a few hundred rows, not one
+    per file. Six characters hold any extension the importer knows, with its dot.
+    """
+    counts = {"JPG": 0, "RAW": 0, "VIDEO": 0}
+    marks = ",".join("?" * len(roots))
+    for tail, count in db.execute(
+        f"""SELECT lower(substr(relative_path, -6)), COUNT(*) FROM file_locations
+            WHERE root IN ({marks}) GROUP BY 1""",
+        roots,
+    ):
+        kind = card.MEDIA_EXTENSIONS.get(os.path.splitext(str(tail))[1])
+        if kind:
+            counts[kind] += count
+    return counts
+
+
+def _missed_imports(db: sqlite3.Connection) -> int:
+    """Imports saved on the Mac since the USB drive last got everything.
+
+    A backup gets everything, and so does an import that backed up to the drive as it went,
+    which makes that import the last backup itself.
+    """
+    try:
+        return db.execute(
+            """SELECT COUNT(*) FROM import_history
+               WHERE kind = 'import'
+                 AND (outcome = 'complete' OR details LIKE '%"local_verified": true%')
+                 AND finished_at > COALESCE((
+                     SELECT MAX(finished_at) FROM import_history
+                     WHERE outcome = 'complete'
+                       AND (kind = 'usb_backup' OR (kind = 'import' AND usb = 1))), 0)"""
+        ).fetchone()[0]
+    except sqlite3.OperationalError:
+        return 0  # a catalog from before the run history
 
 
 class DashboardCore:
@@ -113,7 +152,29 @@ class DashboardCore:
         )
 
     def google_running(self) -> bool:
-        return self._cached("google", 2.0, lambda: self._script_running(self.paths.google_script))
+        """A sync is running, or waiting to, or an rclone it started is: one a killed sync left
+        still holds the upload lock and sends files."""
+        return self._cached(
+            "google",
+            2.0,
+            lambda: (
+                self._script_running(self.paths.google_script)
+                or self._script_running(self.paths.google_rclone_pattern)
+            ),
+        )
+
+    def _upload_queued(self) -> bool:
+        """Whether a sync waits to send what was imported during the running upload.
+
+        The waiting sync writes its process ID in the queue lock file. Testing the lock itself
+        would take it for a moment, and a sync starting then would give up.
+        """
+        try:
+            pid = int(self.paths.google_queue_lock_file.read_text(encoding="ascii"))
+            os.kill(pid, 0)
+        except (OSError, ValueError):
+            return False  # no file, empty, or that sync has gone
+        return True
 
     def verify_running(self) -> bool:
         return self._cached("verify", 2.0, lambda: self._script_running(self.paths.verify_script))
@@ -368,8 +429,9 @@ class DashboardCore:
                     "local": 0,
                     "usb": 0,
                     "usb_waiting": 0,
-                    "usb_waiting_bytes": 0,
-                    "usb_last_backup": None,
+                    "local_types": {"JPG": 0, "RAW": 0, "VIDEO": 0},
+                    "usb_types": {"JPG": 0, "RAW": 0, "VIDEO": 0},
+                    "missed_imports": 0,
                     "uploaded": 0,
                     "local_updated": None,
                     "usb_updated": None,
@@ -388,16 +450,16 @@ class DashboardCore:
                         "SELECT COUNT(*) FROM file_locations WHERE root = ?", (usb_roots[0],)
                     ).fetchone()[0]
                     # By name, so extra files on the drive can't hide a missing one.
-                    waiting, waiting_bytes = db.execute(
-                        f"""SELECT COUNT(*), COALESCE(SUM(size), 0) FROM file_locations AS mac
+                    waiting = db.execute(
+                        f"""SELECT COUNT(*) FROM file_locations AS mac
                             WHERE root IN ({marks}) AND NOT EXISTS (
                                 SELECT 1 FROM file_locations AS drive
                                 WHERE drive.root = ? AND drive.relative_path = mac.relative_path)""",
                         [*local_roots, usb_roots[0]],
-                    ).fetchone()
-                    last_backup = db.execute(
-                        "SELECT MAX(indexed_at) FROM file_locations WHERE root = ?", (usb_roots[0],)
                     ).fetchone()[0]
+                    local_types = _type_counts(db, local_roots)
+                    usb_types = _type_counts(db, usb_roots[:1])
+                    missed = _missed_imports(db)
                     try:
                         uploaded = db.execute(
                             "SELECT COUNT(*) FROM google_photos_uploads"
@@ -424,8 +486,9 @@ class DashboardCore:
                 "local": local,
                 "usb": usb,
                 "usb_waiting": waiting,
-                "usb_waiting_bytes": waiting_bytes,
-                "usb_last_backup": last_backup,
+                "local_types": local_types,
+                "usb_types": usb_types,
+                "missed_imports": missed,
                 "uploaded": uploaded,
                 "local_updated": newest(local_roots),
                 "usb_updated": newest(usb_roots),
@@ -454,6 +517,11 @@ class DashboardCore:
             "progress": None,
             "updated_at": display.parse_timestamp(status.get("updated_at")),
         }
+        if self.paths.google_paused_file.exists():
+            # Shown at once: the sync takes a moment to stop and say so itself.
+            info["state"] = "paused"
+            info["waiting"] = status.get("waiting") if state == "paused" else None
+            return info
         if state == "running" and not self.google_running():
             # The sync only writes status on state changes, so age says nothing; a missing
             # process does: it crashed or was killed mid-upload.
@@ -463,7 +531,20 @@ class DashboardCore:
                 status.get("started_at") or status.get("updated_at")
             )
             info["progress"] = self._upload_progress(info["started_at"])
+            info["queued"] = self._upload_queued()
+        if info["state"] in ("failed", "error", "interrupted"):
+            retry_in = self._retry_in(now)
+            if retry_in is not None:
+                info["state"], info["retry_in"] = "retrying", retry_in
         return info
+
+    def _retry_in(self, now: float) -> Optional[float]:
+        """Seconds until scripts/trigger.sh tries the unfinished upload again, if it will."""
+        try:
+            marker = self.paths.google_retry_file.read_text(encoding="ascii")
+        except OSError:
+            return None
+        return google_photos.retry_wait(marker, now)
 
     @staticmethod
     def _eta_seconds(text: object) -> Optional[float]:
@@ -740,6 +821,8 @@ class DashboardCore:
             ),
             "verify": checking,
             "upload": google["progress"],
+            # Not the importer, so not "busy"; the Stop dialogs and the ⋯ menu need it.
+            "google": {"state": google["state"], "waiting": google.get("waiting")},
             "settings": {
                 "auto_eject": self.paths.auto_eject_file.exists(),
                 "auto_usb_backup": self.paths.auto_usb_backup_file.exists(),
@@ -923,6 +1006,8 @@ class DashboardCore:
             "mark_deleted": lambda: self._mark_deleted(params),
             "open_verify_report": lambda: self._open_verify_report(params),
             "google_sync": self._google_sync,
+            "google_pause": self._google_pause,
+            "google_resume": self._google_resume,
             "toggle_auto_eject": lambda: self._toggle(self.paths.auto_eject_file, "Auto-eject"),
             "toggle_auto_usb_backup": lambda: self._toggle(
                 self.paths.auto_usb_backup_file, "Automatic USB backup"
@@ -932,8 +1017,8 @@ class DashboardCore:
             ),
             "service_start": self._service_start,
             "service_stop": lambda: self._service_stop(str(params.get("mode", ""))),
-            "service_stop_exit": lambda: self._service_stop(
-                str(params.get("mode", "")), exiting=True
+            "service_stop_exit": lambda: self._service_stop_exit(
+                str(params.get("mode", "")), bool(params.get("pause_upload"))
             ),
             "dismiss_last": self._dismiss_last,
             "clear_history": self._clear_history,
@@ -1152,19 +1237,12 @@ class DashboardCore:
     def _verify_warning(self) -> Dict[str, Any]:
         mounted = self.usb_mounted()
         rows = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
-        last = next(
-            (
-                float(row["duration_seconds"])
-                for row in rows
-                if row["kind"] == "verify" and row["details"].get("whole") and row["usb"] == mounted
-            ),
-            None,
-        )
+        drive_id = self._volume_id(self.paths.usb_volume) if mounted else None
         return {
             "ok": True,
             **display.verify_warning(
                 mounted,
-                last,
+                verify_report.measured_speeds(rows, drive_id),
                 catalog.bytes_under(self.paths.local_archives),
                 catalog.bytes_under(self.paths.usb_archives),
             ),
@@ -1216,6 +1294,46 @@ class DashboardCore:
             }
         self._spawn([str(self.paths.python), str(self.paths.google_script), "--sync"])
         return {"ok": True, "message": "Google Photos sync started."}
+
+    def _google_pause(self) -> Dict[str, Any]:
+        self.paths.install_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.google_paused_file.touch()
+        # The sync stops its rclone and says paused. Only an rclone with no sync is stopped
+        # here: stopping both could stop rclone first, and the sync would report a failure.
+        if self._script_running(self.paths.google_script):
+            target = self.paths.google_script
+        else:
+            target = self.paths.google_rclone_pattern
+        self._run(
+            ["/usr/bin/pkill", "-TERM", "-f", str(target)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        self._invalidate("google")
+        return {"ok": True, "message": "Uploads paused. Resume them when you're ready."}
+
+    def _google_resume(self) -> Dict[str, Any]:
+        try:
+            self.paths.google_paused_file.unlink()
+        except FileNotFoundError:
+            pass
+        result = self._google_sync()
+        return {**result, "message": "Uploads resumed."} if result["ok"] else result
+
+    def resume_owed_upload(self) -> None:
+        """Photo Offloader opened: carry on an unfinished upload rather than wait for a retry."""
+        if (
+            self.paths.google_retry_file.exists()
+            and not self.paths.google_paused_file.exists()
+            and self.paths.google_script.is_file()
+        ):
+            self._spawn([str(self.paths.python), str(self.paths.google_script), "--retry"])
+
+    def _service_stop_exit(self, mode: str, pause_upload: bool) -> Dict[str, Any]:
+        if pause_upload:
+            self._google_pause()
+        return self._service_stop(mode, exiting=True)
 
     def _toggle(self, flag: Path, label: str) -> Dict[str, Any]:
         self.paths.install_dir.mkdir(parents=True, exist_ok=True)

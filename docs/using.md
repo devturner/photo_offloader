@@ -47,9 +47,9 @@ The USB and Google steps are skipped if the drive isn't connected or Google Phot
 | Card | Shows | Buttons, when they apply |
 | --- | --- | --- |
 | **Camera card** | The mounted card, or *No card* | **Import now**, **Eject** |
-| **Mac archive** | How many files are indexed | None |
-| **USB backup** | Whether the drive is connected, how many files aren't on it yet, and when a backup is paused or waiting | **Back up now**, **Eject** |
-| **Google Photos** | Setup and upload state | **Sync now**, **Retry**, **Resume** |
+| **Mac archive** | How many files are on the Mac, with the JPG, RAW and video counts | None |
+| **USB backup** | How many files are on the drive, with the same counts, or how many files it's behind. A count in blue means the drive holds more of that type than the Mac, such as RAW files you deleted from the Mac to save space. Unplugged, it shows the counts from the last backup in grey, and how many imports it has missed since then. It also says when a backup is paused or waiting | **Back up now**, **Eject** |
+| **Google Photos** | Setup and upload state, *Paused*, or when it will try again | **Sync now**, **Pause**, **Resume**, **Retry now** |
 
 Buttons that use a card or drive are hidden while a transfer is running. *Not set up* on the
 Google Photos card names the first missing step: see the [setup guide](google-photos.md).
@@ -129,7 +129,9 @@ to fold it away. Runs from before this version show a dash for anything that was
 
 - **Pause / Resume automatic imports:** see [below](#pause-stop-and-start).
 - **Update file catalog:** rescans the archives. It normally updates itself, so you rarely need this.
-- **Back up to USB now**, **Sync Google Photos now:** run those steps without a card.
+- **Back up to USB now**, **Sync Google Photos now:** run those steps without a card. While an
+  upload runs, the Google row reads **Pause uploads**, and while paused, **Resume uploads**. See
+  [Pausing uploads](#pausing-uploads).
 - **Check saved copies…:** rereads every saved copy and reports any that no longer match. See [below](#checking-the-saved-copies).
 - **Eject card after import:** off by default, so a card stays mounted for Finder.
 - **Show Terminal during imports:** off by default. When on, the import runs in a terminal window.
@@ -145,8 +147,25 @@ to fold it away. Runs from before this version show a dash for anything that was
 
 The SD card in the menu bar is followed by the state: `↻` during a transfer, `⏸` when paused, `Off` when stopped. Its
 menu has **Open Dashboard**, **Close Dashboard** (when one is open), **Copy to USB Drive** (when a
-drive is connected), **Pause / Resume Automatic Imports**, **View Import Log**, **Stop Service…** or
-**Start Service**, and **Stop and Exit…**.
+drive is connected), **Pause / Resume Uploads** (while an upload runs or is paused), **Pause /
+Resume Automatic Imports**, **View Import Log**, **Stop Service…** or **Start Service**, and **Stop
+and Exit…**.
+
+## Pausing uploads
+
+**Pause uploads** stops a Google Photos upload straight away, for example to free up a slow
+connection. Imports and USB backups carry on, but no upload starts, not even the one after an
+import, until you choose **Resume uploads**. The pause is remembered when the Mac restarts. The
+Google Photos card shows how many files are waiting, and the import's report says how many were sent
+before the pause. Files already sent aren't sent again.
+
+A card imported while an upload is running is uploaded straight after it: the card says *More files
+queued*.
+
+If an upload doesn't finish, because the network dropped, the Mac lost power or it was stopped, it
+tries again by itself after 1, 5 and 15 minutes, then every hour, and straight away after a restart
+or when you open Photo Offloader. The card says when the next try is. It doesn't try again while
+uploads are paused, or when the problem needs fixing first, such as an expired Google sign-in.
 
 ## Pause, stop and start
 
@@ -156,8 +175,9 @@ running. **Resume** re-checks any card that is mounted.
 **Stop Service** turns off card detection and leaves the menu bar and dashboard open, so you can
 start it again from either. **Stop and Exit** also closes the dashboard and the menu bar. Both ask
 what to do if a card is being imported: stop once it finishes, or cancel it now. A Google Photos
-upload, USB backup or check of saved copies that is already running finishes on its own. Stopped,
-Photo Offloader comes back at your next login. From a terminal:
+upload, USB backup or check of saved copies that is already running finishes on its own. During an
+upload, **Stop and Exit** offers **Pause upload and exit**. Stopped, Photo Offloader comes back at
+your next login. From a terminal:
 
 ```bash
 SERVICE=~/Library/Application\ Support/PhotoOffloader/scripts/service.sh
@@ -195,7 +215,7 @@ Camera cards go first. Insert a card during any USB backup and the backup stops 
 
 ## Checking the saved copies
 
-A copy is verified when it's made, but nothing looks at it again after that. To recheck everything, choose **Check saved copies…** in the **⋯** menu. It tells you how long to expect before it starts: about 25 minutes for every 100 GB on the USB drive, and much less on the Mac.
+A copy is verified when it's made, but nothing looks at it again after that. To recheck everything, choose **Check saved copies…** in the **⋯** menu. It tells you how long to expect before it starts. Each check measures how fast it read the Mac and the drive, and the next estimate uses that drive's own speed, so an SSD, a slow hub or a faster port is allowed for after one check. A drive that hasn't been checked before gets a hard drive's estimate, about 25 minutes for every 100 GB; an SSD is much quicker. The Mac takes much less either way.
 
 It rereads every copy on the Mac and the USB drive from the disk and compares it with the hash saved when the copy was made, and with the other copy. It only reports: nothing is changed or repaired. If the drive isn't connected it checks the Mac and says so.
 

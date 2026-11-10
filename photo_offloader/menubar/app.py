@@ -15,7 +15,8 @@ try:
 except ImportError as exc:  # pragma: no cover - dependency is installed by install.sh
     raise SystemExit("Photo Offloader menu-bar UI requires rumps. Re-run ./install.sh.") from exc
 
-from photo_offloader import config
+from photo_offloader import config, jsonfile
+from photo_offloader.dashboard.core import DashboardCore
 from photo_offloader.logs import logger
 from photo_offloader.menubar.model import Snapshot, menu_entries, menu_title, parse_status
 
@@ -44,6 +45,7 @@ class PhotoOffloaderMenuBar(rumps.App):
             "open_dashboard": self.open_dashboard,
             "copy_usb": self.copy_to_usb,
             "pause": self.toggle_pause,
+            "upload": self.toggle_uploads,
             "close_dashboard": self.close_dashboard,
             "stop": self.stop_service,
             "stop_exit": self.stop_and_exit,
@@ -71,7 +73,7 @@ class PhotoOffloaderMenuBar(rumps.App):
         except (OSError, subprocess.TimeoutExpired):
             return Snapshot(running=False, usb=usb, dashboard=dashboard)
         snapshot = parse_status(result.stdout, result.returncode, usb=usb)
-        return dataclasses.replace(snapshot, dashboard=dashboard)
+        return dataclasses.replace(snapshot, dashboard=dashboard, upload=upload_state())
 
     def refresh(self, _sender: object = None) -> None:
         snapshot = self.read_snapshot()
@@ -184,6 +186,13 @@ class PhotoOffloaderMenuBar(rumps.App):
             )
             self.refresh()
 
+    def toggle_uploads(self, _sender: object = None) -> None:
+        """Pause or resume Google Photos uploads, the same way the dashboard does."""
+        action = "google_resume" if upload_state() == "paused" else "google_pause"
+        result = DashboardCore().act(action)
+        rumps.notification("Photo Offloader", "", str(result.get("message", "")))
+        self.refresh()
+
     @staticmethod
     def transfer_running() -> bool:
         try:
@@ -215,6 +224,20 @@ class PhotoOffloaderMenuBar(rumps.App):
             if choice == 0:
                 return None
             return ["--wait"] if choice == 1 else ["--force"]
+        if exiting and upload_state() == "running":
+            choice = rumps.alert(
+                title="Stop and exit Photo Offloader?",
+                message="A Google Photos upload is running. Cards won't be imported, and the "
+                "menu bar and dashboard close, until you open Photo Offloader again.",
+                ok="Exit, Keep Uploading",
+                cancel="Cancel",
+                other="Pause Upload and Exit",
+            )
+            if choice == 0:
+                return None
+            if choice == -1:  # "other"
+                DashboardCore().act("google_pause")
+            return []
         if exiting:
             title, message, ok = (
                 "Stop and exit Photo Offloader?",
@@ -287,6 +310,15 @@ class PhotoOffloaderMenuBar(rumps.App):
                 "Photo Offloader", "Photo Offloader started", "Camera cards will be imported again."
             )
         self.refresh()
+
+
+def upload_state() -> str:
+    """The Google Photos upload as the menu shows it: "running", "paused" or nothing."""
+    if config.GOOGLE_PAUSED_PATH.exists():
+        return "paused"
+    if jsonfile.read_object(config.GOOGLE_STATUS_PATH).get("state") != "running":
+        return ""
+    return "running" if DashboardCore().google_running() else ""
 
 
 def dashboard_pids() -> List[int]:

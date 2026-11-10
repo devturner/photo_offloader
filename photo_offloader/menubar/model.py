@@ -18,6 +18,7 @@ class Snapshot:
     transfer: bool = False
     usb: bool = False
     dashboard: bool = False
+    upload: str = ""  # the Google Photos upload: "running", "paused" or nothing
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,10 @@ def menu_entries(snapshot: Snapshot) -> List[Entry]:
     if snapshot.dashboard:
         entries.append(Entry("close_dashboard", "Close Dashboard"))
     entries.append(Entry(None))
+    if snapshot.upload in ("running", "paused"):
+        # Uploads carry on with the service stopped, so this is offered either way.
+        resume = snapshot.upload == "paused"
+        entries.append(Entry("upload", "Resume Uploads" if resume else "Pause Uploads"))
     if snapshot.running:
         if snapshot.usb and not snapshot.transfer:
             entries.append(Entry("copy_usb", "Copy to USB Drive"))

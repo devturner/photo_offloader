@@ -109,6 +109,13 @@ class TestTheApp(LauncherCase):
         self.assertEqual(len(self.events), 2, self.events)
         self.assertIn("127.0.0.1", self.events[1])
 
+    def test_opening_the_app_carries_on_an_unfinished_upload(self):
+        with patch.object(ui, "DashboardCore") as made:
+            made.return_value.act.return_value = {"ok": True}
+            ui._start_service(self.paths)
+        made.return_value.act.assert_called_once_with("service_start")
+        made.return_value.resume_owed_upload.assert_called_once_with()
+
     def test_programs_that_only_want_the_dashboard_leave_the_service_alone(self):
         for args in (["--dashboard"], ["--if-closed"]):
             with self.subTest(args=args):
