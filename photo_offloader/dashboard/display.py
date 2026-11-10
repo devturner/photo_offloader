@@ -778,21 +778,25 @@ def _time_text(seconds: float) -> str:
 
 
 def verify_warning(
-    usb_mounted: bool, last_seconds: Optional[float], mac_bytes: int, usb_bytes: int
+    usb_mounted: bool, speeds: Dict[str, float], mac_bytes: int, usb_bytes: int
 ) -> Dict[str, Any]:
-    """What the page says before a check starts. A person's own last check beats any estimate."""
+    """What the page says before a check starts. Speeds a check measured beat the usual ones."""
     where = "on the Mac and the USB drive" if usb_mounted else "on the Mac"
     what = f"It rereads every photo {where} from the disk and compares it with the hash saved when it was copied."
-    expected = mac_bytes / verify_report.MAC_BYTES_PER_SECOND
+    known = {**verify_report.USUAL_SPEEDS, **speeds}
+    expected = mac_bytes / known[verify_report.MAC]
     if usb_mounted:
-        expected += usb_bytes / verify_report.USB_BYTES_PER_SECOND
-    if last_seconds is not None:
-        time_text = f"About {_time_text(last_seconds)}, going by your last check."
+        expected += usb_bytes / known[verify_report.USB]
+    if usb_mounted and verify_report.USB in speeds:
+        time_text = f"About {_time_text(expected)}, going by this drive's last check."
     elif usb_mounted:
+        # The usual speed is a hard drive's, so an SSD or a fast port is far quicker than this.
         time_text = (
-            "This can take a while: about 25 minutes for every 100 GB on the USB drive, "
-            f"so roughly {_time_text(expected)} for yours."
+            "This drive hasn't been checked before, so this is a guess: roughly "
+            f"{_time_text(expected)} for a hard drive, and much less for an SSD."
         )
+    elif verify_report.MAC in speeds:
+        time_text = f"About {_time_text(expected)}, going by your last check."
     else:
         time_text = f"About {_time_text(expected)}."
     if not usb_mounted:

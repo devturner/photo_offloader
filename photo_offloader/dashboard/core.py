@@ -1237,19 +1237,12 @@ class DashboardCore:
     def _verify_warning(self) -> Dict[str, Any]:
         mounted = self.usb_mounted()
         rows = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
-        last = next(
-            (
-                float(row["duration_seconds"])
-                for row in rows
-                if row["kind"] == "verify" and row["details"].get("whole") and row["usb"] == mounted
-            ),
-            None,
-        )
+        drive_id = self._volume_id(self.paths.usb_volume) if mounted else None
         return {
             "ok": True,
             **display.verify_warning(
                 mounted,
-                last,
+                verify_report.measured_speeds(rows, drive_id),
                 catalog.bytes_under(self.paths.local_archives),
                 catalog.bytes_under(self.paths.usb_archives),
             ),

@@ -3,6 +3,7 @@
 
 import json
 import unittest
+from unittest.mock import patch
 
 from photo_offloader import catalog, config, verify_report
 from tests.test_dashboard_core import Fixture
@@ -154,20 +155,37 @@ class TestTheDrive(Check):
 
 
 class TestWarning(Check):
-    def test_it_uses_the_last_whole_check_of_the_same_kind(self):
-        self.usb.mkdir()
-        self.record_check(started_at=self.now - 1090, finished_at=self.now)
-        # A drive unplugged after 5 minutes says nothing about how long a whole check takes.
-        self.record_check(
-            outcome="failed", started_at=self.now - 300, finished_at=self.now, details={}
-        )
-        warning = self.core.act("verify_warning")
-        self.assertEqual(warning["time"], "About 18 minutes, going by your last check.")
+    def setUp(self):
+        super().setUp()
+        self.drive_id = "drive-1"
+        self.core._volume_id = lambda volume: self.drive_id
+        sizes = patch.object(catalog, "bytes_under", return_value=60e9)
+        sizes.start()
+        self.addCleanup(sizes.stop)
 
-    def test_a_check_of_the_mac_alone_is_no_guide_to_one_with_the_drive(self):
+    def record_speeds(self, drive_id="drive-1", **speeds):
+        self.record_check(details={"whole": True, "drive_id": drive_id, "speeds": speeds})
+
+    def test_it_uses_the_speed_this_drive_read_at_last_time(self):
         self.usb.mkdir()
-        self.record_check(usb=False, started_at=self.now - 60, finished_at=self.now)
-        self.assertIn("for yours", self.core.act("verify_warning")["time"])
+        self.record_speeds(**{verify_report.MAC: 1e9, verify_report.USB: 100e6})
+        warning = self.core.act("verify_warning")
+        # 60 s for the Mac and 600 s for the drive.
+        self.assertEqual(warning["time"], "About 11 minutes, going by this drive's last check.")
+
+    def test_another_drives_speed_is_only_a_guess_for_this_one(self):
+        self.usb.mkdir()
+        self.record_speeds(**{verify_report.MAC: 1e9, verify_report.USB: 100e6})
+        self.drive_id = "drive-2"
+        self.assertIn("hasn't been checked before", self.core.act("verify_warning")["time"])
+
+    def test_the_macs_speed_counts_without_the_drive(self):
+        self.record_speeds(**{verify_report.MAC: 2e9})
+        self.assertTrue(
+            self.core.act("verify_warning")["time"].startswith(
+                "About a minute, going by your last check."
+            )
+        )
 
 
 class TestMarkingDeleted(Check):

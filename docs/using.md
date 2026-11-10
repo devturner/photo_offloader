@@ -215,7 +215,7 @@ Camera cards go first. Insert a card during any USB backup and the backup stops 
 
 ## Checking the saved copies
 
-A copy is verified when it's made, but nothing looks at it again after that. To recheck everything, choose **Check saved copies…** in the **⋯** menu. It tells you how long to expect before it starts: about 25 minutes for every 100 GB on the USB drive, and much less on the Mac.
+A copy is verified when it's made, but nothing looks at it again after that. To recheck everything, choose **Check saved copies…** in the **⋯** menu. It tells you how long to expect before it starts. Each check measures how fast it read the Mac and the drive, and the next estimate uses that drive's own speed, so an SSD, a slow hub or a faster port is allowed for after one check. A drive that hasn't been checked before gets a hard drive's estimate, about 25 minutes for every 100 GB; an SSD is much quicker. The Mac takes much less either way.
 
 It rereads every copy on the Mac and the USB drive from the disk and compares it with the hash saved when the copy was made, and with the other copy. It only reports: nothing is changed or repaired. If the drive isn't connected it checks the Mac and says so.
 

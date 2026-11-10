@@ -55,6 +55,7 @@ from photo_offloader.verify_report import (
 PROGRESS_SECONDS = 5.0  # between lines in the terminal
 STATUS_SECONDS = 1.0  # between updates of the progress file
 MEASURED_SPEED_AFTER_SECONDS = 3.0  # before this, a location's own speed is mostly noise
+SPEED_SAVED_AFTER_SECONDS = 10.0  # a shorter read mostly measures opening files, not the disk
 EXIT_OK, EXIT_PROBLEMS, EXIT_CANCELED = 0, 1, 130
 
 
@@ -100,6 +101,8 @@ class ArchiveCheck:
     drive_gone: bool = False
     canceled: bool = False
     error: str = ""
+    speeds: Dict[str, float] = field(default_factory=dict)  # bytes a second, for the next estimate
+    drive_id: str = ""
 
 
 class _Busy(RuntimeError):
@@ -150,12 +153,17 @@ def _drive_still_there(identity: Optional[volumes.VolumeIdentity]) -> bool:
 
 
 def seconds_left(
-    done_here: float, left_here: float, elapsed: float, usual_speed: float, later_bytes: float
+    done_here: float,
+    left_here: float,
+    elapsed: float,
+    usual_speed: float,
+    later_bytes: float = 0,
+    later_speed: float = verify_report.USB_BYTES_PER_SECOND,
 ) -> int:
     """Time left: this location at its own speed if there's one yet, and the drive still to come."""
     measured = done_here / elapsed if elapsed >= MEASURED_SPEED_AFTER_SECONDS and done_here else 0
     here = left_here / (measured or usual_speed)
-    return round(here + later_bytes / verify_report.USB_BYTES_PER_SECOND)
+    return round(here + later_bytes / later_speed)
 
 
 def _write_status(**fields: object) -> None:
@@ -168,7 +176,14 @@ def _write_status(**fields: object) -> None:
 class _Progress:
     """A line every few seconds in the terminal and a file for the dashboard: this takes minutes."""
 
-    def __init__(self, mac: _Location, usb: _Location, usb_planned: bool) -> None:
+    def __init__(
+        self,
+        mac: _Location,
+        usb: _Location,
+        usb_planned: bool,
+        speeds: Optional[Dict[str, float]] = None,
+    ) -> None:
+        self.speeds = {**verify_report.USUAL_SPEEDS, **(speeds or {})}
         self.sizes = {location.name: _total(location) for location in (mac, usb)}
         self.counts = {location.name: len(location.files) for location in (mac, usb)}
         self.usb_planned = usb_planned
@@ -203,10 +218,9 @@ class _Progress:
                 self.done_here,
                 self.sizes[self.where] - self.done_here,
                 time.monotonic() - self.started_here,
-                verify_report.MAC_BYTES_PER_SECOND
-                if on_mac
-                else verify_report.USB_BYTES_PER_SECOND,
+                self.speeds[self.where],
                 self.sizes[USB] if on_mac else 0,
+                self.speeds[USB],
             ),
         )
 
@@ -241,6 +255,7 @@ def _check_location(
 ) -> None:
     on_drive = location.name == USB
     shown.start(location.name)
+    started, read_before = time.monotonic(), check.bytes_read
     for relative in sorted(location.files):
         entry = location.files[relative]
         other_entry = other.files.get(relative)
@@ -253,7 +268,7 @@ def _check_location(
         if kind and on_drive and not _drive_still_there(identity):
             # Everything left would look missing or different, and none of it would be true.
             logger.error("The USB drive went away during the check.")
-            check.drive_gone = True
+            check.drive_gone = True  # and its speed so far may be that of a drive going away
             return
         check.checked[location.name] += 1
         check.bytes_read += entry.size
@@ -278,6 +293,9 @@ def _check_location(
             location.unverified.add(relative)
             check.not_checked += 1
     location.finished = True
+    elapsed = time.monotonic() - started
+    if elapsed >= SPEED_SAVED_AFTER_SECONDS:
+        check.speeds[location.name] = (check.bytes_read - read_before) / elapsed
 
 
 def _add_problem(check: ArchiveCheck, problem: Problem) -> None:
@@ -344,11 +362,14 @@ def check_archives(check: Optional[ArchiveCheck] = None) -> ArchiveCheck:
     identity = None
     if volumes.usb_is_mounted() and config.USB_DEST_ROOT.is_dir():
         identity = volumes.get_volume_identity(config.USB_DEST_VOLUME)
+        check.drive_id = (identity.volume_uuid or "") if identity else ""
         usb = _load_location(USB, (config.USB_DEST_ROOT,))
     else:
         check.usb_skipped = True
         logger.info("The USB drive isn't connected, so only the Mac's copies are being checked.")
-    shown = _Progress(mac, usb, not check.usb_skipped)
+    history = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
+    speeds = verify_report.measured_speeds(history, check.drive_id or None)
+    shown = _Progress(mac, usb, not check.usb_skipped, speeds)
     _check_location(check, mac, usb, shown, noted)
     if not check.usb_skipped:
         _check_location(check, usb, mac, shown, identity=identity)
@@ -445,6 +466,10 @@ def _record(check: ArchiveCheck, started_at: float, message: str, code: int, rep
     details: Dict[str, object] = {"whole": whole}
     if check.problems:
         details["check"] = verify_report.details_for(_report_rows(check), report)
+    if check.speeds:
+        details["speeds"] = {name: round(speed) for name, speed in check.speeds.items()}
+    if check.drive_id:
+        details["drive_id"] = check.drive_id
     catalog.record_import_run(
         kind="verify",
         outcome={EXIT_OK: "complete", EXIT_CANCELED: "canceled"}.get(code, "failed"),
