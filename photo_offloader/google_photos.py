@@ -19,6 +19,10 @@ from typing import Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
 from photo_offloader import catalog, config, jsonfile, logs
 
+UPLOAD_LIST_PREFIX = ".upload-list-"  # in INSTALL_DIR; the dashboard spots our rclone by it
+# How long to wait after the Nth attempt before trying an unfinished upload again. The same
+# as retry_delay in scripts/trigger.sh, which does the retrying.
+RETRY_DELAYS = (60, 5 * 60, 15 * 60, 60 * 60)
 STATS_SECONDS = 1  # how often rclone writes a progress line, the same as the graph samples
 UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60  # an upload this soon after an import is that import's
 
@@ -315,6 +319,17 @@ def uploads_paused() -> bool:
     return config.GOOGLE_PAUSED_PATH.exists()
 
 
+def retry_wait(marker: str, now: float) -> Optional[float]:
+    """Seconds until the trigger retries the upload a retry marker's text describes (0 if due),
+    or None if the text isn't a marker."""
+    try:
+        attempts, last = (int(part) for part in marker.split()[:2])
+    except ValueError:
+        return None
+    delay = RETRY_DELAYS[min(max(attempts, 1), len(RETRY_DELAYS)) - 1]
+    return max(0.0, last + delay - now)
+
+
 def _retry_attempts() -> int:
     try:
         return int(config.GOOGLE_RETRY_PATH.read_text(encoding="ascii").split()[0])
@@ -377,8 +392,14 @@ def _wait_in_queue(lock_fd: int) -> bool:
     try:
         if not _try_lock(queue_fd):
             return False
+        # For the dashboard, which can't test the lock without taking it for a moment.
+        os.ftruncate(queue_fd, 0)
+        os.write(queue_fd, str(os.getpid()).encode("ascii"))
         log_sync_event("An upload is running; this sync sends any new files after it.")
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        finally:
+            os.ftruncate(queue_fd, 0)
         return True
     finally:
         os.close(queue_fd)  # the next import's sync may wait now; it lists files after us
@@ -515,7 +536,7 @@ def _upload_snapshot(
     sync picks them up.
     """
     list_fd, list_name = tempfile.mkstemp(
-        prefix=".upload-list-", suffix=".txt", dir=config.INSTALL_DIR
+        prefix=UPLOAD_LIST_PREFIX, suffix=".txt", dir=config.INSTALL_DIR
     )
     try:
         with os.fdopen(list_fd, "w", encoding="utf-8") as handle:

@@ -59,6 +59,7 @@ class Fixture(unittest.TestCase):
         self.service_up = True
         self.importer_up = False
         self.google_up = False
+        self.rclone_up = False  # an rclone our sync started, perhaps left by a killed sync
         self.verify_up = False
         self.spawned = []
         self.ran = []
@@ -70,6 +71,7 @@ class Fixture(unittest.TestCase):
             if argv[0].endswith("pgrep"):
                 alive = {
                     "photo-offloader-google-sync": self.google_up,
+                    ".upload-list-": self.rclone_up,
                     "photo-offloader-verify": self.verify_up,
                 }.get(argv[-1].rsplit("/", 1)[-1], self.importer_up)
                 return subprocess.CompletedProcess(argv, 0, "4242\n" if alive else "", "")
@@ -1851,6 +1853,147 @@ class TestActions(Fixture):
 
     def test_unknown_actions_are_refused(self):
         self.assertFalse(self.core.act("format_disk")["ok"])
+
+
+class TestUploadControl(Fixture):
+    def google(self, state, **fields):
+        (self.install / "google_photos_status.json").write_text(
+            json.dumps({"state": state, "message": fields.pop("message", ""), **fields})
+        )
+
+    def paused_flag(self):
+        return self.install / ".google-photos-paused"
+
+    def owe_retry(self, attempts, seconds_ago):
+        (self.install / ".google-photos-retry").write_text(
+            f"{attempts} {int(self.now - seconds_ago)}\n"
+        )
+
+    def actions(self, step):
+        return [(a["id"], a["label"]) for a in step["actions"]]
+
+    def stopped(self, pattern):
+        return ["/usr/bin/pkill", "-TERM", "-f", pattern] in self.ran
+
+    def test_an_rclone_left_by_a_killed_sync_is_still_uploading(self):
+        self.rclone_up = True
+        self.google("running")
+        self.assertEqual(self.pipeline("cloud")["state"], "active")
+
+    def test_a_running_upload_can_be_paused_from_its_card(self):
+        self.google_up = True
+        self.google("running")
+        self.assertEqual(self.actions(self.pipeline("cloud")), [("google_pause", "Pause")])
+        self.assertEqual(self.core.state()["google"], {"state": "running", "waiting": None})
+
+    def test_pausing_sets_the_flag_and_stops_the_sync(self):
+        self.google_up = True
+        self.assertTrue(self.core.act("google_pause")["ok"])
+        self.assertTrue(self.paused_flag().exists())
+        self.assertTrue(self.stopped(str(self.install / config.GOOGLE_SYNC)))
+        # The sync stops rclone itself, and says paused. Stopping rclone too could beat it to
+        # it, and the sync would take rclone's exit for a failed upload.
+        self.assertFalse(self.stopped(str(self.install / ".upload-list-")))
+
+    def test_pausing_stops_an_rclone_that_no_sync_is_looking_after(self):
+        self.rclone_up = True
+        self.core.act("google_pause")
+        self.assertTrue(self.stopped(str(self.install / ".upload-list-")))
+
+    def test_paused_uploads_say_how_many_files_wait_and_offer_resume(self):
+        self.paused_flag().touch()
+        self.google("paused", waiting=312)
+        step = self.pipeline("cloud")
+        self.assertEqual(
+            (step["state"], step["headline"], step["detail"]),
+            ("off", "Paused", "312 files waiting"),
+        )
+        self.assertEqual(self.actions(step), [("google_resume", "Resume")])
+        state = self.core.state()
+        self.assertEqual(state["google"], {"state": "paused", "waiting": 312})
+        self.assertNotIn("Google", state["headline"]["title"], "pausing is not a problem")
+
+    def test_paused_shows_at_once_even_before_the_sync_has_stopped(self):
+        self.google_up = True
+        self.paused_flag().touch()
+        self.google("running")
+        self.assertEqual(self.pipeline("cloud")["headline"], "Paused")
+
+    def test_resuming_clears_the_flag_and_starts_the_sync(self):
+        self.paused_flag().touch()
+        self.assertTrue(self.core.act("google_resume")["ok"])
+        self.assertFalse(self.paused_flag().exists())
+        self.assertIn(
+            [str(self.paths.python), str(self.install / config.GOOGLE_SYNC), "--sync"],
+            self.spawned,
+        )
+
+    def test_a_failed_upload_due_a_retry_says_when(self):
+        self.google("failed", message="Couldn't reach Google")
+        for attempts, seconds_ago, when in (
+            (1, 20, "Retrying in 1 min"),
+            (3, 60, "Retrying in 14 min"),
+            (1, 90, "Retrying soon"),
+        ):
+            with self.subTest(attempts=attempts, seconds_ago=seconds_ago):
+                self.owe_retry(attempts, seconds_ago)
+                self.core._cache.clear()
+                step = self.pipeline("cloud")
+                self.assertEqual(
+                    (step["state"], step["headline"], step["detail"]),
+                    ("warn", when, "Couldn't reach Google"),
+                )
+                self.assertEqual(
+                    self.actions(step), [("google_sync", "Retry now"), ("google_pause", "Pause")]
+                )
+
+    def test_an_interrupted_upload_due_a_retry_says_when(self):
+        self.google("interrupted", message="The upload was stopped before it finished.")
+        self.owe_retry(1, 20)
+        self.assertEqual(self.pipeline("cloud")["headline"], "Retrying in 1 min")
+        self.assertNotIn("Google", self.core.state()["headline"]["title"])
+
+    def test_a_sync_waiting_behind_the_upload_is_mentioned(self):
+        self.google_up = True
+        self.google("running")
+        (self.install / "google_photos_sync.log").write_text(
+            "2026/10/21 22:24:49 INFO  : 4 MiB / 17 MiB, 28%, 8 MiB/s, ETA 2s (xfr#6/15)\n"
+        )
+        queue = self.install / ".google-photos-sync.queue.lock"
+        queue.write_text("999999")  # a sync that has gone
+        self.assertEqual(self.pipeline("cloud")["detail"], "4 MiB of 17 MiB")
+        queue.write_text(str(os.getpid()))  # the waiting sync's process ID
+        self.core._cache.clear()
+        self.assertEqual(self.pipeline("cloud")["detail"], "4 MiB of 17 MiB · more to follow")
+
+    def test_the_page_can_tell_an_upload_from_an_import(self):
+        self.google_up = True
+        self.google("running")
+        state = self.core.state()
+        self.assertFalse(state["busy"])
+        self.assertEqual(state["google"]["state"], "running")
+
+    def test_stop_and_exit_can_pause_the_upload_first(self):
+        self.google_up = True
+        self.assertTrue(self.core.act("service_stop_exit", {"pause_upload": True})["ok"])
+        self.assertTrue(self.paused_flag().exists())
+        self.assertTrue(self.stopped(str(self.install / config.GOOGLE_SYNC)))
+        self.assertIn(["/bin/bash", str(self.install / config.SERVICE), "stop"], self.spawned)
+
+    def test_stop_and_exit_leaves_the_upload_alone_unless_asked(self):
+        self.google_up = True
+        self.core.act("service_stop_exit", {})
+        self.assertFalse(self.paused_flag().exists())
+
+    def test_opening_photo_offloader_carries_on_an_owed_upload(self):
+        self.core.resume_owed_upload()
+        self.assertEqual(self.spawned, [])
+        self.owe_retry(5, 10)
+        self.core.resume_owed_upload()
+        self.assertEqual(
+            self.spawned,
+            [[str(self.paths.python), str(self.install / config.GOOGLE_SYNC), "--retry"]],
+        )
 
 
 class TestFormatting(unittest.TestCase):

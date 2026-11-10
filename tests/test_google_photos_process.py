@@ -253,6 +253,8 @@ class TestASyncDuringAnUpload(SyncProcessTest):
         queued = self.start_sync()
         time.sleep(1)
         self.assertIsNone(queued.poll(), "the second sync gave up instead of waiting")
+        queue_file = self.install / ".google-photos-sync.queue.lock"
+        self.assertEqual(queue_file.read_text(), str(queued.pid), "the dashboard looks for it")
 
         (self.fake / "gate").touch()
         self.assertEqual(self.wait_exit(running), 0)
@@ -260,6 +262,7 @@ class TestASyncDuringAnUpload(SyncProcessTest):
         self.assertEqual(self.lines("copied"), ["2026-11/first.jpg", "2026-11/second.jpg"])
         self.assertEqual(self.uploaded(), ["first.jpg", "second.jpg"])
         self.assertEqual(self.lines("overlap"), [])
+        self.assertEqual(queue_file.read_text(), "", "nothing waits any more")
 
     def test_only_one_sync_waits(self):
         # Ten imports during one long upload must not stack ten syncs: the one waiting lists

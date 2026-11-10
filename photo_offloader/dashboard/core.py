@@ -113,7 +113,29 @@ class DashboardCore:
         )
 
     def google_running(self) -> bool:
-        return self._cached("google", 2.0, lambda: self._script_running(self.paths.google_script))
+        """A sync is running, or waiting to, or an rclone it started is: one a killed sync left
+        still holds the upload lock and sends files."""
+        return self._cached(
+            "google",
+            2.0,
+            lambda: (
+                self._script_running(self.paths.google_script)
+                or self._script_running(self.paths.google_rclone_pattern)
+            ),
+        )
+
+    def _upload_queued(self) -> bool:
+        """Whether a sync waits to send what was imported during the running upload.
+
+        The waiting sync writes its process ID in the queue lock file. Testing the lock itself
+        would take it for a moment, and a sync starting then would give up.
+        """
+        try:
+            pid = int(self.paths.google_queue_lock_file.read_text(encoding="ascii"))
+            os.kill(pid, 0)
+        except (OSError, ValueError):
+            return False  # no file, empty, or that sync has gone
+        return True
 
     def verify_running(self) -> bool:
         return self._cached("verify", 2.0, lambda: self._script_running(self.paths.verify_script))
@@ -454,6 +476,11 @@ class DashboardCore:
             "progress": None,
             "updated_at": display.parse_timestamp(status.get("updated_at")),
         }
+        if self.paths.google_paused_file.exists():
+            # Shown at once: the sync takes a moment to stop and say so itself.
+            info["state"] = "paused"
+            info["waiting"] = status.get("waiting") if state == "paused" else None
+            return info
         if state == "running" and not self.google_running():
             # The sync only writes status on state changes, so age says nothing; a missing
             # process does: it crashed or was killed mid-upload.
@@ -463,7 +490,20 @@ class DashboardCore:
                 status.get("started_at") or status.get("updated_at")
             )
             info["progress"] = self._upload_progress(info["started_at"])
+            info["queued"] = self._upload_queued()
+        if info["state"] in ("failed", "error", "interrupted"):
+            retry_in = self._retry_in(now)
+            if retry_in is not None:
+                info["state"], info["retry_in"] = "retrying", retry_in
         return info
+
+    def _retry_in(self, now: float) -> Optional[float]:
+        """Seconds until scripts/trigger.sh tries the unfinished upload again, if it will."""
+        try:
+            marker = self.paths.google_retry_file.read_text(encoding="ascii")
+        except OSError:
+            return None
+        return google_photos.retry_wait(marker, now)
 
     @staticmethod
     def _eta_seconds(text: object) -> Optional[float]:
@@ -740,6 +780,8 @@ class DashboardCore:
             ),
             "verify": checking,
             "upload": google["progress"],
+            # Not the importer, so not "busy"; the Stop dialogs and the ⋯ menu need it.
+            "google": {"state": google["state"], "waiting": google.get("waiting")},
             "settings": {
                 "auto_eject": self.paths.auto_eject_file.exists(),
                 "auto_usb_backup": self.paths.auto_usb_backup_file.exists(),
@@ -923,6 +965,8 @@ class DashboardCore:
             "mark_deleted": lambda: self._mark_deleted(params),
             "open_verify_report": lambda: self._open_verify_report(params),
             "google_sync": self._google_sync,
+            "google_pause": self._google_pause,
+            "google_resume": self._google_resume,
             "toggle_auto_eject": lambda: self._toggle(self.paths.auto_eject_file, "Auto-eject"),
             "toggle_auto_usb_backup": lambda: self._toggle(
                 self.paths.auto_usb_backup_file, "Automatic USB backup"
@@ -932,8 +976,8 @@ class DashboardCore:
             ),
             "service_start": self._service_start,
             "service_stop": lambda: self._service_stop(str(params.get("mode", ""))),
-            "service_stop_exit": lambda: self._service_stop(
-                str(params.get("mode", "")), exiting=True
+            "service_stop_exit": lambda: self._service_stop_exit(
+                str(params.get("mode", "")), bool(params.get("pause_upload"))
             ),
             "dismiss_last": self._dismiss_last,
             "clear_history": self._clear_history,
@@ -1216,6 +1260,46 @@ class DashboardCore:
             }
         self._spawn([str(self.paths.python), str(self.paths.google_script), "--sync"])
         return {"ok": True, "message": "Google Photos sync started."}
+
+    def _google_pause(self) -> Dict[str, Any]:
+        self.paths.install_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.google_paused_file.touch()
+        # The sync stops its rclone and says paused. Only an rclone with no sync is stopped
+        # here: stopping both could stop rclone first, and the sync would report a failure.
+        if self._script_running(self.paths.google_script):
+            target = self.paths.google_script
+        else:
+            target = self.paths.google_rclone_pattern
+        self._run(
+            ["/usr/bin/pkill", "-TERM", "-f", str(target)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        self._invalidate("google")
+        return {"ok": True, "message": "Uploads paused. Resume them when you're ready."}
+
+    def _google_resume(self) -> Dict[str, Any]:
+        try:
+            self.paths.google_paused_file.unlink()
+        except FileNotFoundError:
+            pass
+        result = self._google_sync()
+        return {**result, "message": "Uploads resumed."} if result["ok"] else result
+
+    def resume_owed_upload(self) -> None:
+        """Photo Offloader opened: carry on an unfinished upload rather than wait for a retry."""
+        if (
+            self.paths.google_retry_file.exists()
+            and not self.paths.google_paused_file.exists()
+            and self.paths.google_script.is_file()
+        ):
+            self._spawn([str(self.paths.python), str(self.paths.google_script), "--retry"])
+
+    def _service_stop_exit(self, mode: str, pause_upload: bool) -> Dict[str, Any]:
+        if pause_upload:
+            self._google_pause()
+        return self._service_stop(mode, exiting=True)
 
     def _toggle(self, flag: Path, label: str) -> Dict[str, Any]:
         self.paths.install_dir.mkdir(parents=True, exist_ok=True)

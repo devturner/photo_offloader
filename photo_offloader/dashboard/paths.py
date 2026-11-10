@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
-from photo_offloader import config
+from photo_offloader import config, google_photos
 
 
 @dataclass(frozen=True)
@@ -81,6 +81,23 @@ class Paths:
     @property
     def google_status_file(self) -> Path:
         return self.install_dir / "google_photos_status.json"
+
+    @property
+    def google_paused_file(self) -> Path:
+        return self.install_dir / config.GOOGLE_PAUSED_PATH.name
+
+    @property
+    def google_retry_file(self) -> Path:
+        return self.install_dir / config.GOOGLE_RETRY_PATH.name
+
+    @property
+    def google_queue_lock_file(self) -> Path:
+        return self.install_dir / config.GOOGLE_QUEUE_LOCK_PATH.name
+
+    @property
+    def google_rclone_pattern(self) -> Path:
+        """What only the command line of an rclone upload started by our sync contains."""
+        return self.install_dir / google_photos.UPLOAD_LIST_PREFIX
 
     @property
     def import_log_file(self) -> Path:

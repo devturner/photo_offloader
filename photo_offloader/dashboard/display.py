@@ -5,6 +5,7 @@ Nothing here touches the machine, the clock or the files, so it can all be teste
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime
 from pathlib import Path
@@ -368,15 +369,37 @@ def _cloud_step(
     state = google["state"]
     if not google["configured"]:
         return _step("cloud", "Google Photos", "off", "Not set up", setup_step)
+    if state == "paused":
+        waiting = google.get("waiting")
+        return _step(
+            "cloud",
+            "Google Photos",
+            "off",  # the user's choice, not a problem
+            "Paused",
+            f"{plural(waiting, 'file')} waiting" if waiting else "Uploads are paused",
+            [_action("google_resume", "Resume")],
+        )
+    if state == "retrying":
+        minutes = math.ceil(google["retry_in"] / 60)
+        return _step(
+            "cloud",
+            "Google Photos",
+            "warn",
+            f"Retrying in {minutes} min" if minutes else "Retrying soon",
+            google["message"] or "The upload didn't finish",
+            [_action("google_sync", "Retry now"), _action("google_pause", "Pause")],
+        )
     if state == "running":
         upload = google["progress"]
+        detail = f"{upload['transferred']} of {upload['total']}" if upload else "Preparing"
         return _step(
             "cloud",
             "Google Photos",
             "active",
             "Finishing upload" if upload and upload["finalizing"] else "Uploading",
-            f"{upload['transferred']} of {upload['total']}" if upload else "Preparing",
-            (),
+            # A card imported during the upload goes up after it.
+            f"{detail} · more to follow" if google.get("queued") else detail,
+            [_action("google_pause", "Pause")],
             # The top panel already has this bar, unless an import is using the panel.
             upload["percent"] if upload and not in_top_panel else None,
         )
