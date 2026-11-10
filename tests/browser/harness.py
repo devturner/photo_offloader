@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from unittest.mock import patch
 
-from photo_offloader import catalog, config, run_report, verify_report
+from photo_offloader import catalog, config, google_photos, run_report, verify_report
 from photo_offloader.dashboard import core
 from photo_offloader.dashboard.server import DashboardServer
 from tests import support
@@ -98,6 +98,8 @@ class Sandbox:
             alive = self.importer_up
             if argv[-1].endswith(config.GOOGLE_SYNC):
                 alive = self.google_up
+            elif argv[-1].endswith(google_photos.UPLOAD_LIST_PREFIX):
+                alive = False  # no rclone without its sync here
             elif argv[-1].endswith(config.VERIFY):
                 alive = self.verify_up
             return subprocess.CompletedProcess(argv, 0, "4242\n" if alive else "", "")
@@ -293,6 +295,32 @@ def _uploading(s: Sandbox) -> None:
         )
         s.core.state()
         s.advance(1)
+
+
+def _upload_queued(s: Sandbox) -> None:
+    """A card was imported during the upload; its sync waits to send the new files."""
+    _uploading(s)
+    s.paths.google_queue_lock_file.write_text(str(os.getpid()))  # a live process
+
+
+def _upload_paused(s: Sandbox) -> None:
+    s.set_up_google()
+    s.status(state="complete", ago=600, usb_planned=False)
+    s.record(
+        finished_at=s.now - 599,
+        started_at=s.now - 700,
+        details={"upload": {"outcome": "paused", "files": 7, "bytes": 90 * MB, "seconds": 12.0}},
+    )
+    s.paths.google_paused_file.touch()
+    s.google_status("paused", ago=500, waiting=312, message="Uploads are paused.")
+
+
+def _upload_retrying(s: Sandbox) -> None:
+    s.set_up_google()
+    s.status(state="complete", ago=600, usb_planned=False)
+    s.record(finished_at=s.now - 599, started_at=s.now - 700)
+    s.google_status("failed", ago=60, message="rclone exited with status 5.")
+    s.paths.google_retry_file.write_text(f"2 {int(s.now - 60)}\n")  # 5 min after the 2nd try
 
 
 def _drive_files(s: Sandbox, on_both: int, only_on_mac: int) -> None:
@@ -784,6 +812,9 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     ),
     "starting_upload": _starting_upload,
     "uploading": _uploading,
+    "upload_queued": _upload_queued,
+    "upload_paused": _upload_paused,
+    "upload_retrying": _upload_retrying,
     "finished": _finished,
     "finished_advanced": _finished_advanced,
     "failed": _failed,

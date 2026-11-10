@@ -1964,7 +1964,7 @@ class TestUploadControl(Fixture):
         self.assertEqual(self.pipeline("cloud")["detail"], "4 MiB of 17 MiB")
         queue.write_text(str(os.getpid()))  # the waiting sync's process ID
         self.core._cache.clear()
-        self.assertEqual(self.pipeline("cloud")["detail"], "4 MiB of 17 MiB · more to follow")
+        self.assertEqual(self.pipeline("cloud")["detail"], "More files queued")
 
     def test_the_page_can_tell_an_upload_from_an_import(self):
         self.google_up = True

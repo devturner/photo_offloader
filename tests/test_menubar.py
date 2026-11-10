@@ -29,6 +29,17 @@ class TestMenuEntries(unittest.TestCase):
             ],
         )
 
+    def test_a_running_upload_can_be_paused_and_paused_uploads_resumed(self):
+        for upload, title in (("running", "Pause Uploads"), ("paused", "Resume Uploads")):
+            for running in (True, False):  # uploads carry on with the service stopped
+                with self.subTest(upload=upload, running=running):
+                    entries = model.menu_entries(Snapshot(running=running, upload=upload))
+                    self.assertEqual(entries[1].key, None)
+                    self.assertEqual((entries[2].key, entries[2].title), ("upload", title))
+
+    def test_no_upload_item_without_an_upload(self):
+        self.assertNotIn("upload", keys(Snapshot(running=True)))
+
     def test_stopped_menu_offers_start_and_stop_and_exit(self):
         self.assertEqual(
             keys(Snapshot(running=False)),

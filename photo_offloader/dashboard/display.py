@@ -397,8 +397,9 @@ def _cloud_step(
             "Google Photos",
             "active",
             "Finishing upload" if upload and upload["finalizing"] else "Uploading",
-            # A card imported during the upload goes up after it.
-            f"{detail} · more to follow" if google.get("queued") else detail,
+            # A card imported during the upload goes up after it. Short, so the card row
+            # keeps its height; the bar still shows how far this upload is.
+            "More files queued" if google.get("queued") else detail,
             [_action("google_pause", "Pause")],
             # The top panel already has this bar, unless an import is using the panel.
             upload["percent"] if upload and not in_top_panel else None,
