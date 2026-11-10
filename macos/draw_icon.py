@@ -1,9 +1,17 @@
-"""Photo Offloader's app icon, drawn from scratch: an SD card with a gold arrow lifting off it."""
+"""Photo Offloader's icon, drawn from scratch: an SD card with a gold arrow lifting off it.
+
+    .venv/bin/python macos/draw_icon.py     writes macos/AppIcon.png, the app bundles' icon
+
+The dashboard header shows the same shapes as inline SVG (``svg()``); a test checks that the copy
+in photo_offloader/dashboard/web/index.html still matches.
+"""
 
 import math
 import sys
+from typing import List, Tuple
 
-from PIL import Image, ImageDraw
+Point = Tuple[float, float]
+Color = Tuple[int, int, int]
 
 S = 4  # supersampling, for smooth edges
 OUTLINE = (44, 46, 52)
@@ -38,12 +46,6 @@ def rounded_polygon(points, radius, steps=12):
                 )
             )
     return out
-
-
-def outlined(draw, points, fill):
-    sp = scaled(points)
-    draw.line(sp + sp[:2], fill=OUTLINE, width=W * S, joint="curve")
-    draw.polygon(sp, fill=fill)
 
 
 def card_outline():
@@ -89,25 +91,56 @@ def swoop():
     return offset(-sw / 2) + head + offset(sw / 2)[::-1]
 
 
-def draw_icon(size=1024):
-    big = Image.new("RGBA", (1024 * S, 1024 * S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(big)
-    outlined(d, card_outline(), BLUE)
+def shapes() -> List[Tuple[List[Point], Color, bool]]:
+    """Every shape, back to front, as (points, fill, outlined)."""
+    out = [(card_outline(), BLUE, True)]
     # Gold contacts: four tall pads and a shorter one under the cut corner.
     for i, x in enumerate((268, 362, 456, 550, 644)):
         height = 170 if i < 4 else 130
-        outlined(
-            d,
-            rounded_polygon(
-                [(x, 164), (x + 64, 164), (x + 64, 164 + height), (x, 164 + height)], 12
-            ),
-            GOLD,
-        )
+        pad = [(x, 164), (x + 64, 164), (x + 64, 164 + height), (x, 164 + height)]
+        out.append((rounded_polygon(pad, 12), GOLD, True))
     # The label, with the arrow on it.
-    label = rounded_polygon([(256, 520), (768, 520), (768, 868), (256, 868)], 30)
-    d.polygon(scaled(label), fill=LABEL)
-    d.polygon(scaled(swoop()), fill=GOLD)
+    out.append(
+        (rounded_polygon([(256, 520), (768, 520), (768, 868), (256, 868)], 30), LABEL, False)
+    )
+    out.append((swoop(), GOLD, False))
+    return out
+
+
+def draw_icon(size=1024):
+    from PIL import Image, ImageDraw  # only the PNG needs Pillow
+
+    big = Image.new("RGBA", (1024 * S, 1024 * S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(big)
+    for points, fill, outline in shapes():
+        sp = scaled(points)
+        if outline:  # the fill covers the inner half of the line, as paint-order does in svg()
+            d.line(sp + sp[:2], fill=OUTLINE, width=W * S, joint="curve")
+        d.polygon(sp, fill=fill)
     return big.resize((size, size), Image.LANCZOS)
+
+
+def svg() -> str:
+    """The icon as one line of inline SVG, for the dashboard header."""
+
+    def color(rgb: Color) -> str:
+        return "#%02x%02x%02x" % rgb
+
+    paths = []
+    for points, fill, outline in shapes():
+        d = "M" + "L".join(f"{x:.0f} {y:.0f}" for x, y in points) + "Z"
+        stroke = (
+            f' stroke="{color(OUTLINE)}" stroke-width="{W}" stroke-linejoin="round"'
+            ' paint-order="stroke"'
+            if outline
+            else ""
+        )
+        paths.append(f'<path d="{d}" fill="{color(fill)}"{stroke}/>')
+    return (
+        '<svg class="app-icon" viewBox="0 0 1024 1024" aria-hidden="true">'
+        + "".join(paths)
+        + "</svg>"
+    )
 
 
 if __name__ == "__main__":
