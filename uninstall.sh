@@ -157,7 +157,7 @@ fi
 bootout_agent "$IMPORT_LABEL" "$AGENTS_DIR/$IMPORT_LABEL.plist"
 bootout_agent "$USB_LABEL" "$AGENTS_DIR/$USB_LABEL.plist"
 
-# Every installed program, as "path|description". Entries after the first five are
+# Every installed program, as "path|description". Entries after the first six are
 # the flat layout used before v2.5, so an older installation is also cleaned up.
 PROGRAMS=(
   "$INSTALL_DIR/scripts/trigger.sh|camera trigger"
@@ -165,6 +165,7 @@ PROGRAMS=(
   "$INSTALL_DIR/bin/photo-offloader-import|Python importer"
   "$INSTALL_DIR/bin/photo-offloader-dashboard|dashboard"
   "$INSTALL_DIR/bin/photo-offloader-menubar|menu-bar app"
+  "$INSTALL_DIR/Photo Offloader.app/Contents/MacOS/photo-offloader-menubar|menu-bar app"
   "$INSTALL_DIR/camera_offloader_trigger.sh|camera trigger (old layout)"
   "$INSTALL_DIR/photo_offloader_import_supervisor.sh|import supervisor (old layout)"
   "$INSTALL_DIR/camera_offloader_v2.py|Python importer (old layout)"

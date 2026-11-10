@@ -35,7 +35,7 @@ jobs:
         run: python -m ruff format --check .
 
       - name: Validate shell scripts
-        run: bash -n install.sh uninstall.sh scripts/*.sh tools/*.sh
+        run: bash -n install.sh uninstall.sh scripts/*.sh tools/*.sh macos/*.sh
 
       - name: Compile Python modules
         run: python -m compileall -q photo_offloader tools && python -m py_compile bin/*

@@ -68,7 +68,7 @@ after each one. To undo it, run `launchctl unsetenv NAME` and restart the servic
 
 | What | Where |
 | --- | --- |
-| The app, replaced on each install | `~/Library/Application Support/PhotoOffloader` |
+| The app, replaced on each install | `~/Library/Application Support/PhotoOffloader`, including `Photo Offloader.app`, which runs the menu bar |
 | Catalog, history, run reports and preferences, kept on uninstall | `~/Library/Application Support/PhotoOffloaderData` |
 | Background agents | `~/Library/LaunchAgents/com.user.photooffloader.plist` and `com.user.photooffloader.menubar.plist` |
 

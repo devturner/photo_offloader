@@ -155,6 +155,22 @@ if ! "$VENV_DIR/bin/python3" -m pip install --quiet "pywebview>=5.0" >/dev/null 
   echo "Note: pywebview could not be installed; the dashboard will open in your web browser instead."
 fi
 
+# Run the menu bar from its own app bundle so macOS shows it as Photo Offloader, with its icon,
+# instead of as Python. Without the bundle it still works, started by python3 directly.
+MENUBAR_APP="$INSTALL_DIR/Photo Offloader.app"
+MENUBAR_PROGRAM=("$VENV_DIR/bin/python3" "$MENUBAR_PATH")
+if "$SCRIPT_DIR/macos/build_app.sh" "$MENUBAR_APP" "$VENV_DIR/bin/python3" "$MENUBAR_PATH" "$BUILD_VERSION"; then
+  MENUBAR_PROGRAM=("$MENUBAR_APP/Contents/MacOS/photo-offloader-menubar")
+else
+  rm -rf "$MENUBAR_APP"
+  echo "Note: the menu-bar app bundle could not be built; macOS will list the menu bar as \"Python\"."
+fi
+MENUBAR_ARGUMENTS=""
+for arg in "${MENUBAR_PROGRAM[@]}"; do
+  MENUBAR_ARGUMENTS+="        <string>$arg</string>"$'\n'
+done
+MENUBAR_ARGUMENTS="${MENUBAR_ARGUMENTS%$'\n'}"
+
 cat > "$PLIST_PATH" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -194,8 +210,7 @@ cat > "$UI_PLIST_PATH" <<EOF
     <string>$UI_LABEL</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$VENV_DIR/bin/python3</string>
-        <string>$MENUBAR_PATH</string>
+$MENUBAR_ARGUMENTS
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -240,7 +255,7 @@ echo "Installation complete."
 echo "Importer: $SCRIPT_PATH"
 echo "Trigger:   $TRIGGER_PATH"
 echo "Dashboard: $DASHBOARD_PATH"
-echo "Menu bar:  $MENUBAR_PATH"
+echo "Menu bar:  ${MENUBAR_PROGRAM[*]}"
 echo "Menu bar log: $INSTALL_DIR/menubar.log"
 echo "Menu bar errors: $INSTALL_DIR/menubar-error.log"
 echo "Dashboard log: $INSTALL_DIR/dashboard.log"
