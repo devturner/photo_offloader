@@ -13,6 +13,10 @@ VERBOSE=0
 DRY_RUN=0
 WAIT_SECONDS="${PHOTO_OFFLOADER_UNINSTALL_WAIT_SECONDS:-10}"
 UID_NUM="$(id -u)"
+# The app you open and its Desktop link, which install.sh puts outside INSTALL_DIR.
+USER_APP="$HOME/Applications/Photo Offloader.app"
+USER_APP_ID="com.user.photooffloader"
+DESKTOP_LINK="$HOME/Desktop/Photo Offloader"
 DOMAIN="gui/$UID_NUM"
 
 usage() {
@@ -157,7 +161,7 @@ fi
 bootout_agent "$IMPORT_LABEL" "$AGENTS_DIR/$IMPORT_LABEL.plist"
 bootout_agent "$USB_LABEL" "$AGENTS_DIR/$USB_LABEL.plist"
 
-# Every installed program, as "path|description". Entries after the first six are
+# Every installed program, as "path|description". Entries after the first seven are
 # the flat layout used before v2.5, so an older installation is also cleaned up.
 PROGRAMS=(
   "$INSTALL_DIR/scripts/trigger.sh|camera trigger"
@@ -165,7 +169,8 @@ PROGRAMS=(
   "$INSTALL_DIR/bin/photo-offloader-import|Python importer"
   "$INSTALL_DIR/bin/photo-offloader-dashboard|dashboard"
   "$INSTALL_DIR/bin/photo-offloader-menubar|menu-bar app"
-  "$INSTALL_DIR/Photo Offloader.app/Contents/MacOS/photo-offloader-menubar|menu-bar app"
+  "$INSTALL_DIR/Photo Offloader Menu Bar.app/Contents/MacOS/photo-offloader-menubar|menu-bar app"
+  "$USER_APP/Contents/MacOS/photo-offloader|Photo Offloader app"
   "$INSTALL_DIR/camera_offloader_trigger.sh|camera trigger (old layout)"
   "$INSTALL_DIR/photo_offloader_import_supervisor.sh|import supervisor (old layout)"
   "$INSTALL_DIR/camera_offloader_v2.py|Python importer (old layout)"
@@ -215,11 +220,20 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     log INFO "Removing installed application directory"
     rm -rf "$INSTALL_DIR"
   fi
+  # Only what install.sh made: a link to our app, and an app with our bundle ID.
+  if [[ -L "$DESKTOP_LINK" && "$(readlink "$DESKTOP_LINK")" == "$USER_APP" ]]; then
+    log INFO "Removing the Photo Offloader link from the Desktop"
+    rm -f "$DESKTOP_LINK"
+  fi
+  if [[ "$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$USER_APP/Contents/Info.plist" 2>/dev/null)" == "$USER_APP_ID" ]]; then
+    log INFO "Removing $USER_APP"
+    rm -rf "$USER_APP"
+  fi
   log INFO "Removing application log files"
   rm -f "$HOME/.camera_transfer.log" "$HOME/.camera_transfer_trigger.log"
   echo "Application scripts, known LaunchAgents, state, and logs removed."
 else
-  log INFO "DRY RUN: would remove known Photo Offloader plists, $INSTALL_DIR, and application logs"
+  log INFO "DRY RUN: would remove known Photo Offloader plists, $INSTALL_DIR, $USER_APP, its Desktop link, and application logs"
   echo "Dry run complete; nothing was changed."
 fi
 echo "Persistent media catalog preserved: $DATA_DIR/catalog.sqlite3"

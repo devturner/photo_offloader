@@ -86,6 +86,57 @@ class LauncherCase(unittest.TestCase):
         return server
 
 
+class TestTheApp(LauncherCase):
+    """Photo Offloader.app: opening it starts everything; other programs only want the dashboard."""
+
+    def open_app(self, *args):
+        self.events = []
+        self.opened = self.events  # the browser opening is recorded in order with the start
+        return ui.app_main(
+            list(args),
+            start_service=lambda: self.events.append("start"),
+            paths=self.paths,
+            web_root=self.web,
+            open_browser=self.events.append,
+            webview_module=None,
+            idle_timeout=0.4,
+            activate=lambda pid: False,
+        )
+
+    def test_opening_the_app_starts_the_service_then_shows_the_dashboard(self):
+        self.assertEqual(self.open_app(), 0)
+        self.assertEqual(self.events[0], "start")
+        self.assertEqual(len(self.events), 2, self.events)
+        self.assertIn("127.0.0.1", self.events[1])
+
+    def test_programs_that_only_want_the_dashboard_leave_the_service_alone(self):
+        for args in (["--dashboard"], ["--if-closed"]):
+            with self.subTest(args=args):
+                self.assertEqual(self.open_app(*args), 0)
+                self.assertNotIn("start", self.events)
+                self.assertEqual(len(self.events), 1, self.events)
+
+    def test_a_failed_start_still_shows_the_dashboard(self):
+        # The dashboard then says the service is stopped and offers Start.
+        def failing_start():
+            self.events.append("start")
+            raise OSError("service.sh is missing")
+
+        self.events = []
+        ui.app_main(
+            [],
+            start_service=failing_start,
+            paths=self.paths,
+            web_root=self.web,
+            open_browser=self.events.append,
+            webview_module=None,
+            idle_timeout=0.4,
+            activate=lambda pid: False,
+        )
+        self.assertEqual(self.events[0], "start")
+        self.assertEqual(len(self.events), 2, self.events)
+
+
 class TestStartingTheDashboard(LauncherCase):
     def test_with_pywebview_it_opens_a_native_window_on_a_live_server(self):
         reachable = []

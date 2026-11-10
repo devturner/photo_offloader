@@ -11,6 +11,13 @@ SCRIPT_PATH="$INSTALL_DIR/bin/photo-offloader-import"
 TRIGGER_PATH="$INSTALL_DIR/scripts/trigger.sh"
 MENUBAR_PATH="$INSTALL_DIR/bin/photo-offloader-menubar"
 DASHBOARD_PATH="$INSTALL_DIR/bin/photo-offloader-dashboard"
+# App bundles, so macOS shows Photo Offloader's name and icon instead of Python's: the menu bar,
+# and the app you open, which starts everything and shows the dashboard (config.APP_BUNDLE).
+MENUBAR_APP="$INSTALL_DIR/Photo Offloader Menu Bar.app"
+USER_APP="$HOME/Applications/Photo Offloader.app"
+USER_APP_ID="com.user.photooffloader"
+USER_APP_PROGRAM="$USER_APP/Contents/MacOS/photo-offloader"
+DESKTOP_LINK="$HOME/Desktop/Photo Offloader"
 # Flat layout used before v2.5; removed on upgrade.
 LEGACY_FILES=(camera_offloader_v2.py camera_offloader_trigger.sh photo_offloader_import_supervisor.sh
   photo_offloader_service.sh dashboard_core.py dashboard_server.py menubar_model.py photo_offloader_ui.py
@@ -85,7 +92,7 @@ for item in "${APP_DIRS[@]}" "${APP_FILES[@]}"; do
 done
 
 # A dashboard left running from the previous version would keep serving old code.
-for dashboard in "$DASHBOARD_PATH" "$INSTALL_DIR/photo_offloader_ui.py"; do
+for dashboard in "$DASHBOARD_PATH" "$USER_APP_PROGRAM" "$INSTALL_DIR/photo_offloader_ui.py"; do
   /usr/bin/pkill -f -- "$dashboard" 2>/dev/null || true
 done
 
@@ -155,15 +162,29 @@ if ! "$VENV_DIR/bin/python3" -m pip install --quiet "pywebview>=5.0" >/dev/null 
   echo "Note: pywebview could not be installed; the dashboard will open in your web browser instead."
 fi
 
-# Run the menu bar from its own app bundle so macOS shows it as Photo Offloader, with its icon,
-# instead of as Python. Without the bundle it still works, started by python3 directly.
-MENUBAR_APP="$INSTALL_DIR/Photo Offloader.app"
+# Without its bundle the menu bar still works, started by python3 directly.
 MENUBAR_PROGRAM=("$VENV_DIR/bin/python3" "$MENUBAR_PATH")
-if "$SCRIPT_DIR/macos/build_app.sh" "$MENUBAR_APP" "$VENV_DIR/bin/python3" "$MENUBAR_PATH" "$BUILD_VERSION"; then
+if "$SCRIPT_DIR/macos/build_app.sh" menubar "$MENUBAR_APP" "$VENV_DIR/bin/python3" "$MENUBAR_PATH" "$BUILD_VERSION"; then
   MENUBAR_PROGRAM=("$MENUBAR_APP/Contents/MacOS/photo-offloader-menubar")
 else
   rm -rf "$MENUBAR_APP"
   echo "Note: the menu-bar app bundle could not be built; macOS will list the menu bar as \"Python\"."
+fi
+
+# The app you open, with a link on the Desktop. Never replace someone else's app of the same
+# name, or anything already on the Desktop under the link's name.
+DASHBOARD_PROGRAM=("$VENV_DIR/bin/python3" "$DASHBOARD_PATH")
+existing_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$USER_APP/Contents/Info.plist" 2>/dev/null || true)"
+if [[ -e "$USER_APP" && "$existing_id" != "$USER_APP_ID" ]]; then
+  echo "Note: $USER_APP is another app, so Photo Offloader's app was not installed. Open the dashboard from the menu bar."
+elif mkdir -p "$HOME/Applications" &&
+  "$SCRIPT_DIR/macos/build_app.sh" app "$USER_APP" "$VENV_DIR/bin/python3" "$INSTALL_DIR/bin/photo-offloader-app" "$BUILD_VERSION"; then
+  DASHBOARD_PROGRAM=("$USER_APP_PROGRAM" --dashboard)
+  if [[ ! -e "$DESKTOP_LINK" && ! -L "$DESKTOP_LINK" ]]; then
+    ln -s "$USER_APP" "$DESKTOP_LINK" || echo "Note: could not put a Photo Offloader link on the Desktop."
+  fi
+else
+  echo "Note: Photo Offloader.app could not be built. Open the dashboard from the menu bar."
 fi
 MENUBAR_ARGUMENTS=""
 for arg in "${MENUBAR_PROGRAM[@]}"; do
@@ -248,13 +269,14 @@ fi
 # Explicitly kick the menu-bar agent after loading and open the dashboard so
 # successful installation gives immediate visible feedback.
 launchctl kickstart -k "gui/$(id -u)/$UI_LABEL"
-nohup "$VENV_DIR/bin/python3" "$DASHBOARD_PATH" >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
+nohup "${DASHBOARD_PROGRAM[@]}" >> "$INSTALL_DIR/dashboard.log" 2>&1 </dev/null &
 echo "Opened the Photo Offloader dashboard."
 
 echo "Installation complete."
 echo "Importer: $SCRIPT_PATH"
 echo "Trigger:   $TRIGGER_PATH"
 echo "Dashboard: $DASHBOARD_PATH"
+echo "App:       $USER_APP (and a link on the Desktop)"
 echo "Menu bar:  ${MENUBAR_PROGRAM[*]}"
 echo "Menu bar log: $INSTALL_DIR/menubar.log"
 echo "Menu bar errors: $INSTALL_DIR/menubar-error.log"

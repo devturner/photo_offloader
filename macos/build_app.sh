@@ -1,20 +1,38 @@
 #!/bin/bash
-# Build "Photo Offloader.app", which runs the menu bar under its own name and icon.
-#   build_app.sh APP_PATH VENV_PYTHON SCRIPT VERSION
-# Exits 3 when VENV_PYTHON has no shared library to load (install.sh then runs the menu bar
-# with python3 directly) and 1 on any other failure. A failed build leaves nothing at APP_PATH.
+# Build an app bundle that runs one of Photo Offloader's Python programs under its own name and
+# icon, so macOS doesn't show it as "Python".
+#   build_app.sh menubar|app APP_PATH VENV_PYTHON SCRIPT VERSION
+# menubar  the menu bar: no Dock icon, started by its LaunchAgent
+# app      the app you open: starts everything and shows the dashboard window
+# Exits 3 when VENV_PYTHON has no shared library to load (install.sh then runs the program with
+# python3 directly) and 1 on any other failure. A failed build leaves nothing at APP_PATH.
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-  echo "Usage: build_app.sh APP_PATH VENV_PYTHON SCRIPT VERSION" >&2
+usage() {
+  echo "Usage: build_app.sh menubar|app APP_PATH VENV_PYTHON SCRIPT VERSION" >&2
   exit 2
-fi
-APP="$1"
-PYTHON="$2"
-SCRIPT="$3"
-VERSION="$4"
+}
+[[ $# -eq 5 ]] || usage
+case "$1" in
+  menubar)
+    BUNDLE_ID="com.user.photooffloader.menubar"
+    EXECUTABLE="photo-offloader-menubar"
+    # LSUIElement: a menu-bar app, so no Dock icon and no entry in the app switcher.
+    EXTRA_KEYS="    <key>LSUIElement</key>
+    <true/>"
+    ;;
+  app)
+    BUNDLE_ID="com.user.photooffloader"
+    EXECUTABLE="photo-offloader"
+    EXTRA_KEYS=""
+    ;;
+  *) usage ;;
+esac
+APP="$2"
+PYTHON="$3"
+SCRIPT="$4"
+VERSION="$5"
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-EXECUTABLE="photo-offloader-menubar"
 
 # The venv records Homebrew's opt path, which survives Python patch upgrades, so the library
 # path is taken from it rather than from a Cellar version folder.
@@ -55,7 +73,6 @@ iconutil -c icns "$STAGING/AppIcon.iconset" -o "$BUNDLE/Contents/Resources/AppIc
 
 printf '%s\n%s\n%s\n' "$LIBPYTHON" "$PYTHON" "$SCRIPT" >"$BUNDLE/Contents/Resources/launcher.conf"
 
-# LSUIElement: a menu-bar app, so no Dock icon and no entry in the app switcher.
 cat >"$BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -66,7 +83,7 @@ cat >"$BUNDLE/Contents/Info.plist" <<EOF
     <key>CFBundleDisplayName</key>
     <string>Photo Offloader</string>
     <key>CFBundleIdentifier</key>
-    <string>com.user.photooffloader.menubar</string>
+    <string>$BUNDLE_ID</string>
     <key>CFBundleExecutable</key>
     <string>$EXECUTABLE</string>
     <key>CFBundleIconFile</key>
@@ -77,8 +94,7 @@ cat >"$BUNDLE/Contents/Info.plist" <<EOF
     <string>$VERSION</string>
     <key>CFBundleVersion</key>
     <string>$VERSION</string>
-    <key>LSUIElement</key>
-    <true/>
+$EXTRA_KEYS
 </dict>
 </plist>
 EOF

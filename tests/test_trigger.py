@@ -314,6 +314,20 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Requested progress dashboard", self.log.read_text())
 
+    def test_the_dashboard_opens_in_the_app_when_it_is_installed(self):
+        # HOME is the test folder, so this is the app the trigger looks for.
+        program = self.root / "Applications" / "Photo Offloader.app" / "Contents" / "MacOS"
+        program.mkdir(parents=True)
+        seen = self.root / "app-args.txt"
+        (program / "photo-offloader").write_text(f'#!/bin/bash\nprintf "%s\\n" "$@" > "{seen}"\n')
+        (program / "photo-offloader").chmod(0o755)
+        result = self.run_trigger()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deadline = time.monotonic() + 20  # started in the background
+        while not seen.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(seen.read_text().split(), ["--if-closed"])
+
     def test_default_import_runs_without_opening_terminal(self):
         (self.install / ".terminal-output-enabled").unlink()
         result = self.run_trigger()

@@ -42,6 +42,7 @@ def _test_locations(root: Path) -> dict:
     return {
         "HOME": root / "home",
         "INSTALL_DIR": install,
+        "APP_BUNDLE": root / "Applications" / "Photo Offloader.app",
         "DATA_DIR": data,
         "LOCAL_DEST_ROOT": root / "CameraImports",
         "LOCAL_RAW_DEST_ROOT": root / "CameraImportsRaw",

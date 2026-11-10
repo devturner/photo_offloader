@@ -107,8 +107,11 @@ class PhotoOffloaderMenuBar(rumps.App):
             rumps.notification("Photo Offloader", "Could not start USB backup", str(exc))
 
     def open_dashboard(self, _sender: object = None) -> None:
+        # In Photo Offloader.app the window carries the app's name and icon, not Python's.
+        app = config.APP_BUNDLE / config.APP_PROGRAM
+        command = [str(app), "--dashboard"] if os.access(app, os.X_OK) else None
         subprocess.Popen(
-            [str(PYTHON), str(DASHBOARD_SCRIPT)],
+            command or [str(PYTHON), str(DASHBOARD_SCRIPT)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -283,20 +286,22 @@ class PhotoOffloaderMenuBar(rumps.App):
 
 
 def dashboard_pids() -> List[int]:
-    """Processes showing this installation's dashboard."""
-    try:
-        result = subprocess.run(
-            ["/usr/bin/pgrep", "-f", str(DASHBOARD_SCRIPT)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("Could not look for an open dashboard: %s", exc)
-        return []
-    own = {os.getpid(), os.getppid()}
-    return [int(line) for line in result.stdout.split() if line.isdigit() and int(line) not in own]
+    """Processes showing this installation's dashboard, as a script or in Photo Offloader.app."""
+    own, pids = {os.getpid(), os.getppid()}, []
+    for program in (DASHBOARD_SCRIPT, config.APP_BUNDLE / config.APP_PROGRAM):
+        try:
+            result = subprocess.run(
+                ["/usr/bin/pgrep", "-f", str(program)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("Could not look for an open dashboard: %s", exc)
+            continue
+        pids += [int(n) for n in result.stdout.split() if n.isdigit() and int(n) not in own]
+    return pids
 
 
 def menubar_agent_loaded() -> bool:

@@ -136,6 +136,12 @@ grep -F -- "$pattern" "{self.running}" | cut -d' ' -f1 | grep .
         self.run_service("stop")
         self.assertIn("777", self.killed.read_text())
 
+    def test_stop_closes_a_dashboard_shown_by_the_app(self):
+        app = self.root / "Applications" / "Photo Offloader.app"
+        self.pretend_running(778, app / "Contents" / "MacOS" / "photo-offloader")
+        self.run_service("stop", PHOTO_OFFLOADER_APP=str(app))
+        self.assertIn("778", self.killed.read_text())
+
     def test_stop_is_idempotent_when_already_stopped(self):
         self.assertEqual(self.run_service("stop").returncode, 0)
         again = self.run_service("stop")

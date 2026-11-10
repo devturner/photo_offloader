@@ -26,9 +26,11 @@ with open(sys.argv[1], "w") as out:
 """
 
 
-def build(app: Path, script: Path, python: str = sys.executable) -> subprocess.CompletedProcess:
+def build(
+    app: Path, script: Path, python: str = sys.executable, kind: str = "menubar"
+) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [str(BUILD), str(app), python, str(script), "9.8.7"],
+        [str(BUILD), kind, str(app), python, str(script), "9.8.7"],
         capture_output=True,
         text=True,
         timeout=120,
@@ -43,7 +45,7 @@ class TestMenubarAppBundle(unittest.TestCase):
         cls.tmp = Path(cls._tmp.name)
         cls.script = cls.tmp / "probe.py"
         cls.script.write_text(PROBE, encoding="utf-8")
-        cls.app = cls.tmp / "Photo Offloader.app"
+        cls.app = cls.tmp / "Photo Offloader Menu Bar.app"
         result = build(cls.app, cls.script)
         if result.returncode == UNSUPPORTED_PYTHON:
             cls._tmp.cleanup()
@@ -79,6 +81,31 @@ class TestMenubarAppBundle(unittest.TestCase):
         self.assertEqual(seen["prefix"], sys.prefix)
         self.assertEqual(seen["argv"], [str(out), "extra"])
 
+    def test_the_app_you_open_is_a_normal_app_with_its_own_identity(self):
+        # It shows the dashboard window, so it needs a Dock icon; the menu bar mustn't have one.
+        app = self.tmp / "Photo Offloader.app"
+        result = build(app, self.script, kind="app")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
+        self.assertEqual(info["CFBundleName"], "Photo Offloader")
+        self.assertEqual(info["CFBundleIdentifier"], "com.user.photooffloader")
+        self.assertEqual(info["CFBundleExecutable"], "photo-offloader")
+        self.assertNotIn("LSUIElement", info)
+        out = self.tmp / "app-probe.json"
+        run = subprocess.run(
+            [str(app / "Contents" / "MacOS" / "photo-offloader"), str(out)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(json.loads(out.read_text(encoding="utf-8"))["prefix"], sys.prefix)
+
+    def test_an_unknown_kind_is_refused(self):
+        result = build(self.tmp / "Odd.app", self.script, kind="widget")
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((self.tmp / "Odd.app").exists())
+
     def test_a_python_that_cannot_be_embedded_is_reported(self):
         fake = self.tmp / "not-python"
         fake.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
@@ -110,16 +137,34 @@ class TestInstallUsesTheBundle(unittest.TestCase):
         cls.install = (ROOT / "install.sh").read_text(encoding="utf-8")
         cls.uninstall = (ROOT / "uninstall.sh").read_text(encoding="utf-8")
 
-    def test_install_builds_the_bundle_and_falls_back_to_python(self):
-        self.assertIn('"$SCRIPT_DIR/macos/build_app.sh"', self.install)
+    def test_install_builds_both_apps_and_falls_back_to_python(self):
+        self.assertIn('"$SCRIPT_DIR/macos/build_app.sh" menubar', self.install)
+        self.assertIn('"$SCRIPT_DIR/macos/build_app.sh" app', self.install)
         self.assertIn('MENUBAR_PROGRAM=("$VENV_DIR/bin/python3" "$MENUBAR_PATH")', self.install)
+        self.assertIn('DASHBOARD_PROGRAM=("$VENV_DIR/bin/python3" "$DASHBOARD_PATH")', self.install)
         self.assertIn('for arg in "${MENUBAR_PROGRAM[@]}"', self.install)
 
-    def test_uninstall_stops_the_bundled_menu_bar(self):
+    def test_install_never_replaces_another_app_or_a_desktop_item(self):
+        self.assertIn('"$existing_id" != "$USER_APP_ID"', self.install)
+        self.assertIn('[[ ! -e "$DESKTOP_LINK" && ! -L "$DESKTOP_LINK" ]]', self.install)
+
+    def test_install_and_uninstall_agree_on_where_things_go(self):
+        for line in (
+            'USER_APP="$HOME/Applications/Photo Offloader.app"',
+            'USER_APP_ID="com.user.photooffloader"',
+            'DESKTOP_LINK="$HOME/Desktop/Photo Offloader"',
+        ):
+            self.assertIn(line, self.install)
+            self.assertIn(line, self.uninstall)
+
+    def test_uninstall_stops_both_apps_and_removes_only_what_install_made(self):
         self.assertIn(
-            '"$INSTALL_DIR/Photo Offloader.app/Contents/MacOS/photo-offloader-menubar|',
+            '"$INSTALL_DIR/Photo Offloader Menu Bar.app/Contents/MacOS/photo-offloader-menubar|',
             self.uninstall,
         )
+        self.assertIn('"$USER_APP/Contents/MacOS/photo-offloader|', self.uninstall)
+        self.assertIn('"$(readlink "$DESKTOP_LINK")" == "$USER_APP"', self.uninstall)
+        self.assertIn(')" == "$USER_APP_ID" ]]; then', self.uninstall)
 
 
 if __name__ == "__main__":

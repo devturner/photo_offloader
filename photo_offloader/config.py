@@ -31,6 +31,11 @@ TRIGGER = "scripts/trigger.sh"
 SUPERVISOR = "scripts/import_supervisor.sh"
 SERVICE = "scripts/service.sh"
 
+# The app you open. It starts everything and shows the dashboard under its own name and icon.
+# install.sh puts it here; scripts/service.sh and scripts/trigger.sh use the same path.
+APP_BUNDLE = HOME / "Applications" / "Photo Offloader.app"
+APP_PROGRAM = "Contents/MacOS/photo-offloader"  # inside APP_BUNDLE
+
 # Archives.
 LOCAL_DEST_ROOT = HOME / "Pictures" / "CameraImports"  # photos, video, other
 LOCAL_RAW_DEST_ROOT = HOME / "Pictures" / "CameraImportsRaw"  # camera RAW

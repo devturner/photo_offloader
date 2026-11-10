@@ -5,7 +5,9 @@ All notable changes to Photo Offloader are documented here.
 ## [Unreleased]
 
 ### Added
-- **The menu bar shows up as Photo Offloader, with its own icon,** instead of as "Python" with Python's rocket in Login Items, Activity Monitor and the menu-bar settings. `install.sh` builds a small `Photo Offloader.app` in the install folder that runs the menu bar, using `clang` from the Command Line Tools. If it can't be built, the menu bar runs as before.
+- **A Photo Offloader app to open, with a link on the Desktop.** Double-click it to start the service and menu bar and open the dashboard. If everything is running, it brings the dashboard forward. `install.sh` puts it in `~/Applications`, where Spotlight finds it, and never replaces another app of that name or anything already on the Desktop. Uninstall removes both.
+- **Photo Offloader shows up under its own name and icon** instead of as "Python" with Python's rocket: the dashboard window in the Dock, and the menu bar in Login Items, Activity Monitor and the menu-bar settings. `install.sh` builds the two small app bundles this takes with `clang` from the Command Line Tools. If it can't, both run as before.
+- **Stop and Exit** in the menu bar and the dashboard's ⋯ menu stops card detection and closes the dashboard and the menu bar. If a card is being imported, it asks whether to finish first or cancel. The menu bar also gets **Close Dashboard**. **Stop Photo Offloader…** is now **Stop Service…**, and **Quit Menu Bar** is gone: it left card detection running with nothing on screen to show it.
 - **Back up when the drive connects,** an option in the ⋯ menu, off by default. The backup runs once each time the drive is plugged in, and only on a drive that already holds your backups. Imports go first.
 - **A camera card no longer waits for a USB backup.** Insert a card during any USB backup, and the backup stops between files, the card imports, and the backup carries on by itself. It skips what it already copied.
 - **A USB backup and a Google Photos upload that overlap each get a row** in the top panel, with time left and speed.

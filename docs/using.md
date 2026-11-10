@@ -5,7 +5,8 @@ with a top-level `DCIM` folder counts as a camera card, whatever its name or mak
 
 ## The dashboard
 
-Open it from the 📷 menu bar item with **Open Dashboard**. It follows macOS light or dark mode
+Double-click **Photo Offloader** on your Desktop or in `~/Applications`, which also starts the
+service if it's stopped, or choose **Open Dashboard** from the 📷 menu bar item. It follows macOS light or dark mode
 unless you choose otherwise under **⋯ › Appearance**. It runs only on your Mac, in its own window
 or in a browser tab if the native window isn't available.
 
