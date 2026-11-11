@@ -74,7 +74,11 @@ def menu_entries(snapshot: Snapshot) -> List[Entry]:
                 "Resume Automatic Imports" if snapshot.paused else "Pause Automatic Imports",
             )
         )
-    entries += [Entry("view_log", "View Import Log"), Entry(None)]
+    entries += [
+        Entry("view_log", "View Import Log"),
+        Entry("edit_settings", "Edit Settings…"),
+        Entry(None),
+    ]
     entries.append(
         Entry("stop", "Stop Service…") if snapshot.running else Entry("start", "Start Service")
     )

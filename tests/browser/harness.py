@@ -843,6 +843,9 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "usb_problems": _usb_problems,
     "usb_clean": _usb_clean,
     "second_tries": _second_tries,
+    "settings_problem": lambda s: s.paths.settings_file.write_text(
+        "backup_drive = Photos\nbackup_drive = Backup 2\n", encoding="utf-8"
+    ),
     "stopped": lambda s: setattr(s, "service_up", False),
     "paused": lambda s: s.paths.pause_file.touch(),
 }

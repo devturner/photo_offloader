@@ -96,6 +96,8 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .banner h2 { margin: 1px 0 2px; font-size: 21px; font-weight: 650; letter-spacing: -.015em; }
 .banner p { margin: 0; color: var(--text-2); }
 .banner .btn { padding: 10px 22px; }
+.banner[data-tone="warning"] .badge { background: var(--warn-soft); color: var(--warn); }
+.banner p + p { margin-top: 4px; }
 .pipeline.dim { opacity: .5; }
 .btn { border: 1px solid transparent; border-radius: 10px; padding: 8px 16px; font-weight: 600; background: var(--accent); color: #fff; }
 .btn:hover { filter: brightness(1.08); }
@@ -362,6 +364,7 @@ dialog p.stop-note[hidden] { display: none; }
           </div>
         </div>
         <hr>
+        <button role="menuitem" id="m-settings"><svg class="icon" data-icon="sliders"></svg><span class="label">Edit settings…</span></button>
         <div class="appearance"><span class="label">View logs</span>
           <div class="segmented">
             <button role="menuitem" data-log="import" title="What each import did">Import</button>
@@ -381,6 +384,12 @@ dialog p.stop-note[hidden] { display: none; }
     <div class="badge"><svg class="icon" data-icon="power"></svg></div>
     <div class="grow"><h2>Photo Offloader is stopped</h2><p>Camera cards will not be imported until you start it.</p></div>
     <button class="btn" id="banner-start">Start</button>
+  </section>
+
+  <section class="banner" id="settings-banner" data-tone="warning" hidden>
+    <div class="badge"><svg class="icon" data-icon="alert"></svg></div>
+    <div class="grow"><h2>Fix the settings file</h2><p id="settings-problem"></p><p>Nothing is imported, backed up or uploaded until it's fixed.</p></div>
+    <button class="btn" id="settings-fix">Edit settings</button>
   </section>
 
   <section class="hero" id="hero" data-tone="idle" aria-live="polite"></section>
@@ -451,6 +460,7 @@ const ICONS = {
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
   power: '<path d="M12 3v8"/><path d="M6.5 6.5a7 7 0 1 0 11 0"/>',
   up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
   refresh: '<path d="M20 11a8 8 0 0 0-14.5-3.5M4 4v4h4M4 13a8 8 0 0 0 14.5 3.5M20 20v-4h-4"/>',
   arrow: '<path d="M12 5v14M6 13l6 6 6-6"/>',
   sync: '<path d="M4 12a8 8 0 0 1 14-5.3M20 4v4h-4M20 12a8 8 0 0 1-14 5.3M4 20v-4h4"/>',
@@ -900,10 +910,14 @@ document.querySelectorAll("[data-theme-choice]").forEach(b => b.addEventListener
 
 function renderChrome(s) {
   const head = s.headline;
-  $("#pill").dataset.tone = head.tone;
-  $("#pill-text").textContent = { idle: "Ready", success: "Done", active: "Working", warning: "Attention", error: "Needs attention", stopped: "Stopped" }[head.tone] || "Ready";
+  // A broken settings file stops every import, so a calm Ready or Done would mislead.
+  const tone = s.settings_problem && (head.tone === "idle" || head.tone === "success") ? "warning" : head.tone;
+  $("#pill").dataset.tone = tone;
+  $("#pill-text").textContent = { idle: "Ready", success: "Done", active: "Working", warning: "Attention", error: "Needs attention", stopped: "Stopped" }[tone] || "Ready";
   // When stopped, the banner is the hero: say it once, and dim the (stale) cards below.
   $("#banner").hidden = s.service.running;
+  $("#settings-banner").hidden = !s.settings_problem;
+  $("#settings-problem").textContent = s.settings_problem || "";
   $("#hero").hidden = !s.service.running;
   $("#pipeline").classList.toggle("dim", !s.service.running);
   $("#version").textContent = s.version ? "v" + s.version : "";
@@ -964,6 +978,7 @@ $("#m-eject").onclick = () => run("toggle_auto_eject");
 $("#m-auto-usb").onclick = () => run("toggle_auto_usb_backup");
 $("#m-terminal").onclick = () => run("toggle_terminal_output");
 $("#banner-start").onclick = () => run("service_start");
+$("#m-settings").onclick = $("#settings-fix").onclick = () => run("edit_settings");
 $("#m-service").onclick = () => { if (LAST && LAST.service.running) askStop(false); else run("service_start"); };
 $("#m-exit").onclick = () => askStop(true);
 

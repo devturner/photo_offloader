@@ -130,6 +130,21 @@ class TestFixedPanel(PageTestCase):
             ["/bin/bash", str(self.sandbox.paths.service_script), "start"], self.sandbox.ran
         )
 
+    def test_a_broken_settings_file_says_so_above_the_panel(self):
+        self.show("idle")
+        expect(self.page.locator("#settings-banner")).to_be_hidden()
+        self.show("settings_problem")
+        expect(self.page.locator("#settings-banner")).to_be_visible()
+        expect(self.page.locator("#settings-problem")).to_have_text(
+            "Line 2: backup_drive is set twice."
+        )
+        expect(self.page.locator("#pill-text")).to_have_text("Attention")
+        expect(self.page.locator("#hero")).to_be_visible()
+        self.click_action("#settings-fix", "edit_settings")
+        self.assertIn(
+            ["/usr/bin/open", "-t", str(self.sandbox.paths.settings_file)], self.sandbox.spawned
+        )
+
 
 class TestSlots(PageTestCase):
     def test_an_import_counts_new_files_against_the_estimate(self):
@@ -373,6 +388,7 @@ class TestMenu(PageTestCase):
             ("#m-usb", "usb_backup", {}),
             ("#m-google", "google_sync", {}),
             ("[data-log=dashboard]", "open_log", {"log": "dashboard"}),
+            ("#m-settings", "edit_settings", {}),
         ):
             with self.subTest(action=action):
                 self.open_menu()
@@ -709,6 +725,14 @@ class TestCardTextIsNeverMarkup(PageTestCase):
         expect(self.page.locator("#hero p")).to_have_text(HOSTILE)
         expect(self.page.locator("#history .t")).to_contain_text(HOSTILE)
         expect(self.page.locator("#history .s")).to_contain_text(HOSTILE)
+
+    def test_a_settings_problem(self):
+        sandbox = self.load("idle")
+        sandbox.paths.settings_file.write_text(HOSTILE + "\n", encoding="utf-8")
+        self.open_page()
+        self.assert_inert()
+        # The text before its = is read as a setting name, and shown as text.
+        expect(self.page.locator("#settings-problem")).to_contain_text("“<img src”")
 
 
 class TestReadmeScreenshot(PageTestCase):

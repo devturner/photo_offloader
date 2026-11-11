@@ -23,6 +23,7 @@ class TestMenuEntries(unittest.TestCase):
                 None,
                 "pause",
                 "view_log",
+                "edit_settings",
                 None,
                 "stop",
                 "stop_exit",
@@ -43,7 +44,7 @@ class TestMenuEntries(unittest.TestCase):
     def test_stopped_menu_offers_start_and_stop_and_exit(self):
         self.assertEqual(
             keys(Snapshot(running=False)),
-            ["open_dashboard", None, "view_log", None, "start", "stop_exit"],
+            ["open_dashboard", None, "view_log", "edit_settings", None, "start", "stop_exit"],
         )
 
     def test_service_items_say_service_and_stop_and_exit_asks_first(self):
@@ -67,6 +68,11 @@ class TestMenuEntries(unittest.TestCase):
                     if e.key == "stop_exit"
                 )
                 self.assertTrue(entry.enabled)
+
+    def test_settings_can_always_be_edited(self):
+        for running in (True, False):
+            titles = {e.key: e.title for e in model.menu_entries(Snapshot(running=running))}
+            self.assertEqual(titles["edit_settings"], "Edit Settings…")
 
     def test_the_import_log_can_always_be_opened(self):
         # User question 2026-11-04: the old UI had a debug/log view.

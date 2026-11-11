@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import catalog, config, google_photos
+from photo_offloader import catalog, config, google_photos, settings
 from photo_offloader.dashboard import core, display
 from tests import support
 
@@ -756,6 +756,50 @@ class TestLogs(Fixture):
         self.assertFalse(result["ok"])
         self.assertIn("no", result["message"].lower())
         self.assertEqual(self.spawned, [])
+
+
+class TestSettingsFile(Fixture):
+    """Edit settings… opens settings.txt; the dashboard follows it and says when it's broken."""
+
+    def settings_file(self):
+        return self.data / "settings.txt"
+
+    def test_edit_settings_creates_the_file_with_the_current_values_and_opens_it(self):
+        result = self.core.act("edit_settings")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(
+            settings.load(self.settings_file(), config.HOME), settings.defaults(config.HOME)
+        )
+        self.assertEqual(self.spawned, [["/usr/bin/open", "-t", str(self.settings_file())]])
+
+    def test_edit_settings_never_rewrites_a_file_someone_edited(self):
+        self.settings_file().write_text("backup_drive = Mine\n", encoding="utf-8")
+        self.assertTrue(self.core.act("edit_settings")["ok"])
+        self.assertEqual(self.settings_file().read_text(encoding="utf-8"), "backup_drive = Mine\n")
+        self.assertEqual(self.spawned, [["/usr/bin/open", "-t", str(self.settings_file())]])
+
+    def test_the_state_says_what_is_wrong_with_the_file(self):
+        self.assertIsNone(self.core.state()["settings_problem"])
+        self.settings_file().write_text("backup_drive = /Volumes/X\n", encoding="utf-8")
+        self.advance(5)
+        self.assertIn("Line 1", self.core.state()["settings_problem"])
+
+    def test_a_dashboard_on_the_installed_paths_follows_an_edit(self):
+        installed = core.DashboardCore(popen=lambda argv, **kw: None)
+        self.settings_file().write_text(
+            "backup_drive = Backup 2\narchive_folder = ~/Elsewhere\n", encoding="utf-8"
+        )
+        with patch.object(core.Paths, "default", side_effect=AssertionError("rebuilt")):
+            installed.follow_settings()
+        self.assertEqual(installed.paths.usb_volume, Path("/Volumes/Backup 2"))
+        self.assertEqual(installed.paths.usb_archives, (Path("/Volumes/Backup 2/CameraImports"),))
+        self.assertEqual(installed.paths.local_archives[0], config.HOME / "Elsewhere")
+        self.assertEqual(config.USB_DEST_VOLUME, Path("/Volumes/Backup 2"))
+
+    def test_a_dashboard_on_given_paths_keeps_them(self):
+        self.settings_file().write_text("backup_drive = Backup 2\n", encoding="utf-8")
+        self.core.follow_settings()
+        self.assertEqual(self.core.paths, self.paths)
 
 
 class TestEject(Fixture):
