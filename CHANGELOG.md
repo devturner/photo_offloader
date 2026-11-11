@@ -4,6 +4,8 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-11-11
+
 ### Added
 - **Know when a card is safe to format.** A row above Recent activity lists each card Photo Offloader has seen, in one of three states. *Don't format* says how many of its files, old photos left on the card included, aren't on the Mac or the USB drive yet. *Check before formatting* means every file has a copy on both, verified when it was made. *Safe to format* means a check has also read every copy again since it was made, with the date. The card's report offers **Check new copies**, which reads only the copies no check has read since they were made (`photo-offloader-verify --card <ID> --new`), and **Check every copy**, which rereads them all after saying how long it will take (`--card <ID>`). Each check remembers the copies it found good, in `rereads.json`. The card doesn't need to be inserted, so a backup days after the import is what moves it on, with a notification. A check that finds a bad copy takes the card back to *Don't format*. The Camera card box, the menu bar (`✓`, `?` or `!` by its icon) and the end of each import say the same. See [docs/using.md](docs/using.md#cards-and-when-to-format).
 - **Cards are told apart.** Every card from one camera has the same name, so each now shows its size and kind, such as *64 GB SanDisk SD* or *256 GB CFexpress*, and can be renamed. An SD card in the Mac's built-in slot is recognised by its serial number, so after a format it replaces its old entry and keeps its name. **I formatted it** removes any other card from the list.
@@ -12,6 +14,7 @@ All notable changes to Photo Offloader are documented here.
 - With two cards from one camera inserted, the second is named by its own volume name, not the *NIKON Z 8 1* macOS gives its mount folder.
 
 ### Documentation
+- The README's screenshot shows the new Cards row.
 - [Taking a card out mid-copy](docs/using.md#taking-a-card-out-mid-copy): nothing half-copied looks finished, and putting the card back resumes file by file.
 
 ## [2.5.0] - 2026-11-10
