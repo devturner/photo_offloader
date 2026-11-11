@@ -103,7 +103,8 @@ on the live install. `tests/browser/harness.py` runs the page against a sandbox.
 
 **Shell scripts can't see `config.py`.** They repeat its paths and accept `PHOTO_OFFLOADER_*` overrides, so
 `isolate_config` doesn't protect them. Tests pass those variables instead (see `tests/test_trigger.py`). If
-a path changes, update both sides.
+a path changes, update both sides. `trigger.sh` reads `backup_drive` from `settings.txt` itself, the way
+`photo_offloader/settings.py` does, so a change to that file's format needs both too.
 
 **Don't run `install.sh` or `uninstall.sh` to test a change.** They re-register your real LaunchAgents. To
 check the installed layout, copy `bin scripts photo_offloader VERSION` to a temp folder and run the
