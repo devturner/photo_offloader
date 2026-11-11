@@ -20,7 +20,7 @@ import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 from xml.parsers.expat import ExpatError
 
 from photo_offloader import (
@@ -102,6 +102,21 @@ def _missed_imports(db: sqlite3.Connection) -> int:
 def _name_key(status: Dict[str, Any]) -> str:
     """An SD card's serial number survives a format, so its name does too."""
     return f"serial:{status['serial']}" if status.get("serial") else f"id:{status['id']}"
+
+
+def _with_card_advice(summary: str, row: Dict[str, Any], cards: Sequence[Dict[str, Any]]) -> str:
+    """An import's summary, saying whether its card is safe to format now. The card is usually
+    ejected by the end, so the panel is where this is said straight away."""
+    details = row.get("details") or {}
+    card = next((c for c in cards if c["id"] == details.get("card_id")), None)
+    if row.get("kind") != "import" or not card or card["tone"] not in ("success", "warning"):
+        return summary
+    # First, as the line is cut short in a narrow window. "All backed up" meant the Mac.
+    advice = "Safe to format" if card["safe"] else "Don't format the card yet"
+    summary = str(summary or "")
+    if summary.startswith(advice):
+        return summary
+    return f"{advice} · " + summary.replace(", all backed up", "")
 
 
 def _epoch(iso: str) -> float:
@@ -768,7 +783,11 @@ class DashboardCore:
         }
 
     def _finished(
-        self, last: Optional[Dict[str, Any]], google: Dict[str, Any], now: float
+        self,
+        last: Optional[Dict[str, Any]],
+        google: Dict[str, Any],
+        now: float,
+        cards: Sequence[Dict[str, Any]] = (),
     ) -> Optional[Dict[str, Any]]:
         """The end of an import or failed backup, in the panel until it fades or is dismissed."""
         if last is None:
@@ -777,7 +796,8 @@ class DashboardCore:
             return display.run_report(last)
         if last["kind"] != "import":
             return None
-        return display.run_report(last, self._upload_state_after(last, google, now))
+        report = display.run_report(last, self._upload_state_after(last, google, now))
+        return {**report, "detail": _with_card_advice(report["detail"], last, cards)}
 
     @staticmethod
     def _log_time(line: str) -> Optional[float]:
@@ -908,6 +928,8 @@ class DashboardCore:
 
         handled = self.card_handled(card)
         cards = self.cards(card)
+        if last and last["outcome"] != "failed":
+            last = {**last, "summary": _with_card_advice(last["summary"], last, cards)}
         headline = display.headline(
             running, paused, card, activity, interrupted, last, status, google, handled
         )
@@ -925,7 +947,7 @@ class DashboardCore:
             "activity": activity,
             "interrupted": interrupted,
             "last_transfer": last,
-            "finished": None if activity else self._finished(last, google, now),
+            "finished": None if activity else self._finished(last, google, now, cards),
             "pipeline": display.pipeline(
                 card,
                 import_activity,

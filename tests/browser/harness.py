@@ -451,7 +451,7 @@ def _cards(s: Sandbox) -> None:
     config.CARD_SAFETY_PATH.write_text(
         json.dumps({"CF-UUID": datetime(2026, 11, 17, 21, 14).timestamp()})
     )
-    s.record(details={"new": {"JPG": 9, "RAW": 9}})
+    s.record(details={"new": {"JPG": 9, "RAW": 9}, "new_bytes": 412 * MB, "card_id": "SD-UUID"})
 
 
 def _card_inserted_not_safe(s: Sandbox) -> None:

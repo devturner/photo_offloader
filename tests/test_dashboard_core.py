@@ -893,6 +893,23 @@ class TestCards(Fixture):
         self.assertFalse(self.core.act("rename_card", {"id": "../x", "name": "a"})["ok"])
         self.assertFalse(self.core.act("forget_card", {"id": "nope"})["ok"])
 
+    def test_the_end_of_an_import_says_whether_that_card_is_safe_to_format(self):
+        self.card_manifest("A", {"a": "h1"}, self.SD)
+        self.saved(mac=("h1",))
+        self.record(details={"card_id": "A", "new": {"RAW": 1}})
+        state = self.core.state()
+        detail = state["finished"]["detail"]
+        self.assertTrue(detail.startswith("Don't format the card yet · 1 new: 1 RAW"), detail)
+        self.assertNotIn("all backed up", detail)
+        self.assertEqual(state["headline"]["detail"], detail)  # what the panel shows
+        self.saved(usb=("h1",))
+        self.advance(1)
+        self.assertTrue(self.core.state()["finished"]["detail"].startswith("Safe to format · "))
+
+    def test_an_import_from_an_unknown_card_says_nothing_about_formatting(self):
+        self.record(details={"card_id": "GONE"})
+        self.assertNotIn("format", self.core.state()["finished"]["detail"])
+
     def test_the_mounted_card_is_marked_and_its_box_says_whether_to_format(self):
         self.card_manifest("A", {"a": "h1"}, self.CF)
         self.card_manifest("B", {"b": "h2"}, self.SD)
