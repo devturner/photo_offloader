@@ -205,6 +205,31 @@ class TestCameraOffloaderTrigger(unittest.TestCase):
         self.run_trigger()
         self.assertEqual(self.backup_starts(), 2)
 
+    def write_settings(self, text):
+        settings = self.root / "Library" / "Application Support" / "PhotoOffloaderData"
+        settings.mkdir(parents=True, exist_ok=True)
+        (settings / "settings.txt").write_text(text, encoding="utf-8")
+
+    def rename_backup_drive(self, name):
+        renamed = self.volumes / name
+        self.photos.rename(renamed)
+        self.photos = renamed
+
+    def test_the_backup_drive_named_in_settings_is_the_one_backed_up(self):
+        self.set_up_backup_drive()
+        self.switch_on_auto_backup()
+        self.rename_backup_drive("Backup 2")
+        self.write_settings("# notes\n  backup_drive =  “Backup 2”  \narchive_folder = ~/A\n")
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 1)
+
+    def test_a_drive_named_photos_is_not_backed_up_once_settings_name_another(self):
+        self.set_up_backup_drive()
+        self.switch_on_auto_backup()
+        self.write_settings("backup_drive = Backup 2\n")
+        self.run_trigger()
+        self.assertEqual(self.backup_starts(), 0)
+
     def test_only_a_drive_that_already_holds_backups_starts_one(self):
         self.set_up_backup_drive()
         self.switch_on_auto_backup()

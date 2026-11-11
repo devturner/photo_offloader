@@ -237,4 +237,9 @@ else
   echo "Dry run complete; nothing was changed."
 fi
 echo "Persistent media catalog preserved: $DATA_DIR/catalog.sqlite3"
-echo "Imported media under ~/Pictures/CameraImports and ~/Pictures/CameraImportsRaw was left untouched."
+if [[ -f "$DATA_DIR/settings.txt" ]]; then
+  echo "Your settings were kept: $DATA_DIR/settings.txt"
+  echo "Imported media in the archive folders it names was left untouched."
+else
+  echo "Imported media under ~/Pictures/CameraImports and ~/Pictures/CameraImportsRaw was left untouched."
+fi
