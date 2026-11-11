@@ -502,12 +502,15 @@ def _run_usb_backup() -> int:
 def _remember_card(dcim_folder: Path, card_volume: Path) -> None:
     """Note which card this is, so it can be told apart and its earlier self, formatted, forgotten."""
     identity = card_identity.read(card_volume)
-    logger.info("Card: %s", card_identity.label(identity) or "size and kind unknown")
+    name = str(identity.pop("volume_name", "") or card_volume.name)
+    logger.info(
+        "Card: %s %s", name.strip(), card_identity.label(identity) or "(size and kind unknown)"
+    )
     try:
-        card.remember_identity(dcim_folder, identity, card_volume.name)
+        card.remember_identity(dcim_folder, identity, name)
         card_id = _RUN.get("card_id")
         if card_id:
-            card_status.forget_formatted(str(card_id), identity, card_volume.name)
+            card_status.forget_formatted(str(card_id), identity, name)
     except OSError as exc:  # only reporting; the import goes on
         logger.warning("Could not note which card this is: %s", exc)
 

@@ -62,14 +62,22 @@ def _card_readers() -> Dict[str, Any]:
 
 
 def read(card_root: Path) -> Dict[str, Any]:
-    """What can be told about the card mounted at ``card_root``; empty when nothing can."""
+    """What can be told about the card mounted at ``card_root``; empty when nothing can.
+
+    ``volume_name`` is the card's name, kept beside its identity rather than in it.
+    """
     volume = _plist(["/usr/sbin/diskutil", "info", "-plist", str(card_root)])
     if not volume:
         return {}
     whole = str(volume.get("ParentWholeDisk") or "")
     whole_disk = _plist(["/usr/sbin/diskutil", "info", "-plist", whole]) if whole else {}
     readers = _card_readers() if volume.get("BusProtocol") == "Secure Digital" else {}
-    return describe(volume, whole_disk, readers)
+    identity = describe(volume, whole_disk, readers)
+    if isinstance(volume.get("VolumeName"), str) and volume["VolumeName"].strip():
+        # The card's own name. Its mount folder can differ: with two cards from one camera
+        # inserted, macOS mounts the second at "NIKON Z 8   1".
+        identity["volume_name"] = volume["VolumeName"]
+    return identity
 
 
 def _reader_card(readers: Mapping[str, Any], whole: str) -> Mapping[str, Any]:

@@ -18,13 +18,13 @@ SD = {"kind": "SD", "size_bytes": 63_864_569_856, "maker": "SanDisk", "serial": 
 @patch("photo_offloader.volumes.eject_volume", return_value=True)
 @patch("photo_offloader.logs.notify")
 class TestCardSafetyAfterRuns(support.CardFixtureTestCase):
-    def import_card(self, usb, *extra):
-        identity = VolumeIdentity(self.usb_volume.resolve(), "disk9s1", "usb-uuid")
+    def import_card(self, usb, *extra, identity=SD):
+        drive = VolumeIdentity(self.usb_volume.resolve(), "disk9s1", "usb-uuid")
         with (
             patch("time.sleep"),
             patch("photo_offloader.volumes.usb_is_mounted", return_value=usb),
-            patch("photo_offloader.volumes.get_volume_identity", return_value=identity),
-            patch.object(card_identity, "read", return_value=SD),
+            patch("photo_offloader.volumes.get_volume_identity", return_value=drive),
+            patch.object(card_identity, "read", return_value=dict(identity)),
         ):
             return app.main(["--source", str(self.card), "--sha256", *extra])
 
@@ -75,6 +75,15 @@ class TestCardSafetyAfterRuns(support.CardFixtureTestCase):
         self.media()
         self.import_card(False)
         self.assertEqual([c.card_id for c in card_status.all_cards()], ["TEST-CARD-UUID"])
+
+    def test_the_cards_own_name_is_kept_not_its_mount_folders(self, notify, eject, launch):
+        self.media()
+        self.import_card(False, identity={**SD, "volume_name": "NIKON Z 8  "})
+        history = json.loads((config.CARD_MANIFESTS_DIR / "TEST-CARD-UUID.json").read_text())[
+            "history"
+        ]
+        self.assertEqual(history["volume_name"], "NIKON Z 8  ")
+        self.assertEqual(history["identity"], SD)
 
     def test_a_reader_that_says_nothing_does_not_stop_the_import(self, notify, eject, launch):
         self.media()

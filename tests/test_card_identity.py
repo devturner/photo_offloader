@@ -136,6 +136,19 @@ class TestRead(unittest.TestCase):
             identity = card_identity.read(Path("/Volumes/NIKON Z 8"))
         self.assertEqual(card_identity.label(identity), "64 GB SanDisk SD")
 
+    def test_the_cards_own_name_is_read_not_the_mount_folders(self):
+        import plistlib
+
+        # Two cards from one camera: macOS mounts the second at "NIKON Z 8   1".
+        outputs = {
+            "/Volumes/NIKON Z 8   1": plistlib.dumps(
+                {**CFEXPRESS_VOLUME, "VolumeName": "NIKON Z 8  "}
+            )
+        }
+        with patch.object(card_identity.subprocess, "run", side_effect=self.fake_run(outputs)):
+            identity = card_identity.read(Path("/Volumes/NIKON Z 8   1"))
+        self.assertEqual(identity["volume_name"], "NIKON Z 8  ")
+
     def test_a_tool_that_fails_or_hangs_gives_what_is_known(self):
         import plistlib
 

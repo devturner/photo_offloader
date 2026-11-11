@@ -19,6 +19,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Set, Tuple
 
@@ -66,7 +67,8 @@ def _bad_copies() -> Dict[Tuple[str, str], float]:
     """Copies the newest check of the saved copies found damaged, changed, missing or unreadable."""
     rows = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
     check = next((row for row in rows if row["kind"] == "verify"), None)
-    report = str(((check or {}).get("details") or {}).get("check", {}).get("report") or "")
+    found = ((check or {}).get("details") or {}).get("check") or {}  # None after a clean check
+    report = str(found.get("report") or "")
     bad: Dict[Tuple[str, str], float] = {}
     for row in verify_report.report_rows(report) if check else []:
         digest = str(row.get("expected_sha256") or "")
@@ -129,7 +131,13 @@ class CardStatus:
         }
 
 
-def status_of(card_id: str, payload: Mapping[str, Any], copies: Copies) -> CardStatus:
+def status_of(
+    card_id: str,
+    payload: Mapping[str, Any],
+    copies: Copies,
+    imports: Optional[Mapping[str, Tuple[str, str]]] = None,
+) -> CardStatus:
+    """``imports``: a card's camera and first import from the history, for older manifests."""
     files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
     history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
     not_on_mac: List[str] = []
@@ -141,16 +149,17 @@ def status_of(card_id: str, payload: Mapping[str, Any], copies: Copies) -> CardS
         if not (digest and copies.on_usb(digest)):
             not_on_usb.append(relative)
     identity = history.get("identity") if isinstance(history.get("identity"), dict) else {}
+    earlier = (imports or {}).get(card_id, ("", ""))
     return CardStatus(
         card_id=card_id,
-        camera=str(history.get("volume_name") or "").strip() or "Camera card",
+        camera=str(history.get("volume_name") or earlier[0]).strip() or "Camera card",
         identity=dict(identity),
         files=len(files),
         on_mac=len(files) - len(not_on_mac),
         on_usb=len(files) - len(not_on_usb),
         not_on_mac=not_on_mac[:FILES_LISTED],
         not_on_usb=not_on_usb[:FILES_LISTED],
-        first_seen=str(history.get("first_seen") or history.get("last_seen") or ""),
+        first_seen=str(history.get("first_seen") or earlier[1] or history.get("last_seen") or ""),
         last_seen=str(history.get("last_seen") or ""),
     )
 
@@ -169,6 +178,20 @@ def _manifests() -> Iterator[Tuple[str, Dict[str, Any]]]:
             yield path.stem, payload
 
 
+def _imports_by_card() -> Dict[str, Tuple[str, str]]:
+    """Each card's camera name and first import, from the history: manifests from before 2.6
+    don't keep them."""
+    found: Dict[str, Tuple[str, str]] = {}
+    for row in catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS):  # newest first
+        card_id = (row.get("details") or {}).get("card_id")
+        if row["kind"] == "import" and card_id:
+            # Rows come newest first, so the first import is the last one seen: its name is the
+            # card's own, before a second card mounted beside it got a number added.
+            first = datetime.fromtimestamp(float(row["started_at"]), timezone.utc)
+            found[card_id] = (str(row["source"]), first.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    return found
+
+
 def safe_since() -> Dict[str, float]:
     return {
         key: float(value)
@@ -181,9 +204,10 @@ def all_cards(copies: Optional[Copies] = None) -> List[CardStatus]:
     """Every card with a manifest, most recently seen first."""
     copies = copies if copies is not None else read_copies()
     since = safe_since()
+    imports = _imports_by_card()
     cards = []
     for card_id, payload in _manifests():
-        status = status_of(card_id, payload, copies)
+        status = status_of(card_id, payload, copies, imports)
         status.safe_since = since.get(card_id)
         cards.append(status)
     return sorted(cards, key=lambda status: status.last_seen, reverse=True)

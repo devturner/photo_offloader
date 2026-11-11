@@ -134,12 +134,55 @@ class TestSafeToFormat(CardCase):
             catalog.catalog_record(config.USB_DEST_ROOT / "a.NEF", sha256="h1")
         self.assertTrue(self.status().safe)
 
+    def test_a_clean_check_or_one_with_its_files_marked_deleted_leaves_the_copies_counted(self):
+        # The user's catalog, 2026-11-11: the newest check row has {"check": None}.
+        self.card("A", {"a.NEF": "h1"})
+        self.on_mac("a.NEF", "h1")
+        self.on_usb("a.NEF", "h1")
+        for details in ({"check": None}, {}, {"check": {"report": ""}}):
+            catalog.record_import_run(
+                kind="verify", outcome="complete", started_at=1.0, finished_at=2.0, details=details
+            )
+            self.assertTrue(self.status().safe, details)
+
     def test_an_unreadable_catalog_makes_no_card_safe(self):
         self.card("A", {"a.NEF": "h1"})
         self.on_mac("a.NEF", "h1")
         self.on_usb("a.NEF", "h1")
         with patch.object(catalog, "catalog_db", side_effect=OSError("locked")):
             self.assertFalse(self.status().safe)
+
+    def test_a_card_listed_before_names_were_kept_takes_its_name_from_the_history(self):
+        payload = {
+            "files": {"a": {"sha256": "h"}},
+            "history": {"last_seen": "2026-11-06T22:59:11Z"},
+        }
+        jsonfile.write_json(config.CARD_MANIFESTS_DIR / "OLD.json", payload)
+        # With two cards in, macOS mounts the second as "NIKON Z 8   1"; the first import is
+        # the likelier to have the card's own name.
+        for started, source in (
+            (1_792_000_000.0, "NIKON Z 8  "),
+            (1_792_500_000.0, "NIKON Z 8   1"),
+        ):
+            catalog.record_import_run(
+                kind="import",
+                source=source,
+                outcome="complete",
+                started_at=started,
+                finished_at=started + 60,
+                details={"card_id": "OLD"},
+            )
+        catalog.record_import_run(
+            kind="import",
+            source="EOS R5",
+            outcome="complete",
+            started_at=1.0,
+            finished_at=2.0,
+            details={"card_id": "OTHER"},
+        )
+        status = self.status("OLD")
+        self.assertEqual(status.camera, "NIKON Z 8")
+        self.assertEqual(status.first_seen, "2026-10-14T17:46:40Z")
 
     def test_cards_are_listed_most_recently_seen_first(self):
         self.card("OLD", {"a": "h"}, last_seen="2026-10-01T00:00:00Z")
