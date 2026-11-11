@@ -241,6 +241,7 @@ def _readme_import(s: Sandbox) -> None:
     _past_import(s, days_ago=12, seconds=58, new_files=342, card_files=443)
     _past_import(s, days_ago=5, seconds=41, new_files=251, card_files=694)
     _past_import(s, days_ago=1, seconds=83, new_files=506, card_files=README_SAVED_BEFORE)
+    _readme_cards(s)
     with catalog.catalog_db() as db:
         db.executemany(
             "INSERT INTO google_photos_uploads (path, size, mtime_ns, inode, uploaded_at, remote,"
@@ -471,6 +472,23 @@ def _cards(s: Sandbox) -> None:
         {(side, f"SD2-UUID-{index}") for index in range(372) for side in ("mac", "usb")}, checked
     )
     s.record(details={"new": {"JPG": 9, "RAW": 9}, "new_bytes": 412 * MB, "card_id": "SD-UUID"})
+
+
+def _readme_cards(s: Sandbox) -> None:
+    """Two cards from earlier imports, for the README: one read again since and safe to format,
+    one backed up but not read again yet."""
+
+    def iso(days_ago: float) -> str:
+        return datetime.utcfromtimestamp(s.now - days_ago * 86400).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    _seen_card(s, "CF-UUID", CF_CARD, 694, 694, iso(5))
+    _seen_card(s, "SD2-UUID", SD128_CARD, 1200, 1200, iso(1))
+    backed_up = {"CF-UUID": s.now - 5 * 86400, "SD2-UUID": s.now - 86400}
+    config.CARD_SAFETY_PATH.write_text(json.dumps(backed_up))
+    checked = s.now - 3 * 86400
+    verify_report.remember_rereads(
+        {(side, f"CF-UUID-{index}") for index in range(694) for side in ("mac", "usb")}, checked
+    )
 
 
 def _card_inserted_not_safe(s: Sandbox) -> None:
