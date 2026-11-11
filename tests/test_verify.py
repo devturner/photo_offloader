@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from photo_offloader import (
     awake,
+    card_status,
     catalog,
     catalog_refresh,
     config,
@@ -351,6 +352,23 @@ class TestCommand(VerifyTestCase):
         self.assertEqual(report[0]["other_copy"], verify.OTHER_GOOD)
         self.assertEqual(report[0]["expected_sha256"], hashlib.sha256(b"photo bytes").hexdigest())
         self.assertEqual(report[0]["actual_sha256"], fileops.sha256_file(mac))
+
+    def test_a_card_with_a_damaged_copy_is_no_longer_safe_to_format(self):
+        mac, _usb = self.save()
+        digest = hashlib.sha256(b"photo bytes").hexdigest()
+        jsonfile.write_json(
+            config.CARD_MANIFESTS_DIR / "CARD.json",
+            {"schema": 1, "files": {"DCIM/a.jpg": {"sha256": digest}}, "history": {}},
+        )
+        card_status.record(now=1.0)
+        self.assertIn("CARD", card_status.safe_since())
+        self.damage(mac)
+
+        with patch.object(logs, "notify"):
+            self.run_main()
+
+        self.assertEqual(card_status.safe_since(), {})
+        self.assertFalse(card_status.all_cards()[0].safe)
 
     def test_files_gone_from_the_mac_alone_read_as_one_situation(self):
         one, _ = self.save("a/one.jpg", b"1")

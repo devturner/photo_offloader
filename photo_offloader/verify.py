@@ -23,6 +23,7 @@ from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 from photo_offloader import (
     awake,
+    card_status,
     catalog,
     catalog_refresh,
     config,
@@ -518,6 +519,7 @@ def _run() -> int:
         )
         logs.notify("Saved Copies Need Attention", message)
     _record(check, started_at, message, code, report)
+    card_status.record()  # a damaged or missing copy means a card is no longer safe to format
     return code
 
 
