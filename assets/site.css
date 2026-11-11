@@ -20,6 +20,9 @@ a { color: var(--link); }
 .landing h1 { margin: 0 0 .5rem; font-size: clamp(2rem, 6vw, 2.75rem); line-height: 1.15; letter-spacing: -.03em; }
 .landing p { margin: 0 0 1rem; color: var(--muted); font-size: 1.08rem; }
 .landing img { width: 100%; margin: 2rem 0; }
+/* The app's own icon beside the name: the same picture as in the Dock and the dashboard. */
+.landing h1, .site-header a { display: flex; align-items: center; gap: .5em; }
+img.app-icon { width: 1.25em; height: 1.25em; margin: 0; border: 0; border-radius: 0; }
 .site-links { list-style: none; margin: 0; padding: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
 .site-links li { padding: .85rem 1.15rem; border-top: 1px solid var(--line); }
 .site-links li:first-child { border-top: 0; }
