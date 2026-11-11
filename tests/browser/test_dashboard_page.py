@@ -172,6 +172,7 @@ class TestCards(PageTestCase):
         self.chip("CFexpress").click()
         report = self.page.locator("#card-report")
         expect(report).to_be_visible()
+        expect(report).not_to_contain_text("false")  # parts not shown are left out, not printed
         expect(report.locator(".verdict b")).to_have_text("Safe to format since Nov 17, 9:14 PM")
         expect(report.locator(".counts b")).to_have_text(
             ["2,742 files", "2,742 of 2,742", "2,742 of 2,742"]
