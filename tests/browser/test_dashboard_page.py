@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from photo_offloader import catalog
+from photo_offloader.dashboard import launcher
 from tests.browser.harness import CARD, MB, ONE_RUN, SCENARIOS, Browser, BrowserTestCase
 
 try:
@@ -81,6 +82,25 @@ class PageTestCase(BrowserTestCase):
 
     def assert_acted(self, *actions) -> None:
         self.assertEqual(self.sandbox.core.actions, list(actions))
+
+
+class TestFitsTheWindow(PageTestCase):
+    """The app's window doesn't resize, so the page must fit it without scrolling."""
+
+    TITLE_BAR = 32  # macOS's, inside the window's height (measured from a screenshot)
+    KNOWN_TO_SCROLL = {"settings_problem"}  # the settings banner; also on main, see ai_tasks.md
+
+    def test_no_state_scrolls_in_the_apps_window(self):
+        width, height = launcher.WINDOW_SIZE
+        too_tall = {}
+        for state in SCENARIOS:
+            if state in self.KNOWN_TO_SCROLL:
+                continue
+            self.show(state, width=width, height=height - self.TITLE_BAR)
+            page = self.page.evaluate("document.documentElement.scrollHeight")
+            if page > height - self.TITLE_BAR:
+                too_tall[state] = page
+        self.assertEqual(too_tall, {})
 
 
 class TestFixedPanel(PageTestCase):
