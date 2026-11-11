@@ -146,6 +146,90 @@ class TestFixedPanel(PageTestCase):
         )
 
 
+class TestCards(PageTestCase):
+    """The row of cards above Recent activity, and the report that opens under it."""
+
+    def chip(self, title):
+        return self.page.locator(".card-chip", has_text=title)
+
+    def test_no_row_until_a_card_has_been_seen(self):
+        self.show("idle")
+        expect(self.page.locator("#cards")).to_be_hidden()
+        expect(self.page.locator("#cards-head")).to_be_hidden()
+
+    def test_each_card_says_whether_it_is_safe_to_format(self):
+        self.show("cards")
+        expect(self.page.locator(".card-chip .t")).to_have_text(
+            ["NIKON Z 8 · 64 GB SanDisk SD", "NIKON Z 8 · 256 GB CFexpress"]
+        )
+        expect(self.page.locator(".card-chip .s")).to_have_text(
+            ["Don't format · 18 not on USB", "Safe to format · since Nov 17"]
+        )
+        expect(self.page.locator("#card-report")).to_be_hidden()
+
+    def test_a_card_opens_its_report_and_closes_it_again(self):
+        self.show("cards")
+        self.chip("CFexpress").click()
+        report = self.page.locator("#card-report")
+        expect(report).to_be_visible()
+        expect(report.locator(".verdict b")).to_have_text("Safe to format since Nov 17, 9:14 PM")
+        expect(report.locator(".counts b")).to_have_text(
+            ["2,742 files", "2,742 of 2,742", "2,742 of 2,742"]
+        )
+        expect(self.chip("CFexpress")).to_have_attribute("aria-expanded", "true")
+        self.chip("SanDisk").click()
+        expect(report.locator(".verdict b")).to_have_text("Don't format this card yet")
+        self.chip("SanDisk").click()
+        expect(report).to_be_hidden()
+
+    def test_the_files_not_saved_are_listed_only_when_asked(self):
+        self.show("cards")
+        self.chip("SanDisk").click()
+        files = self.page.locator("#card-report li")
+        expect(files).to_have_count(0)
+        self.page.locator("#card-report .files-link").click()
+        expect(files).to_have_count(18)
+        expect(files.first).to_have_text("DCIM/100NZ8_/_DZ80000.NEF")
+
+    def test_rename_a_card(self):
+        self.show("cards")
+        self.chip("CFexpress").click()
+        self.page.locator("#card-report button", has_text="Rename").click()
+        field = self.page.locator("#card-report input")
+        expect(field).to_be_focused()
+        field.fill("Big CFexpress")
+        with self.page.expect_response(lambda r: r.url.endswith("/api/action/rename_card")):
+            field.press("Enter")
+        self.refresh()
+        expect(self.chip("Big CFexpress")).to_be_visible()
+        expect(self.page.locator("#card-report .seen")).to_contain_text(
+            "NIKON Z 8 · 256 GB CFexpress"
+        )
+
+    def test_i_formatted_it_asks_first_then_removes_the_card(self):
+        self.show("cards")
+        self.chip("SanDisk").click()
+        self.page.locator("#card-report button", has_text="I formatted it").click()
+        ask = self.page.locator("#card-report .ask")
+        expect(ask).to_contain_text("isn't safe to format yet")
+        ask.locator("button", has_text="Cancel").click()
+        expect(ask).to_have_count(0)
+        self.assert_acted()
+        self.page.locator("#card-report button", has_text="I formatted it").click()
+        self.click_action(
+            self.page.locator("#card-report .ask button", has_text="Remove"), "forget_card"
+        )
+        self.refresh()
+        expect(self.page.locator(".card-chip")).to_have_count(1)
+        expect(self.page.locator("#card-report")).to_be_hidden()
+
+    def test_the_inserted_card_is_marked_and_its_box_says_not_to_format(self):
+        self.show("card_inserted_not_safe")
+        expect(self.chip("SanDisk").locator(".here")).to_have_text("Inserted")
+        box = self.page.locator('.step[data-state="warn"]', has_text="Camera card")
+        expect(box).to_contain_text("Don't format · 18 not on USB")
+
+
 class TestSlots(PageTestCase):
     def test_an_import_counts_new_files_against_the_estimate(self):
         for fields, expected in (
@@ -725,6 +809,16 @@ class TestCardTextIsNeverMarkup(PageTestCase):
         expect(self.page.locator("#hero p")).to_have_text(HOSTILE)
         expect(self.page.locator("#history .t")).to_contain_text(HOSTILE)
         expect(self.page.locator("#history .s")).to_contain_text(HOSTILE)
+
+    def test_a_card_name(self):
+        self.load("cards")
+        self.sandbox.core.act("rename_card", {"id": "CF-UUID", "name": HOSTILE})
+        self.open_page()
+        self.page.locator(".card-chip").last.click()
+        self.assert_inert()
+        name = HOSTILE[:40]  # names are kept short
+        expect(self.page.locator(".card-chip .t").last).to_have_text(name)
+        expect(self.page.locator("#card-report h3")).to_have_text(name)
 
     def test_a_settings_problem(self):
         sandbox = self.load("idle")
@@ -1364,6 +1458,13 @@ class TestScreenshots(PageTestCase):
         self.page.screenshot(path=str(folder / "report-from-history-dark.png"))
         self.page.click("#menu-button")
         self.page.screenshot(path=str(folder / "menu-dark.png"))
+        for scheme in ("light", "dark"):
+            self.show("cards", color_scheme=scheme, **NATIVE_WINDOW)
+            self.page.locator(".card-chip").first.click()
+            self.page.screenshot(path=str(folder / f"card-report-{scheme}.png"))
+        self.show("card_inserted_not_safe", **NARROW)
+        self.page.locator(".card-chip").first.click()
+        self.page.screenshot(path=str(folder / "card-report-narrow.png"), full_page=True)
         for state in SCENARIOS:
             for scheme in ("light", "dark"):
                 self.show(state, color_scheme=scheme, **NATIVE_WINDOW)

@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import plistlib
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -74,6 +76,7 @@ class Sandbox:
         self.importer_up = False
         self.google_up = False
         self.verify_up = False
+        self.card_uuid: Optional[str] = None  # what diskutil says the inserted card's volume ID is
         self.ran: List[List[str]] = []
         self.spawned: List[List[str]] = []
         self.paths = core.Paths(
@@ -103,6 +106,9 @@ class Sandbox:
             elif argv[-1].endswith(config.VERIFY):
                 alive = self.verify_up
             return subprocess.CompletedProcess(argv, 0, "4242\n" if alive else "", "")
+        if argv[0].endswith("diskutil") and self.card_uuid:
+            info = plistlib.dumps({"VolumeUUID": self.card_uuid})
+            return subprocess.CompletedProcess(argv, 0, info, b"")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     def _popen(self, argv: List[str], **_kwargs: Any) -> None:
@@ -398,6 +404,61 @@ def _backup_and_upload(s: Sandbox) -> None:
     s.paths.google_log_file.write_text(
         f"{stamp} INFO  :   41 MiB / 90 MiB, 46%, 7 MiB/s, ETA 7s (xfr#3/8)\n"
     )
+
+
+SD_CARD = {"kind": "SD", "size_bytes": 63_864_569_856, "maker": "SanDisk", "serial": "0x1"}
+CF_CARD = {"kind": "CFexpress", "size_bytes": 256_060_514_304}
+
+
+def _seen_card(
+    s: Sandbox, card_id: str, identity: Dict[str, Any], files: int, on_usb: int, seen: str
+) -> None:
+    """A card's manifest as the importer leaves it, and catalog rows for its saved copies."""
+    digests = [f"{card_id}-{index}" for index in range(files)]
+    config.CARD_MANIFESTS_DIR.mkdir(parents=True, exist_ok=True)
+    history = {
+        "identity": identity,
+        "volume_name": CARD + "  ",
+        "first_seen": "2026-10-21T17:00:00Z",
+        "last_seen": seen,
+    }
+    manifest = {
+        f"DCIM/100NZ8_/_DZ8{index:04d}.NEF": {"sha256": d} for index, d in enumerate(digests)
+    }
+    (config.CARD_MANIFESTS_DIR / f"{card_id}.json").write_text(
+        json.dumps({"schema": 1, "files": manifest, "history": history})
+    )
+    catalog.catalog_connection().close()
+    rows = [(f"m/{d}", s.paths.local_archives[0], d) for d in digests]
+    rows += [(f"u/{d}", s.paths.usb_archives[0], d) for d in digests[:on_usb]]
+    with sqlite3.connect(config.CATALOG_DB_PATH) as db:
+        db.executemany(
+            "INSERT INTO file_locations (path, root, relative_path, size, mtime_ns, inode,"
+            " sha256, indexed_at) VALUES (?, ?, ?, 1, 1, 1, ?, 1)",
+            [
+                (path, str(root.resolve()), f"2026-11/NIKON-Z-8/Raws/{digest}.NEF", digest)
+                for path, root, digest in rows
+            ],
+        )
+
+
+def _cards(s: Sandbox) -> None:
+    """Two cards, one safe to format since a backup on Nov 17, one with 18 files not on the drive."""
+    s.status(state="idle")
+    s.add_usb()
+    _seen_card(s, "CF-UUID", CF_CARD, 2742, 2742, "2026-11-06T22:59:11Z")
+    _seen_card(s, "SD-UUID", SD_CARD, 18, 0, "2026-11-10T16:41:19Z")
+    config.CARD_SAFETY_PATH.write_text(
+        json.dumps({"CF-UUID": datetime(2026, 11, 17, 21, 14).timestamp()})
+    )
+    s.record(details={"new": {"JPG": 9, "RAW": 9}})
+
+
+def _card_inserted_not_safe(s: Sandbox) -> None:
+    _cards(s)
+    s.add_card()
+    s.card_uuid = "SD-UUID"
+    s.paths.handled_state_file.write_text(str(s.volumes / CARD / "DCIM"))
 
 
 def _usb_up_to_date(s: Sandbox) -> None:
@@ -846,6 +907,8 @@ SCENARIOS: Dict[str, Callable[[Sandbox], None]] = {
     "settings_problem": lambda s: s.paths.settings_file.write_text(
         "backup_drive = Photos\nbackup_drive = Backup 2\n", encoding="utf-8"
     ),
+    "cards": _cards,
+    "card_inserted_not_safe": _card_inserted_not_safe,
     "stopped": lambda s: setattr(s, "service_up", False),
     "paused": lambda s: s.paths.pause_file.touch(),
 }

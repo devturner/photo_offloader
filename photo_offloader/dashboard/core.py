@@ -25,6 +25,7 @@ from xml.parsers.expat import ExpatError
 
 from photo_offloader import (
     card,
+    card_status,
     catalog,
     config,
     google_photos,
@@ -48,6 +49,7 @@ UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60  # an upload this soon after an import c
 UPLOAD_START_GRACE_SECONDS = 30  # importer done, sync process still starting
 CARD_HISTORY_ROWS = 20  # enough to get past any backups since a card's last import
 CARD_ID_SECONDS = 30.0  # how long a mounted card's ID is trusted before asking again
+CARD_NAME_LENGTH = 40
 DISKUTIL_SECONDS = 5  # a failing card can leave diskutil waiting, and a poll waits for this
 PREVIEW_LINES = 40  # of a report's file list, in the debug package's save sheet
 UPLOAD_SILENT_SECONDS = 10  # no report from rclone for this long counts as a stall
@@ -95,6 +97,18 @@ def _missed_imports(db: sqlite3.Connection) -> int:
         ).fetchone()[0]
     except sqlite3.OperationalError:
         return 0  # a catalog from before the run history
+
+
+def _name_key(status: Dict[str, Any]) -> str:
+    """An SD card's serial number survives a format, so its name does too."""
+    return f"serial:{status['serial']}" if status.get("serial") else f"id:{status['id']}"
+
+
+def _epoch(iso: str) -> float:
+    try:
+        return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
 
 
 class DashboardCore:
@@ -301,6 +315,70 @@ class DashboardCore:
         except (ValueError, TypeError, AttributeError, ExpatError) as exc:
             logs.logger.debug("Unreadable details for %s: %s", volume, exc)
         return None  # the caller compares names instead
+
+    # ---- the cards row ------------------------------------------------------------------
+    def cards(self, mounted: Optional[Path]) -> List[Dict[str, Any]]:
+        """Each card seen, safe to format or not, most recently seen first."""
+        statuses = self._cached(
+            "cards", 2.0, lambda: [status.as_dict() for status in card_status.all_cards()]
+        )
+        if not statuses:
+            return []
+        mounted_id = (
+            self._cached(f"card-id:{mounted}", CARD_ID_SECONDS, lambda: self._volume_id(mounted))
+            if mounted
+            else None
+        )
+        own = jsonfile.read_object(self.paths.cards_file)
+        names, hidden = own.get("names") or {}, own.get("hidden") or {}
+        rows = []
+        for status in statuses:
+            is_mounted = status["id"] == mounted_id
+            hidden_at = hidden.get(status["id"])
+            if hidden_at and not is_mounted and _epoch(status["last_seen"]) <= hidden_at:
+                continue  # formatted, someone said; it comes back if the card is seen again
+            name = str(names.get(_name_key(status)) or "")
+            rows.append(display.card_row(status, name, is_mounted))
+        return rows
+
+    def _known_card(self, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        card_id = str(params.get("id") or "")
+        return next(
+            (status.as_dict() for status in card_status.all_cards() if status.card_id == card_id),
+            None,
+        )
+
+    def _save_cards_file(self, change: Callable[[Dict[str, Any]], None]) -> None:
+        own = jsonfile.read_object(self.paths.cards_file)
+        own = {"names": dict(own.get("names") or {}), "hidden": dict(own.get("hidden") or {})}
+        change(own)
+        jsonfile.write_json(self.paths.cards_file, own)
+        self._invalidate("cards")
+
+    def _rename_card(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        status = self._known_card(params)
+        if status is None:
+            return {"ok": False, "message": "That card isn't known any more."}
+        name = " ".join(str(params.get("name") or "").split())[:CARD_NAME_LENGTH]
+
+        def change(own: Dict[str, Any]) -> None:
+            if name:
+                own["names"][_name_key(status)] = name
+            else:
+                own["names"].pop(_name_key(status), None)
+
+        self._save_cards_file(change)
+        return {"ok": True, "message": f"Renamed to {name}." if name else "Name removed."}
+
+    def _forget_card(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        status = self._known_card(params)
+        if status is None:
+            return {"ok": False, "message": "That card isn't known any more."}
+        self._save_cards_file(lambda own: own["hidden"].__setitem__(status["id"], self._clock()))
+        return {
+            "ok": True,
+            "message": "Removed from the list. It comes back if the card is inserted again.",
+        }
 
     def usb_mounted(self) -> bool:
         return self._cached(
@@ -829,6 +907,7 @@ class DashboardCore:
         checking = self._verify_progress()
 
         handled = self.card_handled(card)
+        cards = self.cards(card)
         headline = display.headline(
             running, paused, card, activity, interrupted, last, status, google, handled
         )
@@ -860,7 +939,9 @@ class DashboardCore:
                 bool(checking and checking["usb"]),
                 usb_paused,
                 self.paths.auto_usb_backup_file.exists(),
+                next((row for row in cards if row["mounted"]), None),
             ),
+            "cards": cards,
             "verify": checking,
             "upload": google["progress"],
             # Not the importer, so not "busy"; the Stop dialogs and the ⋯ menu need it.
@@ -1068,6 +1149,8 @@ class DashboardCore:
             "set_report_style": lambda: self._set_report_style(str(params.get("report_style", ""))),
             "open_log": lambda: self._open_log(str(params.get("log", ""))),
             "edit_settings": self._edit_settings,
+            "rename_card": lambda: self._rename_card(params),
+            "forget_card": lambda: self._forget_card(params),
             "open_file_list": lambda: self._open_file_list(params),
             "report_preview": lambda: self._report_preview(params),
             "save_debug_package": lambda: self._save_debug_package(params),
@@ -1080,7 +1163,7 @@ class DashboardCore:
             result = handler()
         except OSError as exc:
             result = {"ok": False, "message": f"Could not complete that: {exc}"}
-        self._invalidate("service", "importer", "usb", "counts", "card")
+        self._invalidate("service", "importer", "usb", "counts", "card", "cards")
         return result
 
     def _pause(self) -> Dict[str, Any]:

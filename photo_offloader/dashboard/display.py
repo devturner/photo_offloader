@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -197,6 +198,7 @@ def _card_step(
     busy: bool,
     can_reimport: bool,
     unsaved: bool = False,
+    safety: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if activity and activity["kind"] == "import" and activity.get("stage") in ("scan", "metadata"):
         return _step(
@@ -224,14 +226,10 @@ def _card_step(
             else ([_action("import_card", "Import now")] if can_reimport else [])
             + [_action("eject_card", "Eject")]
         )
-        return _step(
-            "card",
-            "Camera card",
-            "ok",
-            card.name,
-            "Already imported" if can_reimport else "Mounted",
-            actions,
-        )
+        state, detail = "ok", "Already imported" if can_reimport else "Mounted"
+        if safety is not None and not busy:
+            state, detail = ("ok" if safety["safe"] else "warn"), safety["status"]
+        return _step("card", "Camera card", state, card.name, detail, actions)
     return _step("card", "Camera card", "off", "No card", "Insert a card to begin")
 
 
@@ -463,10 +461,11 @@ def pipeline(
     drive_in_use: bool = False,
     usb_paused: Optional[Dict[str, int]] = None,
     auto_backup: bool = False,
+    card_safety: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """The four steps a photo moves through (card, Mac, USB, Google) and what each can do now."""
     return [
-        _card_step(card, activity, busy, can_reimport, card_unsaved),
+        _card_step(card, activity, busy, can_reimport, card_unsaved, card_safety),
         _archive_step(activity, counts),
         _usb_step(activity, usb_mounted, counts, busy, drive_in_use, usb_paused, auto_backup),
         _cloud_step(
@@ -942,3 +941,94 @@ def headline(
             "detail": "The import will start in a moment.",
         }
     return {"tone": "idle", "title": "Ready", "detail": "Insert a camera card to begin."}
+
+
+# ---- the cards row ------------------------------------------------------------------------------
+
+
+def _local(when: Any) -> Optional[time.struct_time]:
+    """A time as a timestamp or as the importer's ISO text (UTC, ending in Z)."""
+    try:
+        if isinstance(when, (int, float)):
+            return time.localtime(when)
+        stamp = datetime.fromisoformat(str(when).replace("Z", "+00:00"))
+        return time.localtime(stamp.timestamp())
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def short_date(when: Any) -> str:
+    local = _local(when)
+    return f"{time.strftime('%b', local)} {local.tm_mday}" if local else ""
+
+
+def date_and_time(when: Any) -> str:
+    local = _local(when)
+    if not local:
+        return ""
+    hour = local.tm_hour % 12 or 12
+    return f"{short_date(when)}, {hour}:{local.tm_min:02d} {'AM' if local.tm_hour < 12 else 'PM'}"
+
+
+def _files_are(count: int) -> str:
+    return f"{plural(count, 'file')} {'isn' if count == 1 else 'aren'}'t"
+
+
+def card_title(card: Dict[str, Any], name: str = "") -> str:
+    """The name someone gave the card, else the camera and what kind of card it is."""
+    return name or " · ".join(part for part in (card["camera"], card["label"]) if part)
+
+
+def card_row(card: Dict[str, Any], name: str = "", mounted: bool = False) -> Dict[str, Any]:
+    """One card in the row above Recent activity, with the report that unfolds under it."""
+    missing_mac = card["files"] - card["on_mac"]
+    missing_usb = card["files"] - card["on_usb"]
+    since = card.get("safe_since")
+    if card["safe"]:
+        tone = "success"
+        status = "Safe to format" + (f" · since {short_date(since)}" if since else "")
+        headline = "Safe to format" + (f" since {date_and_time(since)}" if since else "")
+        text = (
+            f"All {card['files']:,} files on this card, including the ones from earlier imports, "
+            "are verified on the Mac and on the USB drive."
+        )
+        files: List[str] = []
+    elif not card["files"]:
+        tone, status, headline = "off", "Nothing imported", "Nothing imported from this card yet"
+        text, files = "", []
+    else:
+        tone, headline = "warning", "Don't format this card yet"
+        if missing_mac:
+            status = f"Don't format · {missing_mac:,} not on the Mac"
+            text = f"{_files_are(missing_mac)} on the Mac yet. Insert the card to import them."
+            files = card["not_on_mac"]
+        else:
+            status = f"Don't format · {missing_usb:,} not on USB"
+            text = (
+                f"{_files_are(missing_usb)} on the USB drive yet. Connect it, or press Back up now."
+            )
+            files = card["not_on_usb"]
+    seen = [f"First seen {short_date(card['first_seen'])}" if card["first_seen"] else ""]
+    seen.append("inserted now" if mounted else f"last inserted {short_date(card['last_seen'])}")
+    return {
+        "id": card["id"],
+        "title": card_title(card, name),
+        "kind": card_title(card),
+        "name": name,
+        "tone": tone,
+        "status": status,
+        "safe": card["safe"],
+        "mounted": mounted,
+        "report": {
+            "headline": headline,
+            "text": text,
+            "files": files,
+            "files_more": max((missing_mac or missing_usb) - len(files), 0) if files else 0,
+            "counts": [
+                {"label": "On the card", "value": plural(card["files"], "file")},
+                {"label": "On the Mac", "value": f"{card['on_mac']:,} of {card['files']:,}"},
+                {"label": "On the USB drive", "value": f"{card['on_usb']:,} of {card['files']:,}"},
+            ],
+            "seen": " · ".join(part for part in seen if part),
+        },
+    }
