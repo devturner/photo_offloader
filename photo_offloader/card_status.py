@@ -31,6 +31,15 @@ FILES_LISTED = 20  # files named in a card's report; the counts cover the rest
 
 
 @dataclass
+class FullCheck:
+    """A whole check of every copy on both sides, and the copies it found bad."""
+
+    started_at: float
+    finished_at: float
+    bad: Set[Tuple[str, str]]
+
+
+@dataclass
 class Copies:
     """Hash -> (relative path, catalogued at) on each side, and what the newest check found bad."""
 
@@ -38,6 +47,10 @@ class Copies:
     usb: Dict[str, Tuple[str, float]] = field(default_factory=dict)
     deleted: Set[str] = field(default_factory=set)
     bad: Dict[Tuple[str, str], float] = field(default_factory=dict)  # (side, hash) -> check time
+    rereads: Dict[str, Dict[str, float]] = field(default_factory=dict)  # hash -> side -> when
+    # The newest whole check of everything (key None) and of each card, for checks from before
+    # rereads.json kept each copy.
+    whole_checks: Dict[Optional[str], "FullCheck"] = field(default_factory=dict)
 
     def on_mac(self, digest: str) -> bool:
         if self._good("mac", digest, self.mac):
@@ -52,6 +65,24 @@ class Copies:
         """When the newer of the file's two copies was catalogued: when it became safe."""
         mac = self.mac[digest][1] if self._good("mac", digest, self.mac) else 0.0
         return max(mac, self.usb[digest][1]) if digest in self.usb else mac
+
+    def sides_to_reread(self, digest: str) -> Tuple[str, ...]:
+        """The copies a check must read: both, or only the drive's for a file deleted from the
+        Mac on purpose."""
+        return ("mac", "usb") if self._good("mac", digest, self.mac) else ("usb",)
+
+    def reread_at(self, side: str, digest: str, card_id: str = "") -> Optional[float]:
+        """When a check last read this copy and found it good, if it did since the copy was made."""
+        copy = (self.mac if side == "mac" else self.usb).get(digest)
+        if not copy:
+            return None
+        found = [self.rereads.get(digest, {}).get(side) or 0.0]
+        for key in (None, card_id or None):
+            check = self.whole_checks.get(key)
+            if check and copy[1] <= check.started_at and (side, digest) not in check.bad:
+                found.append(check.finished_at)
+        best = max(found)
+        return best if best >= copy[1] and best > 0 else None
 
     def _good(self, side: str, digest: str, copies: Mapping[str, Tuple[str, float]]) -> bool:
         copy = copies.get(digest)
@@ -70,20 +101,35 @@ def _side_copies(db: sqlite3.Connection, roots: List[Path]) -> Dict[str, Tuple[s
     return {digest: (relative, float(indexed_at)) for digest, relative, indexed_at in rows}
 
 
-def _bad_copies() -> Dict[Tuple[str, str], float]:
-    """Copies the newest check of the saved copies found damaged, changed, missing or unreadable."""
-    rows = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
-    check = next((row for row in rows if row["kind"] == "verify"), None)
+def _found_bad(check: Optional[Mapping[str, Any]]) -> Set[Tuple[str, str]]:
+    """The copies, as (side, hash), a check found damaged, changed, missing or unreadable."""
     found = ((check or {}).get("details") or {}).get("check") or {}  # None after a clean check
-    report = str(found.get("report") or "")
-    bad: Dict[Tuple[str, str], float] = {}
-    for row in verify_report.report_rows(report) if check else []:
+    bad: Set[Tuple[str, str]] = set()
+    for row in verify_report.report_rows(str(found.get("report") or "")) if check else []:
         digest = str(row.get("expected_sha256") or "")
         sides = {verify_report.MAC: ("mac",), verify_report.USB: ("usb",)}
-        for side in sides.get(row.get("where"), ("mac", "usb")):
-            if digest:
-                bad[(side, digest)] = float(check["finished_at"])
+        bad |= {(side, digest) for side in sides.get(row.get("where"), ("mac", "usb")) if digest}
     return bad
+
+
+def _bad_copies(history: List[Dict[str, Any]]) -> Dict[Tuple[str, str], float]:
+    """Copies the newest check of the saved copies found bad, with when it finished."""
+    check = next((row for row in history if row["kind"] == "verify"), None)
+    return {pair: float(check["finished_at"]) for pair in _found_bad(check)} if check else {}
+
+
+def _whole_checks(history: List[Dict[str, Any]]) -> Dict[Optional[str], FullCheck]:
+    """The newest whole check of both sides, of everything (None) and of each card. Checks from
+    before rereads.json kept each copy count through these."""
+    found: Dict[Optional[str], FullCheck] = {}
+    for row in history:  # newest first
+        details = row.get("details") or {}
+        key = details.get("card_id") or None
+        if row["kind"] == "verify" and row["usb"] and details.get("whole") and key not in found:
+            found[key] = FullCheck(
+                float(row["started_at"]), float(row["finished_at"]), _found_bad(row)
+            )
+    return found
 
 
 def read_copies() -> Copies:
@@ -95,7 +141,15 @@ def read_copies() -> Copies:
     except (OSError, sqlite3.Error) as exc:
         logger.debug("Could not read the catalog for card safety: %s", exc)
         return Copies()  # nothing known to be saved, so no card is safe
-    return Copies(mac, usb, verify_report.deleted_files(), _bad_copies())
+    history = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
+    return Copies(
+        mac,
+        usb,
+        verify_report.deleted_files(),
+        _bad_copies(history),
+        verify_report.rereads(),
+        _whole_checks(history),
+    )
 
 
 @dataclass
@@ -112,8 +166,10 @@ class CardStatus:
     last_seen: str
     safe_since: Optional[float] = None
     newest_copy: Optional[float] = None  # when the last copy it needs was saved, once complete
-    checked_at: Optional[float] = None  # when a check last reread its copies, after the newest
+    checked_at: Optional[float] = None  # the oldest reread of its copies, once all are reread
     size_bytes: int = 0
+    to_reread: int = 0  # files with a copy not read again since it was made
+    to_reread_bytes: int = 0
 
     @property
     def complete(self) -> bool:
@@ -153,6 +209,8 @@ class CardStatus:
             "safe_since": self.safe_since if self.complete else None,
             "checked_at": self.checked_at if self.complete else None,
             "bytes": self.size_bytes,
+            "to_reread": self.to_reread if self.complete else 0,
+            "to_reread_bytes": self.to_reread_bytes if self.complete else 0,
         }
 
 
@@ -181,6 +239,10 @@ def status_of(
             newest_copy = max(newest_copy, copies.saved_at(digest))
     identity = history.get("identity") if isinstance(history.get("identity"), dict) else {}
     earlier = (imports or {}).get(card_id, ("", ""))
+    complete = files and not (not_on_mac or not_on_usb)
+    to_reread, to_reread_bytes, oldest = (
+        _reread_summary(files, copies, card_id) if complete else (0, 0, None)
+    )
     return CardStatus(
         card_id=card_id,
         camera=str(history.get("volume_name") or earlier[0]).strip() or "Camera card",
@@ -194,7 +256,49 @@ def status_of(
         last_seen=str(history.get("last_seen") or ""),
         newest_copy=newest_copy or None,
         size_bytes=size_bytes,
+        checked_at=oldest if complete and not to_reread else None,
+        to_reread=to_reread,
+        to_reread_bytes=to_reread_bytes,
     )
+
+
+def _reread_summary(
+    files: Mapping[str, Any], copies: Copies, card_id: str
+) -> Tuple[int, int, Optional[float]]:
+    """How many files, and bytes, have a copy not read again since it was made, and the oldest
+    reread of the rest."""
+    count, size, oldest = 0, 0, None
+    for entry in files.values():
+        digest = entry["sha256"]
+        times = [copies.reread_at(side, digest, card_id) for side in copies.sides_to_reread(digest)]
+        if None in times:
+            count += 1
+            size += entry.get("size", 0) if isinstance(entry.get("size"), int) else 0
+        else:
+            first = min(t for t in times if t is not None)
+            oldest = first if oldest is None else min(oldest, first)
+    return count, size, oldest
+
+
+def copies_to_reread(card_id: str) -> Optional[Tuple[Set[str], Set[str]]]:
+    """The hashes of a card's copies not read again since they were made, on the Mac and on the
+    drive, for Check new copies. None for an unknown card."""
+    payload = (
+        dict(_manifests()).get(card_id) if re.fullmatch(r"[A-Za-z0-9-]+", card_id or "") else None
+    )
+    if payload is None:
+        return None
+    copies = read_copies()
+    mac: Set[str] = set()
+    usb: Set[str] = set()
+    for entry in (payload.get("files") or {}).values():
+        digest = entry.get("sha256") if isinstance(entry, dict) else None
+        if not digest:
+            continue
+        for side in copies.sides_to_reread(digest):
+            if copies.reread_at(side, digest, card_id) is None:
+                (mac if side == "mac" else usb).add(digest)
+    return mac, usb
 
 
 def _manifests() -> Iterator[Tuple[str, Dict[str, Any]]]:
@@ -209,26 +313,6 @@ def _manifests() -> Iterator[Tuple[str, Dict[str, Any]]]:
             continue
         if isinstance(payload, dict):
             yield path.stem, payload
-
-
-def _rereads_both_sides(row: Mapping[str, Any]) -> bool:
-    """A check that read every copy it set out to, on the Mac and the drive. Problems it found
-    elsewhere don't matter here: they are in the bad copies, by hash."""
-    details = row.get("details") or {}
-    return row["kind"] == "verify" and bool(row["usb"]) and details.get("whole") is True
-
-
-def _reread_at(status: "CardStatus", checks: List[Mapping[str, Any]]) -> Optional[float]:
-    """When the newest check of all the copies, or of this card's, finished after the last copy."""
-    if not status.complete:
-        return None
-    for row in checks:  # newest first
-        card_id = (row.get("details") or {}).get("card_id")
-        if card_id in (None, status.card_id) and float(row["started_at"]) >= (
-            status.newest_copy or 0
-        ):
-            return float(row["finished_at"])
-    return None
 
 
 def _imports_by_card(history: List[Dict[str, Any]]) -> Dict[str, Tuple[str, str]]:
@@ -274,14 +358,12 @@ def all_cards(copies: Optional[Copies] = None) -> List[CardStatus]:
     since = safe_since()
     history = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
     imports = _imports_by_card(history)
-    checks = [row for row in history if _rereads_both_sides(row)]
     cards = []
     for card_id, payload in _manifests():
         status = status_of(card_id, payload, copies, imports)
         # A card safe before anything recorded it, such as from before an upgrade, is dated by
         # the newest copy it depends on.
         status.safe_since = since.get(card_id) or (status.newest_copy if status.complete else None)
-        status.checked_at = _reread_at(status, checks)
         cards.append(status)
     return sorted(cards, key=lambda status: status.last_seen, reverse=True)
 

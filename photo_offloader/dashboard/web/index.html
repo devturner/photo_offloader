@@ -254,6 +254,7 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .card-report .verdict[data-tone="check"] { background: var(--accent-soft); color: var(--accent); }
 .card-report .check { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
 .card-report .check .note { flex: 1 1 260px; color: var(--text-2); font-size: 13px; }
+.card-report .check .every { padding-left: 0; }
 .card-report .verdict span { color: var(--text); }
 .card-report .counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
 .card-report .counts div { background: var(--surface-2); border-radius: 10px; padding: 8px 12px; }
@@ -883,18 +884,18 @@ function renderHistory(now) {
 }
 
 // ---- the cards row. One card's report open at a time, under the row.
-let openCard = null, renamingCard = null, askingForget = null, renameDraft = null, cardFiles = null;
+let openCard = null, renamingCard = null, askingForget = null, renameDraft = null, cardFiles = null, askingAll = null;
 const CARD_ICON = { success: "check", warning: "alert", check: "shield" };
 function renderCards(s) {
   const cards = s.cards || [];
   if (openCard && !cards.some(c => c.id === openCard)) openCard = renamingCard = askingForget = null;
-  if (!changed("cards", [cards, openCard, renamingCard, askingForget, cardFiles])) return;
+  if (!changed("cards", [cards, openCard, renamingCard, askingForget, cardFiles, askingAll])) return;
   $("#cards-head").hidden = $("#cards").hidden = !cards.length;
   const focusedId = document.activeElement && document.activeElement.closest(".card-chip") ? document.activeElement.dataset.card : null;
   $("#cards").replaceChildren(...cards.map(c => h("button", {
       type: "button", class: "card-chip", "data-tone": c.tone, "data-card": c.id, "aria-expanded": String(c.id === openCard),
       title: c.id === openCard ? "Close this card's report" : "Open this card's report",
-      onclick: () => { openCard = openCard === c.id ? null : c.id; renamingCard = askingForget = null; renderCards(LAST); } },
+      onclick: () => { openCard = openCard === c.id ? null : c.id; renamingCard = askingForget = askingAll = null; renderCards(LAST); } },
     h("span", { class: "ico" }, icon(CARD_ICON[c.tone] || "sdcard")),
     h("span", { class: "grow" }, h("span", { class: "t", text: c.title }), h("span", { class: "s", text: c.status })),
     c.mounted && h("span", { class: "here", text: "Inserted" }))));
@@ -902,6 +903,31 @@ function renderCards(s) {
   const open = cards.find(c => c.id === openCard), box = $("#card-report");
   box.hidden = !open;
   if (open) box.replaceChildren(...cardReport(open).filter(Boolean));
+}
+// Check new copies starts at once. Check every copy says how long it takes and asks first.
+function cardChecks(c) {
+  const k = c.report.check, blocked = k.blocked;
+  const start = (e, isNew) => {
+    // Say so at once: the check's process takes a moment to show up in the next poll.
+    const box = e.currentTarget.closest(".check");
+    box.querySelectorAll("button").forEach(b => { b.disabled = true; });
+    box.querySelector(".note").textContent = "Starting the check…";
+    askingAll = null;
+    run("verify_card", isNew ? { id: c.id, new: true } : { id: c.id });
+  };
+  if (askingAll === c.id && !blocked) {
+    return h("div", { class: "check ask", role: "group", "aria-label": "Check every copy" },
+      h("span", { class: "note", text: k.all.warning }),
+      h("button", { type: "button", class: "btn", text: "Start", onclick: (e) => start(e, false) }),
+      h("button", { type: "button", class: "btn secondary", text: "Cancel", onclick: () => { askingAll = null; renderCards(LAST); } }));
+  }
+  const every = h("button", { type: "button", class: k.new ? "link every" : "btn secondary", text: k.all.label, disabled: !!blocked,
+    onclick: () => { askingAll = c.id; renderCards(LAST); } });
+  return h("div", { class: "check" },
+    k.new && h("button", { type: "button", class: "btn", text: k.new.label, disabled: !!blocked, onclick: (e) => start(e, true) }),
+    !k.new && every,
+    h("span", { class: "note", text: blocked || (k.new ? k.new.note : "Every copy has been read again since it was made.") }),
+    k.new && every);
 }
 function cardReport(c) {
   const r = c.report;
@@ -927,15 +953,7 @@ function cardReport(c) {
     renamingCard === c.id && rename(),
     askingForget === c.id && forget(),
     h("div", { class: "verdict", "data-tone": c.tone }, h("b", { text: r.headline }), r.text && h("span", { text: r.text })),
-    r.check && h("div", { class: "check" },
-      h("button", { type: "button", class: c.state === "check" ? "btn" : "btn secondary", text: r.check.label, disabled: !!r.check.blocked,
-        onclick: (e) => {
-          // Say so at once: the check's process takes a moment to show up in the next poll.
-          const button = e.currentTarget; button.disabled = true;
-          button.parentElement.querySelector(".note").textContent = "Starting the check…";
-          run("verify_card", { id: c.id });
-        } }),
-      h("span", { class: "note", text: r.check.blocked || r.check.note })),
+    r.check && cardChecks(c),
     h("div", { class: "counts" }, ...r.counts.map(x => h("div", {}, h("span", { text: x.label }), h("b", { text: x.value })))),
     r.files.length > 0 && cardFiles !== c.id && h("button", { type: "button", class: "link files-link", "aria-expanded": "false",
       text: r.files_more || r.files.length > 1 ? `Show which files` : "Show which file", onclick: () => { cardFiles = c.id; renderCards(LAST); } }),

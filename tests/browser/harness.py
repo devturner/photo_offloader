@@ -463,6 +463,13 @@ def _cards(s: Sandbox) -> None:
         usb=True,
         details={"whole": True, "card_id": "CF-UUID"},
     )
+    verify_report.remember_rereads(
+        {(side, f"CF-UUID-{index}") for index in range(2742) for side in ("mac", "usb")}, checked
+    )
+    # Of the Lexar card, a check has read all but its last 40 files again.
+    verify_report.remember_rereads(
+        {(side, f"SD2-UUID-{index}") for index in range(372) for side in ("mac", "usb")}, checked
+    )
     s.record(details={"new": {"JPG": 9, "RAW": 9}, "new_bytes": 412 * MB, "card_id": "SD-UUID"})
 
 

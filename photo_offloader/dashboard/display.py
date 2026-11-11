@@ -993,8 +993,8 @@ def _card_verdict(card: Dict[str, Any]) -> Tuple[str, str, str, str, List[str]]:
             "success",
             f"Safe to format · checked {short_date(checked)}",
             "Safe to format",
-            f"{everything}. They were verified when copied, and read again on "
-            f"{date_and_time(checked)} and found good.",
+            f"{everything}. Each copy was verified when it was made, and has been read again and "
+            f"found good since, the oldest on {date_and_time(checked)}.",
             [],
         )
     if card["state"] == "check":
@@ -1005,8 +1005,8 @@ def _card_verdict(card: Dict[str, Any]) -> Tuple[str, str, str, str, List[str]]:
             "Check before formatting",
             f"{everything}"
             + (f" since {short_date(since)}" if since else "")
-            + ", verified when they were copied. Check this card reads them again on both, "
-            "to make sure they're still good before you format it.",
+            + f", verified when they were copied. {_of_them(card)} been read again since: check "
+            "before you format the card, to make sure they're still good.",
             [],
         )
     if not card["files"]:
@@ -1028,14 +1028,38 @@ def _card_verdict(card: Dict[str, Any]) -> Tuple[str, str, str, str, List[str]]:
     )
 
 
-def card_check_note(card: Dict[str, Any], speeds: Dict[str, float]) -> str:
-    """How long Check this card should take, from the card's size and each disk's speed."""
+def _of_them(card: Dict[str, Any]) -> str:
+    count = card["to_reread"]
+    if count == card["files"]:
+        return "None of them has" if count > 1 else "It hasn't"
+    return f"{count:,} of them {'hasn' if count == 1 else 'haven'}'t"
+
+
+def _check_time(size: int, speeds: Dict[str, float]) -> str:
     known = {**verify_report.USUAL_SPEEDS, **speeds}
-    seconds = card["bytes"] / known[verify_report.MAC] + card["bytes"] / known[verify_report.USB]
-    return (
-        f"About {_time_text(seconds)}. Reads its {plural(card['files'], 'file')} again on the Mac "
-        "and the USB drive, and changes nothing."
-    )
+    return _time_text(size / known[verify_report.MAC] + size / known[verify_report.USB])
+
+
+def card_checks(
+    card: Dict[str, Any], speeds: Dict[str, float], blocked: Optional[str]
+) -> Dict[str, Any]:
+    """Check new copies, when some haven't been read again, and Check every copy, which says
+    how long it takes before it starts. Times come from the card's size and each disk's speed."""
+    count = card["to_reread"]
+    new = None
+    if count:
+        new = {
+            "label": "Check new copies",
+            "note": f"About {_check_time(card['to_reread_bytes'], speeds)}. Reads the "
+            f"{plural(count, 'file')} not read again since {'it was' if count == 1 else 'they were'}"
+            " copied, on the Mac and the USB drive, and changes nothing.",
+        }
+    every = {
+        "label": "Check every copy",
+        "warning": f"Reads all {plural(card['files'], 'file')} again on the Mac and the USB drive: "
+        f"about {_check_time(card['bytes'], speeds)}.",
+    }
+    return {"new": new, "all": every, "blocked": blocked}
 
 
 def card_row(
@@ -1046,14 +1070,11 @@ def card_row(
 ) -> Dict[str, Any]:
     """One card in the row above Recent activity, with the report that unfolds under it.
 
-    ``check``: what Check this card would take ("note"), or why it can't run now ("blocked").
+    ``check``: the checks it offers (``card_checks``), for a card with every copy made.
     """
     tone, status, headline, text, files = _card_verdict(card)
     missing = (card["files"] - card["on_mac"]) or (card["files"] - card["on_usb"])
-    offer = None
-    if card["state"] in ("safe", "check") and check is not None:
-        label = "Check again" if card["state"] == "safe" else "Check this card"
-        offer = {"label": label, "note": check.get("note", ""), "blocked": check.get("blocked")}
+    offer = check if card["state"] in ("safe", "check") else None
     seen = [f"First seen {short_date(card['first_seen'])}" if card["first_seen"] else ""]
     seen.append("inserted now" if mounted else f"last inserted {short_date(card['last_seen'])}")
     return {

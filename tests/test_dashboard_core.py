@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import catalog, config, google_photos, settings
+from photo_offloader import catalog, config, google_photos, settings, verify_report
 from photo_offloader.dashboard import core, display
 from tests import support
 
@@ -837,17 +837,10 @@ class TestCards(Fixture):
     def test_no_cards_seen_gives_an_empty_row(self):
         self.assertEqual(self.cards(), [])
 
-    def checked(self, card_id=None, when=None):
+    def checked(self, *digests, when=None):
+        """A check read these files' copies on both sides and found them good."""
         when = self.now - 100 if when is None else when
-        details = {"whole": True, **({"card_id": card_id} if card_id else {})}
-        catalog.record_import_run(
-            kind="verify",
-            outcome="complete",
-            started_at=when,
-            finished_at=when,
-            usb=True,
-            details=details,
-        )
+        verify_report.remember_rereads({(s, d) for d in digests for s in ("mac", "usb")}, when)
 
     def test_a_backed_up_card_not_read_again_since_says_check_before_formatting(self):
         self.card_manifest("A", {"a": "h1", "b": "h2"}, self.CF)
@@ -863,21 +856,36 @@ class TestCards(Fixture):
         self.assertEqual(report["headline"], "Check before formatting")
         self.assertIn("since Nov 10", report["text"])
         self.assertEqual(report["seen"], "First seen Oct 21 · last inserted Nov 10")
-        self.assertEqual(report["check"]["label"], "Check this card")
-        self.assertIsNone(report["check"]["blocked"])
-        self.assertIn("min", report["check"]["note"])
+        self.assertIn("None of them has been read again since", report["text"])
+        check = report["check"]
+        self.assertIsNone(check["blocked"])
+        self.assertEqual(check["new"]["label"], "Check new copies")
+        self.assertIn("Reads the 2 files not read again", check["new"]["note"])
+        self.assertEqual(check["all"]["label"], "Check every copy")
+        self.assertIn("Reads all 2 files again", check["all"]["warning"])
+
+    def test_only_the_copies_not_read_again_are_offered_as_new(self):
+        self.card_manifest("A", {"a": "h1", "b": "h2"}, self.CF)
+        self.saved(mac=("h1", "h2"), usb=("h1", "h2"))
+        self.checked("h1")
+        report = self.cards()[0]["report"]
+        self.assertIn("1 of them hasn't been read again since", report["text"])
+        self.assertIn(
+            "Reads the 1 file not read again since it was copied", report["check"]["new"]["note"]
+        )
 
     def test_a_card_read_again_since_is_safe_with_the_date_of_the_check(self):
         self.card_manifest("A", {"a": "h1"}, self.CF)
         self.saved(mac=("h1",), usb=("h1",))
-        self.checked("A", when=datetime(2026, 11, 17, 21, 14).timestamp())
+        self.checked("h1", when=datetime(2026, 11, 17, 21, 14).timestamp())
         (card,) = self.cards()
         self.assertEqual(
             (card["tone"], card["status"]), ("success", "Safe to format · checked Nov 17")
         )
         self.assertEqual(card["report"]["headline"], "Safe to format")
-        self.assertIn("read again on Nov 17, 9:14 PM", card["report"]["text"])
-        self.assertEqual(card["report"]["check"]["label"], "Check again")
+        self.assertIn("the oldest on Nov 17, 9:14 PM", card["report"]["text"])
+        self.assertIsNone(card["report"]["check"]["new"])  # nothing new to read
+        self.assertEqual(card["report"]["check"]["all"]["label"], "Check every copy")
 
     def test_check_this_card_starts_a_check_of_only_that_card(self):
         self.card_manifest("A", {"a": "h1"}, self.CF)
@@ -886,6 +894,9 @@ class TestCards(Fixture):
         self.assertIn("Connect the USB drive", self.cards()[0]["report"]["check"]["blocked"])
         self.usb.mkdir()
         self.core._cache.clear()
+        self.assertTrue(self.core.act("verify_card", {"id": "A", "new": True})["ok"])
+        self.assertEqual(self.spawned[-1][-3:], ["--card", "A", "--new"])
+        self.advance(core.CHECK_START_SECONDS + 1)
         self.assertTrue(self.core.act("verify_card", {"id": "A"})["ok"])
         self.assertEqual(self.spawned[-1][-2:], ["--card", "A"])
         self.assertFalse(self.core.act("verify_card", {"id": "../A"})["ok"])
@@ -1006,7 +1017,7 @@ class TestCards(Fixture):
         self.advance(1)
         detail = self.core.state()["finished"]["detail"]
         self.assertTrue(detail.startswith("Check the card before formatting · "), detail)
-        self.checked("A", when=self.now)
+        self.checked("h1", when=self.now)
         self.advance(1)
         self.record(details={"card_id": "A", "new": {}})  # inserted again: nothing new
         self.assertTrue(self.core.state()["finished"]["detail"].startswith("Safe to format · "))

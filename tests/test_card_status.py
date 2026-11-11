@@ -258,7 +258,7 @@ class TestSafeSinceWithoutARecord(CardCase):
 
 
 class TestThreeStates(CardCase):
-    """Don't format, check before formatting, safe: the copies must be reread after they're made."""
+    """Don't format, check before formatting, safe: each copy must be reread after it's made."""
 
     def setUp(self):
         super().setUp()
@@ -267,7 +267,10 @@ class TestThreeStates(CardCase):
             self.on_mac("a.NEF", "h1")
             self.on_usb("a.NEF", "h1")
 
-    def checked(self, started, **fields):
+    def reread(self, when, digest="h1", sides=("mac", "usb")):
+        verify_report.remember_rereads({(side, digest) for side in sides}, when)
+
+    def full_check(self, started, **fields):
         row = dict(
             kind="verify",
             outcome="complete",
@@ -282,38 +285,61 @@ class TestThreeStates(CardCase):
     def test_copies_on_both_sides_not_reread_since_need_a_check(self):
         status = self.status()
         self.assertTrue(status.complete)
-        self.assertFalse(status.safe)
         self.assertEqual(status.state, "check")
+        self.assertEqual((status.to_reread, status.checked_at), (1, None))
 
-    def test_a_whole_check_after_the_newest_copy_makes_it_safe(self):
-        self.checked(200.0)
+    def test_each_copy_read_again_since_it_was_made_makes_the_card_safe(self):
+        self.reread(150.0, sides=("mac",))
+        self.assertEqual(self.status().state, "check")
+        self.reread(170.0, sides=("usb",))
         status = self.status()
-        self.assertEqual((status.state, status.checked_at), ("safe", 250.0))
-        self.assertTrue(status.as_dict()["safe"])
+        self.assertEqual((status.state, status.checked_at, status.to_reread), ("safe", 150.0, 0))
 
-    def test_a_check_of_this_card_counts_and_one_of_another_card_does_not(self):
-        self.checked(200.0, details={"whole": True, "card_id": "OTHER"})
+    def test_a_copy_made_again_after_its_reread_needs_another(self):
+        self.reread(150.0)
+        with patch("time.time", return_value=200.0):
+            self.on_mac("a.NEF", "h1")  # imported again, a new copy
         self.assertEqual(self.status().state, "check")
-        self.checked(300.0, details={"whole": True, "card_id": "A"})
+        self.assertEqual(card_status.copies_to_reread("A"), ({"h1"}, set()))
+
+    def test_a_whole_full_check_from_before_rereads_were_kept_counts(self):
+        self.full_check(200.0)
         self.assertEqual(self.status().state, "safe")
+        self.assertEqual(card_status.copies_to_reread("A"), (set(), set()))
 
-    def test_a_check_from_before_the_newest_copy_does_not_count(self):
-        self.checked(50.0)
+    def test_a_whole_check_of_this_card_from_before_rereads_were_kept_counts_for_it(self):
+        # The user's check of 2026-11-11 ran on a build that didn't keep rereads yet.
+        self.card("B", {"b.NEF": "h2"})
+        with patch("time.time", return_value=100.0):
+            self.on_mac("b.NEF", "h2")
+            self.on_usb("b.NEF", "h2")
+        self.full_check(200.0, details={"whole": True, "card_id": "A"})
+        self.assertEqual(self.status("A").state, "safe")
+        self.assertEqual(self.status("B").state, "check")
+        self.assertEqual(card_status.copies_to_reread("A"), (set(), set()))
+
+    def test_a_full_check_before_the_copy_or_without_the_drive_does_not_count(self):
+        self.full_check(50.0)
+        self.full_check(300.0, usb=False)
+        self.full_check(400.0, details={"whole": False}, outcome="canceled")
         self.assertEqual(self.status().state, "check")
 
-    def test_a_check_that_skipped_the_drive_or_stopped_part_way_does_not_count(self):
-        self.checked(200.0, usb=False)
-        self.checked(300.0, outcome="canceled", details={"whole": False})
-        self.assertEqual(self.status().state, "check")
+    def test_a_file_deleted_from_the_mac_on_purpose_needs_only_the_drive_reread(self):
+        self.card("B", {"b.NEF": "h2"})
+        with patch("time.time", return_value=100.0):
+            self.on_usb("2026-11/b.NEF", "h2")
+        verify_report.remember_deleted(["2026-11/b.NEF"])
+        self.assertEqual(card_status.copies_to_reread("B"), (set(), {"h2"}))
+        self.reread(150.0, digest="h2", sides=("usb",))
+        self.assertEqual(self.status("B").state, "safe")
 
-    def test_a_check_that_found_problems_elsewhere_still_reread_this_card(self):
-        self.checked(200.0, outcome="failed")
-        self.assertEqual(self.status().state, "safe")
-
-    def test_missing_copies_are_dont_format_whatever_was_checked(self):
+    def test_missing_copies_are_dont_format_whatever_was_reread(self):
         self.card("A", {"a.NEF": "h1", "b.NEF": "h2"})
-        self.checked(200.0)
+        self.reread(150.0)
         self.assertEqual(self.status().state, "unsafe")
+
+    def test_an_unknown_card_has_nothing_to_reread(self):
+        self.assertIsNone(card_status.copies_to_reread("NOPE"))
 
 
 class TestForgetFormatted(CardCase):

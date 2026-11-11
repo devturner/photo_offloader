@@ -123,21 +123,28 @@ Above Recent activity is a row with each card Photo Offloader has seen, in one o
 | State | Meaning |
 | --- | --- |
 | **Don't format** | Some files on the card, including old photos you left on it from earlier imports, aren't on the Mac or the USB drive yet. It says how many, and where |
-| **Check before formatting** | Every file has a copy on the Mac and on the USB drive, each verified by SHA-256 when it was made, but they haven't been read again since |
-| **Safe to format** | All of that, and a check has read every copy again since the newest one was made and found them good. It says when |
+| **Check before formatting** | Every file has a copy on the Mac and on the USB drive, each verified by SHA-256 when it was made, but some copies haven't been read again since. It says how many |
+| **Safe to format** | All of that, and a check has read every copy again since it was made and found it good. It says when, by the oldest of those reads |
 
 The card doesn't need to be inserted: plug in the drive a week later, and once the backup finishes,
-the card moves on to *Check before formatting* and a notification says so. **Check this card** in
-the card's report then rereads only that card's copies, on the Mac and the drive, and changes
-nothing. It says first how long it should take, from how fast your drive read last time: about two
-minutes for 400 photos on a hard drive. A full [Check saved copies…](#checking-the-saved-copies)
-counts too. When the check is clean, the card is *Safe to format*, and a notification says so.
+the card moves on to *Check before formatting* and a notification says so. The card's report then
+offers two checks, which read the copies on the Mac and the drive and change nothing:
+
+- **Check new copies** reads only the copies no check has read since they were made. After a full
+  check, that's just what you've imported since, so it usually takes a minute or two.
+- **Check every copy** reads all of the card's copies again, for when you want to be sure. It says
+  first how long it will take, from how fast your drive read last time. On a hard drive at about
+  68 MB/s, a 68 GB card takes about 18 minutes, as the drive has to read every byte.
+
+Each check remembers the copies it found good, so the next one doesn't read them again. A full
+[Check saved copies…](#checking-the-saved-copies) counts too. When nothing is left to read, the
+card is *Safe to format*, and a notification says so.
 
 How it decides: each import keeps a list of the card's files and their SHA-256 hashes on the Mac.
 A file counts when the catalog has a copy with that hash on each side. A file you deleted from the
 Mac [on purpose](#clearing-space-on-the-mac) counts if the drive still has it. A copy a check found
 damaged or missing doesn't count until it's copied again, so the card goes back to *Don't format*.
-A copy made after the last check needs another one. Without a USB drive, no card is ever safe to
+A copy made again, such as a file imported a second time, needs reading again. Without a USB drive, no card is ever safe to
 format, because one copy isn't a backup.
 
 Click a card to open its report: how many files are on the card, on the Mac and on the drive, when
@@ -298,8 +305,9 @@ To run it from a terminal instead, where it exits with code 1 if it finds proble
 ~/Library/Application\ Support/PhotoOffloader/bin/photo-offloader-verify
 ```
 
-`--card <volume ID>` checks only one card's copies, as **Check this card** does. The volume IDs are
-the file names in `card-manifests` in the data folder.
+`--card <volume ID>` checks only one card's copies, as **Check every copy** does, and `--card <volume
+ID> --new` only those not read since they were made, as **Check new copies** does. The volume IDs
+are the file names in `card-manifests` in the data folder.
 
 ### Clearing space on the Mac
 

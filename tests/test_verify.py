@@ -10,7 +10,8 @@ import sqlite3
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stdout
+import unittest.mock
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -550,6 +551,32 @@ class TestOneCard(VerifyTestCase):
         with patch.object(verify, "check_archives", side_effect=spy), patch.object(logs, "notify"):
             self.run_main("--card", "CARD")
         self.assertEqual(seen, ["CARD", "CARD"])
+
+    def test_each_copy_found_good_is_remembered(self):
+        with patch.object(logs, "notify"):
+            self.run_main("--card", "CARD")
+        digest = hashlib.sha256(b"from the card").hexdigest()
+        self.assertEqual(set(verify_report.rereads()), {digest})
+        self.assertEqual(set(verify_report.rereads()[digest]), {"mac", "usb"})
+
+    def test_new_copies_only_reads_what_no_check_has_read_since_it_was_made(self):
+        with patch.object(logs, "notify"):
+            self.run_main("--card", "CARD", "--new")
+            self.assertEqual(self.last_run()["files"], 2)
+            self.run_main("--card", "CARD", "--new")
+        self.assertEqual(self.last_run()["files"], 0)  # nothing new to read
+        self.assertEqual(card_status.all_cards()[0].state, "safe")
+
+    def test_a_damaged_copy_is_not_remembered_as_good(self):
+        self.damage(self.local / "2026-10/a.jpg")
+        with patch.object(logs, "notify"):
+            self.run_main("--card", "CARD")
+        digest = hashlib.sha256(b"from the card").hexdigest()
+        self.assertEqual(verify_report.rereads()[digest], {"usb": unittest.mock.ANY})
+
+    def test_new_only_goes_with_a_card(self):
+        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+            verify.main(["--new"])
 
     def test_an_unknown_card_is_refused(self):
         with patch.object(logs, "notify"):

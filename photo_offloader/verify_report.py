@@ -218,3 +218,20 @@ def mark_deleted(name: str) -> Tuple[List[str], List[Dict[str, Any]]]:
     if marked:
         remember_deleted(marked)
     return marked, [row for row in rows if not can_mark_deleted(row)]
+
+
+# ---- copies a check read and found good, by hash -----------------------------------------------
+
+
+def rereads() -> Dict[str, Dict[str, float]]:
+    """{hash: {"mac": when, "usb": when}}: the last time a check read that copy and found it good."""
+    found = jsonfile.read_object(config.REREADS_PATH)
+    return {key: value for key, value in found.items() if isinstance(value, dict)}
+
+
+def remember_rereads(good: Iterable[Tuple[str, str]], when: float) -> None:
+    """Note the copies, as (side, hash), that a check read and found good. Only the check writes."""
+    noted = rereads()
+    for side, digest in good:
+        noted.setdefault(digest, {})[side] = when
+    jsonfile.write_json(config.REREADS_PATH, noted, separators=(",", ":"))

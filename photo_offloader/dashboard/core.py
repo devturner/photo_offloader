@@ -397,7 +397,7 @@ class DashboardCore:
         return None
 
     def _card_check_blocked(self, card_id: str = "") -> Optional[str]:
-        """Why Check this card can't start now, if it can't."""
+        """Why a check of a card can't start now, if it can't."""
         checking = self._checking_card()
         if checking is not None:
             return (
@@ -415,10 +415,11 @@ class DashboardCore:
             drive = self._volume_id(self.paths.usb_volume) if self.usb_mounted() else None
             return verify_report.measured_speeds(rows, drive)
 
-        return {
-            "note": display.card_check_note(status, self._cached("check-speeds", 60.0, speeds)),
-            "blocked": self._card_check_blocked(status["id"]),
-        }
+        return display.card_checks(
+            status,
+            self._cached("check-speeds", 60.0, speeds),
+            self._card_check_blocked(status["id"]),
+        )
 
     def _verify_card(self, params: Dict[str, Any]) -> Dict[str, Any]:
         status = self._known_card(params)
@@ -427,7 +428,8 @@ class DashboardCore:
         blocked = self._card_check_blocked(status["id"])
         if blocked:
             return {"ok": False, "message": blocked}
-        self._spawn([str(self.paths.python), str(self.paths.verify_script), "--card", status["id"]])
+        argv = [str(self.paths.python), str(self.paths.verify_script), "--card", status["id"]]
+        self._spawn(argv + (["--new"] if params.get("new") else []))
         self._check_started = (status["id"], self._clock())
         self._invalidate("verify", "cards")
         return {"ok": True, "message": "Checking this card's copies. It shows in Recent activity."}

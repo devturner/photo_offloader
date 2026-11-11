@@ -63,6 +63,7 @@ VERIFY_REPORTS_DIR = DATA_DIR / "verify-reports"  # one file per archive check t
 VERIFY_STATUS_PATH = DATA_DIR / "verify_status.json"  # how far a running check has got
 DELETED_FROM_MAC_PATH = DATA_DIR / "deleted_from_mac.json"  # files someone said they removed
 CARD_SAFETY_PATH = DATA_DIR / "card_safety.json"  # when each card became safe to format
+REREADS_PATH = DATA_DIR / "rereads.json"  # when a check last read each copy and found it good
 VERIFY_LOCK_PATH = HOME / "Library" / "Caches" / "PhotoOffloader" / "verify.lock"
 LEGACY_CATALOG_DB_PATH = INSTALL_DIR / "catalog.sqlite3"  # before the catalog moved to DATA_DIR
 BUILD_INFO_PATH = APP_ROOT / "build_info.json"

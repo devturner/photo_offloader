@@ -182,7 +182,7 @@ class TestCards(PageTestCase):
         expect(report).to_be_visible()
         expect(report).not_to_contain_text("false")  # parts not shown are left out, not printed
         expect(report.locator(".verdict b")).to_have_text("Safe to format")
-        expect(report.locator(".verdict span")).to_contain_text("read again on Nov 17, 9:14 PM")
+        expect(report.locator(".verdict span")).to_contain_text("the oldest on Nov 17, 9:14 PM")
         expect(report.locator(".counts b")).to_have_text(
             ["2,742 files", "2,742 of 2,742", "2,742 of 2,742"]
         )
@@ -192,26 +192,50 @@ class TestCards(PageTestCase):
         self.chip("SanDisk").click()
         expect(report).to_be_hidden()
 
-    def test_check_this_card_starts_a_check_of_that_card(self):
+    def test_check_new_copies_reads_only_the_ones_not_read_again(self):
         self.show("cards")
         self.chip("Lexar").click()
         report = self.page.locator("#card-report")
         expect(report.locator(".verdict b")).to_have_text("Check before formatting")
-        expect(report.locator(".check .note")).to_contain_text("Reads its 412 files again")
-        self.click_action(report.locator(".check button"), "verify_card")
-        self.assertEqual(self.sandbox.spawned[-1][-2:], ["--card", "SD2-UUID"])
-        # The button can't start a second check, and says why, before the check shows up.
-        expect(report.locator(".check button")).to_be_disabled()
+        expect(report.locator(".verdict span")).to_contain_text(
+            "40 of them haven't been read again"
+        )
+        expect(report.locator(".check .note")).to_contain_text("Reads the 40 files not read again")
+        new = report.locator(".check button", has_text="Check new copies")
+        self.click_action(new, "verify_card")
+        self.assertEqual(self.sandbox.spawned[-1][-3:], ["--card", "SD2-UUID", "--new"])
+        # The buttons can't start a second check, and say why, before the check shows up.
+        expect(new).to_be_disabled()
         expect(report.locator(".check .note")).to_have_text("Checking this card…")
+
+    def test_check_every_copy_says_how_long_first(self):
+        self.show("cards")
+        self.chip("Lexar").click()
+        report = self.page.locator("#card-report")
+        report.locator(".check button", has_text="Check every copy").click()
+        expect(report.locator(".check.ask .note")).to_contain_text("Reads all 412 files again")
+        expect(report.locator(".check.ask .note")).to_contain_text("about")
+        report.locator(".check.ask button", has_text="Cancel").click()
+        self.assert_acted()
+        report.locator(".check button", has_text="Check every copy").click()
+        self.click_action(report.locator(".check.ask button", has_text="Start"), "verify_card")
+        self.assertEqual(self.sandbox.spawned[-1][-2:], ["--card", "SD2-UUID"])
+
+    def test_a_safe_card_offers_only_check_every_copy(self):
+        self.show("cards")
+        self.chip("CFexpress").click()
+        buttons = self.page.locator("#card-report .check button")
+        expect(buttons).to_have_text(["Check every copy"])
+        expect(self.page.locator("#card-report .check .note")).to_have_text(
+            "Every copy has been read again since it was made."
+        )
 
     def test_the_check_button_answers_the_click_at_once(self):
         self.show("cards")
         self.chip("Lexar").click()
-        self.page.route(
-            "**/api/action/verify_card", lambda route: None
-        )  # an answer that never comes
-        self.page.locator("#card-report .check button").click()
-        expect(self.page.locator("#card-report .check button")).to_be_disabled()
+        self.page.route("**/api/action/verify_card", lambda route: None)  # never answered
+        self.page.locator("#card-report .check button", has_text="Check new copies").click()
+        expect(self.page.locator("#card-report .check button").first).to_be_disabled()
         expect(self.page.locator("#card-report .check .note")).to_have_text("Starting the check…")
 
     def test_without_the_drive_the_check_button_says_why_it_waits(self):
@@ -219,7 +243,7 @@ class TestCards(PageTestCase):
         self.sandbox.usb.rmdir()
         self.open_page()
         self.chip("Lexar").click()
-        expect(self.page.locator("#card-report .check button")).to_be_disabled()
+        expect(self.page.locator("#card-report .check button").first).to_be_disabled()
         expect(self.page.locator("#card-report .check .note")).to_contain_text(
             "Connect the USB drive"
         )
