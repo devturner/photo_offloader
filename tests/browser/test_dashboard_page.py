@@ -1067,19 +1067,20 @@ class TestReports(PageTestCase):
         self.assertEqual(self.rows().nth(0).get_attribute("aria-expanded"), "false")
         self.assertEqual(self.page.locator("dialog[open]").count(), 0)
 
-    def row_top(self, index):
-        return self.rows().nth(index).bounding_box()["y"]
+    def row_gap(self):
+        """How far below the first run the second starts. Opening a report may scroll the list
+        to show it, so the runs are measured from each other, not from the window."""
+        return self.rows().nth(1).bounding_box()["y"] - self.rows().nth(0).bounding_box()["y"]
 
     def test_an_open_report_pushes_the_runs_below_it_down_until_it_closes(self):
         self.show("readme_import", **NATIVE_WINDOW)
-        above, below = self.row_top(0), self.row_top(1)
+        closed = self.row_gap()
         self.rows().first.click()
         height = self.page.locator(".run-report").bounding_box()["height"]
-        self.assertEqual(self.row_top(0), above)
-        self.assertAlmostEqual(self.row_top(1), below + height, delta=1)
+        self.assertAlmostEqual(self.row_gap(), closed + height, delta=1)
         self.rows().first.click()
         expect(self.page.locator(".run-report")).to_have_count(0)
-        self.assertEqual(self.row_top(1), below)
+        self.assertEqual(self.row_gap(), closed)
 
     def _hold_report_folds(self):
         """Pause each report fold as it starts, so a test can seek it without racing the clock.
