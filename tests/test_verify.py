@@ -64,10 +64,10 @@ class VerifyTestCase(support.CardFixtureTestCase):
         path.write_bytes(bytes(data))
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
 
-    def run_main(self):
+    def run_main(self, *args):
         out = io.StringIO()
         with redirect_stdout(out):
-            code = verify.main([])
+            code = verify.main(list(args))
         return code, out.getvalue()
 
     @staticmethod
@@ -497,6 +497,54 @@ class TestCommand(VerifyTestCase):
         self.assertFalse(config.STATUS_FILE_PATH.exists())
 
 
+class TestOneCard(VerifyTestCase):
+    """--card rereads only one card's copies, so it can be called safe to format."""
+
+    def setUp(self):
+        super().setUp()
+        self.save("2026-10/a.jpg", b"from the card")
+        self.save("2026-10/b.jpg", b"from another card")
+        digest = hashlib.sha256(b"from the card").hexdigest()
+        jsonfile.write_json(
+            config.CARD_MANIFESTS_DIR / "CARD.json",
+            {"schema": 1, "files": {"DCIM/a.jpg": {"sha256": digest, "size": 13}}, "history": {}},
+        )
+
+    def test_only_the_cards_copies_are_read_and_the_card_becomes_safe(self):
+        self.assertEqual(card_status.all_cards()[0].state, "check")
+        with patch.object(logs, "notify") as notify:
+            code, output = self.run_main("--card", "CARD")
+        self.assertEqual(code, 0, output)
+        row = self.last_run()
+        self.assertEqual(row["files"], 2)  # one copy on each side, not four
+        self.assertEqual(row["details"]["card_id"], "CARD")
+        self.assertTrue(row["details"]["whole"])
+        self.assertEqual(card_status.all_cards()[0].state, "safe")
+        notify.assert_called_once_with(
+            "Safe to Format", "Camera card: all 1 file was read again and is good on both sides."
+        )
+
+    def test_a_damaged_copy_of_the_card_makes_it_dont_format(self):
+        self.damage(self.local / "2026-10/a.jpg")
+        with patch.object(logs, "notify"):
+            self.assertEqual(self.run_main("--card", "CARD")[0], 1)
+        self.assertEqual(card_status.all_cards()[0].state, "unsafe")
+
+    def test_without_the_drive_a_card_is_not_checked(self):
+        self.usb_is_mounted.return_value = False
+        with patch.object(logs, "notify"):
+            code, output = self.run_main("--card", "CARD")
+        self.assertEqual(code, 1)
+        self.assertIn("Connect the USB drive", output)
+        self.assertEqual(card_status.all_cards()[0].state, "check")
+
+    def test_an_unknown_card_is_refused(self):
+        with patch.object(logs, "notify"):
+            code, output = self.run_main("--card", "NOPE")
+        self.assertEqual(code, 1)
+        self.assertIn("isn't known", output)
+
+
 class TestDeletedOnPurpose(VerifyTestCase):
     """Clearing space on the Mac and keeping the drive's copies must not fail every check."""
 
@@ -760,7 +808,7 @@ class TestProgressFile(VerifyTestCase):
         with patch.object(
             verify,
             "check_archives",
-            side_effect=lambda check: self.assertEqual(
+            side_effect=lambda check, only=None: self.assertEqual(
                 jsonfile.read_object(config.VERIFY_STATUS_PATH)["where"], ""
             ),
         ):

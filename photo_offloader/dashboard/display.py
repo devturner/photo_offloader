@@ -228,7 +228,7 @@ def _card_step(
         )
         state, detail = "ok", "Already imported" if can_reimport else "Mounted"
         if safety is not None and not busy:
-            state, detail = ("ok" if safety["safe"] else "warn"), safety["status"]
+            state, detail = ("warn" if safety["state"] == "unsafe" else "ok"), safety["status"]
         return _step("card", "Camera card", state, card.name, detail, actions)
     return _step("card", "Camera card", "off", "No card", "Insert a card to begin")
 
@@ -979,35 +979,81 @@ def card_title(card: Dict[str, Any], name: str = "") -> str:
     return name or " · ".join(part for part in (card["camera"], card["label"]) if part)
 
 
-def card_row(card: Dict[str, Any], name: str = "", mounted: bool = False) -> Dict[str, Any]:
-    """One card in the row above Recent activity, with the report that unfolds under it."""
+def _card_verdict(card: Dict[str, Any]) -> Tuple[str, str, str, str, List[str]]:
+    """Tone, short status, headline, explanation and the files to list, for one card."""
     missing_mac = card["files"] - card["on_mac"]
     missing_usb = card["files"] - card["on_usb"]
-    since = card.get("safe_since")
-    if card["safe"]:
-        tone = "success"
-        status = "Safe to format" + (f" · since {short_date(since)}" if since else "")
-        headline = "Safe to format" + (f" since {date_and_time(since)}" if since else "")
-        text = (
-            f"All {card['files']:,} files on this card, including the ones from earlier imports, "
-            "are verified on the Mac and on the USB drive."
+    everything = (
+        f"All {card['files']:,} files on this card, including the ones from earlier imports, "
+        "are on the Mac and the USB drive"
+    )
+    if card["state"] == "safe":
+        checked = card["checked_at"]
+        return (
+            "success",
+            f"Safe to format · checked {short_date(checked)}",
+            "Safe to format",
+            f"{everything}. They were verified when copied, and read again on "
+            f"{date_and_time(checked)} and found good.",
+            [],
         )
-        files: List[str] = []
-    elif not card["files"]:
-        tone, status, headline = "off", "Nothing imported", "Nothing imported from this card yet"
-        text, files = "", []
-    else:
-        tone, headline = "warning", "Don't format this card yet"
-        if missing_mac:
-            status = f"Don't format · {missing_mac:,} not on the Mac"
-            text = f"{_files_are(missing_mac)} on the Mac yet. Insert the card to import them."
-            files = card["not_on_mac"]
-        else:
-            status = f"Don't format · {missing_usb:,} not on USB"
-            text = (
-                f"{_files_are(missing_usb)} on the USB drive yet. Connect it, or press Back up now."
-            )
-            files = card["not_on_usb"]
+    if card["state"] == "check":
+        since = card.get("safe_since")
+        return (
+            "check",
+            "Check before formatting",
+            "Check before formatting",
+            f"{everything}"
+            + (f" since {short_date(since)}" if since else "")
+            + ", verified when they were copied. Check this card reads them again on both, "
+            "to make sure they're still good before you format it.",
+            [],
+        )
+    if not card["files"]:
+        return "off", "Nothing imported", "Nothing imported from this card yet", "", []
+    if missing_mac:
+        return (
+            "warning",
+            f"Don't format · {missing_mac:,} not on the Mac",
+            "Don't format this card yet",
+            f"{_files_are(missing_mac)} on the Mac yet. Insert the card to import them.",
+            card["not_on_mac"],
+        )
+    return (
+        "warning",
+        f"Don't format · {missing_usb:,} not on USB",
+        "Don't format this card yet",
+        f"{_files_are(missing_usb)} on the USB drive yet. Connect it, or press Back up now.",
+        card["not_on_usb"],
+    )
+
+
+def card_check_note(card: Dict[str, Any], speeds: Dict[str, float]) -> str:
+    """How long Check this card should take, from the card's size and each disk's speed."""
+    known = {**verify_report.USUAL_SPEEDS, **speeds}
+    seconds = card["bytes"] / known[verify_report.MAC] + card["bytes"] / known[verify_report.USB]
+    return (
+        f"About {_time_text(seconds)}. Reads its {plural(card['files'], 'file')} again on the Mac "
+        "and the USB drive, and changes nothing."
+    )
+
+
+def card_row(
+    card: Dict[str, Any],
+    name: str = "",
+    mounted: bool = False,
+    check: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """One card in the row above Recent activity, with the report that unfolds under it.
+
+    ``check``: what Check this card would take ("note"), or why it can't run now ("blocked").
+    """
+    tone, status, headline, text, files = _card_verdict(card)
+    missing = (card["files"] - card["on_mac"]) or (card["files"] - card["on_usb"])
+    offer = None
+    if card["state"] in ("safe", "check") and check is not None:
+        label = "Check again" if card["state"] == "safe" else "Check this card"
+        offer = {"label": label, "note": check.get("note", ""), "blocked": check.get("blocked")}
     seen = [f"First seen {short_date(card['first_seen'])}" if card["first_seen"] else ""]
     seen.append("inserted now" if mounted else f"last inserted {short_date(card['last_seen'])}")
     return {
@@ -1018,12 +1064,14 @@ def card_row(card: Dict[str, Any], name: str = "", mounted: bool = False) -> Dic
         "tone": tone,
         "status": status,
         "safe": card["safe"],
+        "state": card["state"],
         "mounted": mounted,
         "report": {
             "headline": headline,
             "text": text,
+            "check": offer,
             "files": files,
-            "files_more": max((missing_mac or missing_usb) - len(files), 0) if files else 0,
+            "files_more": max(missing - len(files), 0) if files else 0,
             "counts": [
                 {"label": "On the card", "value": plural(card["files"], "file")},
                 {"label": "On the Mac", "value": f"{card['on_mac']:,} of {card['files']:,}"},

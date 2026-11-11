@@ -64,7 +64,7 @@ class TestSafeToFormat(CardCase):
             self.on_mac(name, digest)
             self.on_usb(name, digest)
         status = self.status()
-        self.assertTrue(status.safe)
+        self.assertTrue(status.complete)
         self.assertEqual((status.files, status.on_mac, status.on_usb), (2, 2, 2))
         self.assertEqual(status.label, "64 GB SanDisk SD")
         self.assertEqual(status.camera, "NIKON Z 8")
@@ -73,7 +73,7 @@ class TestSafeToFormat(CardCase):
         self.card("A", {"a.NEF": "h1"})
         self.saved(config.LOCAL_RAW_DEST_ROOT, "2026-11/a.NEF", "h1")
         self.on_usb("2026-11/a.NEF", "h1")
-        self.assertTrue(self.status().safe)
+        self.assertTrue(self.status().complete)
 
     def test_a_file_not_on_the_drive_is_not_safe_and_is_named(self):
         self.card("A", {"old.NEF": "h1", "new.NEF": "h2"})
@@ -81,25 +81,25 @@ class TestSafeToFormat(CardCase):
         self.on_mac("new.NEF", "h2")
         self.on_usb("old.NEF", "h1")
         status = self.status()
-        self.assertFalse(status.safe)
+        self.assertFalse(status.complete)
         self.assertEqual(status.on_usb, 1)
         self.assertEqual(status.not_on_usb, ["new.NEF"])
 
     def test_a_file_never_hashed_is_not_counted_as_saved(self):
         self.card("A", {"a.NEF": None})
-        self.assertFalse(self.status().safe)
+        self.assertFalse(self.status().complete)
         self.assertEqual(self.status().not_on_mac, ["a.NEF"])
 
     def test_an_empty_card_is_not_called_safe(self):
         self.card("A", {})
-        self.assertFalse(self.status().safe)
+        self.assertFalse(self.status().complete)
 
     def test_a_file_deleted_from_the_mac_on_purpose_counts_if_the_drive_has_it(self):
         self.card("A", {"a.NEF": "h1"})
         self.on_usb("2026-11/a.NEF", "h1")
-        self.assertFalse(self.status().safe)
+        self.assertFalse(self.status().complete)
         verify_report.remember_deleted(["2026-11/a.NEF"])
-        self.assertTrue(self.status().safe)
+        self.assertTrue(self.status().complete)
 
     def test_a_copy_the_last_check_found_bad_does_not_count_until_made_again(self):
         self.card("A", {"a.NEF": "h1"})
@@ -128,11 +128,11 @@ class TestSafeToFormat(CardCase):
             details={"check": {"report": name}},
         )
         status = self.status()
-        self.assertFalse(status.safe)
+        self.assertFalse(status.complete)
         self.assertEqual(status.on_mac, 1)
         with patch("time.time", return_value=time.time() + 5):  # copied again after the check
             catalog.catalog_record(config.USB_DEST_ROOT / "a.NEF", sha256="h1")
-        self.assertTrue(self.status().safe)
+        self.assertTrue(self.status().complete)
 
     def test_a_clean_check_or_one_with_its_files_marked_deleted_leaves_the_copies_counted(self):
         # The user's catalog, 2026-11-11: the newest check row has {"check": None}.
@@ -143,14 +143,14 @@ class TestSafeToFormat(CardCase):
             catalog.record_import_run(
                 kind="verify", outcome="complete", started_at=1.0, finished_at=2.0, details=details
             )
-            self.assertTrue(self.status().safe, details)
+            self.assertTrue(self.status().complete, details)
 
     def test_an_unreadable_catalog_makes_no_card_safe(self):
         self.card("A", {"a.NEF": "h1"})
         self.on_mac("a.NEF", "h1")
         self.on_usb("a.NEF", "h1")
         with patch.object(catalog, "catalog_db", side_effect=OSError("locked")):
-            self.assertFalse(self.status().safe)
+            self.assertFalse(self.status().complete)
 
     def test_a_card_listed_before_names_were_kept_takes_its_name_from_the_history(self):
         payload = {
@@ -255,6 +255,65 @@ class TestSafeSinceWithoutARecord(CardCase):
         self.card("A", {"a.NEF": "h1"})
         self.at(100.0, self.on_mac, "a.NEF", "h1")
         self.assertIsNone(self.status().safe_since)
+
+
+class TestThreeStates(CardCase):
+    """Don't format, check before formatting, safe: the copies must be reread after they're made."""
+
+    def setUp(self):
+        super().setUp()
+        self.card("A", {"a.NEF": "h1"})
+        with patch("time.time", return_value=100.0):
+            self.on_mac("a.NEF", "h1")
+            self.on_usb("a.NEF", "h1")
+
+    def checked(self, started, **fields):
+        row = dict(
+            kind="verify",
+            outcome="complete",
+            started_at=started,
+            finished_at=started + 50,
+            usb=True,
+            details={"whole": True},
+        )
+        row.update(fields)
+        catalog.record_import_run(**row)
+
+    def test_copies_on_both_sides_not_reread_since_need_a_check(self):
+        status = self.status()
+        self.assertTrue(status.complete)
+        self.assertFalse(status.safe)
+        self.assertEqual(status.state, "check")
+
+    def test_a_whole_check_after_the_newest_copy_makes_it_safe(self):
+        self.checked(200.0)
+        status = self.status()
+        self.assertEqual((status.state, status.checked_at), ("safe", 250.0))
+        self.assertTrue(status.as_dict()["safe"])
+
+    def test_a_check_of_this_card_counts_and_one_of_another_card_does_not(self):
+        self.checked(200.0, details={"whole": True, "card_id": "OTHER"})
+        self.assertEqual(self.status().state, "check")
+        self.checked(300.0, details={"whole": True, "card_id": "A"})
+        self.assertEqual(self.status().state, "safe")
+
+    def test_a_check_from_before_the_newest_copy_does_not_count(self):
+        self.checked(50.0)
+        self.assertEqual(self.status().state, "check")
+
+    def test_a_check_that_skipped_the_drive_or_stopped_part_way_does_not_count(self):
+        self.checked(200.0, usb=False)
+        self.checked(300.0, outcome="canceled", details={"whole": False})
+        self.assertEqual(self.status().state, "check")
+
+    def test_a_check_that_found_problems_elsewhere_still_reread_this_card(self):
+        self.checked(200.0, outcome="failed")
+        self.assertEqual(self.status().state, "safe")
+
+    def test_missing_copies_are_dont_format_whatever_was_checked(self):
+        self.card("A", {"a.NEF": "h1", "b.NEF": "h2"})
+        self.checked(200.0)
+        self.assertEqual(self.status().state, "unsafe")
 
 
 class TestForgetFormatted(CardCase):

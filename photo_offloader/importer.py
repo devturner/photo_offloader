@@ -517,19 +517,21 @@ def _remember_card(dcim_folder: Path, card_volume: Path) -> None:
 
 
 def _note_safe_cards() -> None:
-    """Say when a card has become safe to format: now, or after a backup days later."""
+    """Say when a card's files are all backed up, now or days later, ready to check."""
     newly = card_status.record()
     if len(newly) == 1:
         status = newly[0]
         name = " · ".join(part for part in (status.camera, status.label) if part)
         logs.notify(
-            "Safe to Format",
-            f"{name}: all {status.files:,} files are on the Mac and the USB drive.",
+            "Card Backed Up",
+            f"{name}: all {status.files:,} files are on the Mac and the USB drive. "
+            "Check it before formatting.",
         )
     elif newly:
         logs.notify(
-            "Safe to Format",
-            f"{len(newly)} cards now have every file on the Mac and the USB drive.",
+            "Cards Backed Up",
+            f"{len(newly)} cards now have every file on the Mac and the USB drive. "
+            "Check them before formatting.",
         )
 
 

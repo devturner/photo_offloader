@@ -408,6 +408,7 @@ def _backup_and_upload(s: Sandbox) -> None:
 
 SD_CARD = {"kind": "SD", "size_bytes": 63_864_569_856, "maker": "SanDisk", "serial": "0x1"}
 CF_CARD = {"kind": "CFexpress", "size_bytes": 256_060_514_304}
+SD128_CARD = {"kind": "SD", "size_bytes": 127_865_454_592, "maker": "Lexar", "serial": "0x2"}
 
 
 def _seen_card(
@@ -423,7 +424,8 @@ def _seen_card(
         "last_seen": seen,
     }
     manifest = {
-        f"DCIM/100NZ8_/_DZ8{index:04d}.NEF": {"sha256": d} for index, d in enumerate(digests)
+        f"DCIM/100NZ8_/_DZ8{index:04d}.NEF": {"sha256": d, "size": 22_400_000}
+        for index, d in enumerate(digests)
     }
     (config.CARD_MANIFESTS_DIR / f"{card_id}.json").write_text(
         json.dumps({"schema": 1, "files": manifest, "history": history})
@@ -443,13 +445,23 @@ def _seen_card(
 
 
 def _cards(s: Sandbox) -> None:
-    """Two cards, one safe to format since a backup on Nov 17, one with 18 files not on the drive."""
+    """One card of each kind: safe (checked Nov 17), backed up but not reread, and 18 not on USB."""
     s.status(state="idle")
     s.add_usb()
     _seen_card(s, "CF-UUID", CF_CARD, 2742, 2742, "2026-11-06T22:59:11Z")
+    _seen_card(s, "SD2-UUID", SD128_CARD, 412, 412, "2026-11-08T10:00:00Z")
     _seen_card(s, "SD-UUID", SD_CARD, 18, 0, "2026-11-10T16:41:19Z")
-    config.CARD_SAFETY_PATH.write_text(
-        json.dumps({"CF-UUID": datetime(2026, 11, 17, 21, 14).timestamp()})
+    since = datetime(2026, 11, 10, 8, 52).timestamp()
+    config.CARD_SAFETY_PATH.write_text(json.dumps({"CF-UUID": since, "SD2-UUID": since}))
+    checked = datetime(2026, 11, 17, 21, 14).timestamp()
+    catalog.record_import_run(
+        kind="verify",
+        outcome="complete",
+        source="",
+        started_at=checked - 600,
+        finished_at=checked,
+        usb=True,
+        details={"whole": True, "card_id": "CF-UUID"},
     )
     s.record(details={"new": {"JPG": 9, "RAW": 9}, "new_bytes": 412 * MB, "card_id": "SD-UUID"})
 

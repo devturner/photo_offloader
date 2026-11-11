@@ -339,7 +339,7 @@ def inserted_card() -> Optional[CardLine]:
         logger.debug("Could not read the inserted card's state: %s", exc)
         return None
     row = next((row for row in rows if row["mounted"]), None)
-    return CardLine(row["title"], row["safe"], row["status"]) if row else None
+    return CardLine(row["title"], row["state"], row["status"]) if row else None
 
 
 def upload_state() -> str:

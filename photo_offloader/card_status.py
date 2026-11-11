@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -110,11 +111,24 @@ class CardStatus:
     first_seen: str
     last_seen: str
     safe_since: Optional[float] = None
-    newest_copy: Optional[float] = None  # when the last copy it needs was saved, once safe
+    newest_copy: Optional[float] = None  # when the last copy it needs was saved, once complete
+    checked_at: Optional[float] = None  # when a check last reread its copies, after the newest
+    size_bytes: int = 0
+
+    @property
+    def complete(self) -> bool:
+        """Every file has a copy, verified when it was made, on the Mac and the USB drive."""
+        return self.files > 0 and self.on_mac == self.files and self.on_usb == self.files
 
     @property
     def safe(self) -> bool:
-        return self.files > 0 and self.on_mac == self.files and self.on_usb == self.files
+        """Complete, and every copy read again since: they were good then, and still are."""
+        return self.complete and self.checked_at is not None
+
+    @property
+    def state(self) -> str:
+        """ "safe" to format, "check" before formatting, or "unsafe": don't format."""
+        return "safe" if self.safe else "check" if self.complete else "unsafe"
 
     @property
     def label(self) -> str:
@@ -133,8 +147,12 @@ class CardStatus:
             "not_on_usb": self.not_on_usb,
             "first_seen": self.first_seen,
             "last_seen": self.last_seen,
+            "state": self.state,
             "safe": self.safe,
-            "safe_since": self.safe_since if self.safe else None,
+            "complete": self.complete,
+            "safe_since": self.safe_since if self.complete else None,
+            "checked_at": self.checked_at if self.complete else None,
+            "bytes": self.size_bytes,
         }
 
 
@@ -150,7 +168,10 @@ def status_of(
     not_on_mac: List[str] = []
     not_on_usb: List[str] = []
     newest_copy = 0.0
+    size_bytes = 0
     for relative, entry in sorted(files.items()):
+        if isinstance(entry, dict) and isinstance(entry.get("size"), int):
+            size_bytes += entry["size"]
         digest = entry.get("sha256") if isinstance(entry, dict) else None
         if not (digest and copies.on_mac(digest)):
             not_on_mac.append(relative)
@@ -172,6 +193,7 @@ def status_of(
         first_seen=str(history.get("first_seen") or earlier[1] or history.get("last_seen") or ""),
         last_seen=str(history.get("last_seen") or ""),
         newest_copy=newest_copy or None,
+        size_bytes=size_bytes,
     )
 
 
@@ -189,11 +211,31 @@ def _manifests() -> Iterator[Tuple[str, Dict[str, Any]]]:
             yield path.stem, payload
 
 
-def _imports_by_card() -> Dict[str, Tuple[str, str]]:
+def _rereads_both_sides(row: Mapping[str, Any]) -> bool:
+    """A check that read every copy it set out to, on the Mac and the drive. Problems it found
+    elsewhere don't matter here: they are in the bad copies, by hash."""
+    details = row.get("details") or {}
+    return row["kind"] == "verify" and bool(row["usb"]) and details.get("whole") is True
+
+
+def _reread_at(status: "CardStatus", checks: List[Mapping[str, Any]]) -> Optional[float]:
+    """When the newest check of all the copies, or of this card's, finished after the last copy."""
+    if not status.complete:
+        return None
+    for row in checks:  # newest first
+        card_id = (row.get("details") or {}).get("card_id")
+        if card_id in (None, status.card_id) and float(row["started_at"]) >= (
+            status.newest_copy or 0
+        ):
+            return float(row["finished_at"])
+    return None
+
+
+def _imports_by_card(history: List[Dict[str, Any]]) -> Dict[str, Tuple[str, str]]:
     """Each card's camera name and first import, from the history: manifests from before 2.6
     don't keep them."""
     found: Dict[str, Tuple[str, str]] = {}
-    for row in catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS):  # newest first
+    for row in history:  # newest first
         card_id = (row.get("details") or {}).get("card_id")
         if row["kind"] == "import" and card_id:
             # Rows come newest first, so the first import is the last one seen: its name is the
@@ -201,6 +243,21 @@ def _imports_by_card() -> Dict[str, Tuple[str, str]]:
             first = datetime.fromtimestamp(float(row["started_at"]), timezone.utc)
             found[card_id] = (str(row["source"]), first.strftime("%Y-%m-%dT%H:%M:%SZ"))
     return found
+
+
+def card_hashes(card_id: str) -> Optional[Set[str]]:
+    """The hashes of a card's files, for a check of only its copies. None for an unknown card."""
+    if not re.fullmatch(r"[A-Za-z0-9-]+", card_id or ""):
+        return None
+    payload = dict(_manifests()).get(card_id)
+    if payload is None:
+        return None
+    files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
+    return {
+        entry["sha256"]
+        for entry in files.values()
+        if isinstance(entry, dict) and isinstance(entry.get("sha256"), str)
+    }
 
 
 def safe_since() -> Dict[str, float]:
@@ -215,13 +272,16 @@ def all_cards(copies: Optional[Copies] = None) -> List[CardStatus]:
     """Every card with a manifest, most recently seen first."""
     copies = copies if copies is not None else read_copies()
     since = safe_since()
-    imports = _imports_by_card()
+    history = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
+    imports = _imports_by_card(history)
+    checks = [row for row in history if _rereads_both_sides(row)]
     cards = []
     for card_id, payload in _manifests():
         status = status_of(card_id, payload, copies, imports)
         # A card safe before anything recorded it, such as from before an upgrade, is dated by
         # the newest copy it depends on.
-        status.safe_since = since.get(card_id) or (status.newest_copy if status.safe else None)
+        status.safe_since = since.get(card_id) or (status.newest_copy if status.complete else None)
+        status.checked_at = _reread_at(status, checks)
         cards.append(status)
     return sorted(cards, key=lambda status: status.last_seen, reverse=True)
 
@@ -248,8 +308,10 @@ def record(now: Optional[float] = None) -> List[CardStatus]:
         with _locked():
             since = safe_since()
             cards = all_cards()
-            newly = [card for card in cards if card.safe and card.card_id not in since]
-            updated = {card.card_id: since.get(card.card_id, now) for card in cards if card.safe}
+            newly = [card for card in cards if card.complete and card.card_id not in since]
+            updated = {
+                card.card_id: since.get(card.card_id, now) for card in cards if card.complete
+            }
             if updated != since:
                 jsonfile.write_json(config.CARD_SAFETY_PATH, updated)
             for card in newly:

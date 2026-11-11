@@ -160,10 +160,18 @@ class TestCards(PageTestCase):
     def test_each_card_says_whether_it_is_safe_to_format(self):
         self.show("cards")
         expect(self.page.locator(".card-chip .t")).to_have_text(
-            ["NIKON Z 8 · 64 GB SanDisk SD", "NIKON Z 8 · 256 GB CFexpress"]
+            [
+                "NIKON Z 8 · 64 GB SanDisk SD",
+                "NIKON Z 8 · 128 GB Lexar SD",
+                "NIKON Z 8 · 256 GB CFexpress",
+            ]
         )
         expect(self.page.locator(".card-chip .s")).to_have_text(
-            ["Don't format · 18 not on USB", "Safe to format · since Nov 17"]
+            [
+                "Don't format · 18 not on USB",
+                "Check before formatting",
+                "Safe to format · checked Nov 17",
+            ]
         )
         expect(self.page.locator("#card-report")).to_be_hidden()
 
@@ -173,7 +181,8 @@ class TestCards(PageTestCase):
         report = self.page.locator("#card-report")
         expect(report).to_be_visible()
         expect(report).not_to_contain_text("false")  # parts not shown are left out, not printed
-        expect(report.locator(".verdict b")).to_have_text("Safe to format since Nov 17, 9:14 PM")
+        expect(report.locator(".verdict b")).to_have_text("Safe to format")
+        expect(report.locator(".verdict span")).to_contain_text("read again on Nov 17, 9:14 PM")
         expect(report.locator(".counts b")).to_have_text(
             ["2,742 files", "2,742 of 2,742", "2,742 of 2,742"]
         )
@@ -182,6 +191,25 @@ class TestCards(PageTestCase):
         expect(report.locator(".verdict b")).to_have_text("Don't format this card yet")
         self.chip("SanDisk").click()
         expect(report).to_be_hidden()
+
+    def test_check_this_card_starts_a_check_of_that_card(self):
+        self.show("cards")
+        self.chip("Lexar").click()
+        report = self.page.locator("#card-report")
+        expect(report.locator(".verdict b")).to_have_text("Check before formatting")
+        expect(report.locator(".check .note")).to_contain_text("Reads its 412 files again")
+        self.click_action(report.locator(".check button"), "verify_card")
+        self.assertEqual(self.sandbox.spawned[-1][-2:], ["--card", "SD2-UUID"])
+
+    def test_without_the_drive_the_check_button_says_why_it_waits(self):
+        self.load("cards")
+        self.sandbox.usb.rmdir()
+        self.open_page()
+        self.chip("Lexar").click()
+        expect(self.page.locator("#card-report .check button")).to_be_disabled()
+        expect(self.page.locator("#card-report .check .note")).to_contain_text(
+            "Connect the USB drive"
+        )
 
     def test_the_files_not_saved_are_listed_only_when_asked(self):
         self.show("cards")
@@ -221,7 +249,7 @@ class TestCards(PageTestCase):
             self.page.locator("#card-report .ask button", has_text="Remove"), "forget_card"
         )
         self.refresh()
-        expect(self.page.locator(".card-chip")).to_have_count(1)
+        expect(self.page.locator(".card-chip")).to_have_count(2)
         expect(self.page.locator("#card-report")).to_be_hidden()
 
     def test_the_inserted_card_is_marked_and_its_box_says_not_to_format(self):
@@ -1461,7 +1489,7 @@ class TestScreenshots(PageTestCase):
         self.page.screenshot(path=str(folder / "menu-dark.png"))
         for scheme in ("light", "dark"):
             self.show("cards", color_scheme=scheme, **NATIVE_WINDOW)
-            self.page.locator(".card-chip").first.click()
+            self.page.locator(".card-chip").nth(1).click()  # check before formatting
             self.page.screenshot(path=str(folder / f"card-report-{scheme}.png"))
         self.show("card_inserted_not_safe", **NARROW)
         self.page.locator(".card-chip").first.click()

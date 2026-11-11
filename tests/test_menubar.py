@@ -126,8 +126,11 @@ class TestMenuEntries(unittest.TestCase):
 class TestInsertedCard(unittest.TestCase):
     """While a card is inserted, the menu bar says whether it is safe to format."""
 
-    SAFE = model.CardLine("NIKON Z 8 · 256 GB CFexpress", True, "Safe to format · since Nov 17")
-    NOT_SAFE = model.CardLine("NIKON Z 8 · 64 GB SanDisk SD", False, "Don't format · 18 not on USB")
+    SAFE = model.CardLine("NIKON Z 8 · 256 GB CFexpress", "safe", "Safe to format · checked Nov 17")
+    CHECK = model.CardLine("NIKON Z 8 · 128 GB SD", "check", "Check before formatting")
+    NOT_SAFE = model.CardLine(
+        "NIKON Z 8 · 64 GB SanDisk SD", "unsafe", "Don't format · 18 not on USB"
+    )
 
     def test_the_menu_starts_with_the_card_and_what_to_do_with_it(self):
         entries = model.menu_entries(Snapshot(running=True, card=self.SAFE))
@@ -135,7 +138,7 @@ class TestInsertedCard(unittest.TestCase):
             [(e.key, e.title, e.enabled) for e in entries[:3]],
             [
                 ("card", "NIKON Z 8 · 256 GB CFexpress", False),
-                ("card_status", "Safe to format · since Nov 17", False),
+                ("card_status", "Safe to format · checked Nov 17", False),
                 (None, "", True),
             ],
         )
@@ -148,6 +151,7 @@ class TestInsertedCard(unittest.TestCase):
         self.assertEqual(
             model.menu_title(Snapshot(running=True, card=self.NOT_SAFE), icon=True), " !"
         )
+        self.assertEqual(model.menu_title(Snapshot(running=True, card=self.CHECK), icon=True), " ?")
         self.assertEqual(model.menu_title(Snapshot(running=True, card=self.SAFE)), "📷 ✓")
 
     def test_a_running_import_or_a_stop_says_more_than_the_card(self):

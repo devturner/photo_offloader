@@ -837,20 +837,69 @@ class TestCards(Fixture):
     def test_no_cards_seen_gives_an_empty_row(self):
         self.assertEqual(self.cards(), [])
 
-    def test_a_safe_card_says_so_with_the_date(self):
+    def checked(self, card_id=None, when=None):
+        when = self.now - 100 if when is None else when
+        details = {"whole": True, **({"card_id": card_id} if card_id else {})}
+        catalog.record_import_run(
+            kind="verify",
+            outcome="complete",
+            started_at=when,
+            finished_at=when,
+            usb=True,
+            details=details,
+        )
+
+    def test_a_backed_up_card_not_read_again_since_says_check_before_formatting(self):
         self.card_manifest("A", {"a": "h1", "b": "h2"}, self.CF)
         self.saved(mac=("h1", "h2"), usb=("h1", "h2"))
         (self.data / "card_safety.json").write_text(
-            json.dumps({"A": datetime(2026, 11, 17, 21, 14).timestamp()})
+            json.dumps({"A": datetime(2026, 11, 10, 8, 52).timestamp()})
         )
+        self.usb.mkdir()
         (card,) = self.cards()
         self.assertEqual(card["title"], "NIKON Z 8 · 256 GB CFexpress")
+        self.assertEqual((card["tone"], card["status"]), ("check", "Check before formatting"))
+        report = card["report"]
+        self.assertEqual(report["headline"], "Check before formatting")
+        self.assertIn("since Nov 10", report["text"])
+        self.assertEqual(report["seen"], "First seen Oct 21 · last inserted Nov 10")
+        self.assertEqual(report["check"]["label"], "Check this card")
+        self.assertIsNone(report["check"]["blocked"])
+        self.assertIn("min", report["check"]["note"])
+
+    def test_a_card_read_again_since_is_safe_with_the_date_of_the_check(self):
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.saved(mac=("h1",), usb=("h1",))
+        self.checked("A", when=datetime(2026, 11, 17, 21, 14).timestamp())
+        (card,) = self.cards()
         self.assertEqual(
-            (card["tone"], card["status"]), ("success", "Safe to format · since Nov 17")
+            (card["tone"], card["status"]), ("success", "Safe to format · checked Nov 17")
         )
-        self.assertEqual(card["report"]["headline"], "Safe to format since Nov 17, 9:14 PM")
-        self.assertIn("All 2 files on this card", card["report"]["text"])
-        self.assertEqual(card["report"]["seen"], "First seen Oct 21 · last inserted Nov 10")
+        self.assertEqual(card["report"]["headline"], "Safe to format")
+        self.assertIn("read again on Nov 17, 9:14 PM", card["report"]["text"])
+        self.assertEqual(card["report"]["check"]["label"], "Check again")
+
+    def test_check_this_card_starts_a_check_of_only_that_card(self):
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.saved(mac=("h1",), usb=("h1",))
+        self.assertFalse(self.core.act("verify_card", {"id": "A"})["ok"])  # no drive
+        self.assertIn("Connect the USB drive", self.cards()[0]["report"]["check"]["blocked"])
+        self.usb.mkdir()
+        self.core._cache.clear()
+        self.assertTrue(self.core.act("verify_card", {"id": "A"})["ok"])
+        self.assertEqual(self.spawned[-1][-2:], ["--card", "A"])
+        self.assertFalse(self.core.act("verify_card", {"id": "../A"})["ok"])
+
+    def test_no_card_check_while_another_check_or_an_import_runs(self):
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.saved(mac=("h1",), usb=("h1",))
+        self.usb.mkdir()
+        self.verify_up = True
+        self.assertFalse(self.core.act("verify_card", {"id": "A"})["ok"])
+        self.assertEqual(self.cards()[0]["report"]["check"]["blocked"], "A check is running.")
+        self.verify_up, self.importer_up = False, True
+        self.core._cache.clear()
+        self.assertFalse(self.core.act("verify_card", {"id": "A"})["ok"])
 
     def test_a_card_missing_from_the_drive_says_how_many(self):
         self.card_manifest("A", {"a": "h1", "b": "h2", "c": "h3"}, self.SD)
@@ -932,6 +981,11 @@ class TestCards(Fixture):
         self.assertEqual(state["headline"]["detail"], detail)  # what the panel shows
         self.saved(usb=("h1",))
         self.advance(1)
+        detail = self.core.state()["finished"]["detail"]
+        self.assertTrue(detail.startswith("Check the card before formatting · "), detail)
+        self.checked("A", when=self.now)
+        self.advance(1)
+        self.record(details={"card_id": "A", "new": {}})  # inserted again: nothing new
         self.assertTrue(self.core.state()["finished"]["detail"].startswith("Safe to format · "))
 
     def test_an_import_from_an_unknown_card_says_nothing_about_formatting(self):

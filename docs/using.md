@@ -118,19 +118,27 @@ system, and Photo Offloader can't turn it off.
 
 ### Cards and when to format
 
-Above Recent activity is a row with each card Photo Offloader has seen. A card is **safe to format**
-when every file on it, including old photos you left on the card from earlier imports, has a
-verified copy on the Mac and on the USB drive. The row says so with the date it became safe, or says
-**Don't format** and how many files aren't on the Mac or the drive yet. The card doesn't need to be
-inserted: plug in the drive a week later, and once the backup finishes, the card turns green and a
-notification says so.
+Above Recent activity is a row with each card Photo Offloader has seen, in one of three states:
+
+| State | Meaning |
+| --- | --- |
+| **Don't format** | Some files on the card, including old photos you left on it from earlier imports, aren't on the Mac or the USB drive yet. It says how many, and where |
+| **Check before formatting** | Every file has a copy on the Mac and on the USB drive, each verified by SHA-256 when it was made, but they haven't been read again since |
+| **Safe to format** | All of that, and a check has read every copy again since the newest one was made and found them good. It says when |
+
+The card doesn't need to be inserted: plug in the drive a week later, and once the backup finishes,
+the card moves on to *Check before formatting* and a notification says so. **Check this card** in
+the card's report then rereads only that card's copies, on the Mac and the drive, and changes
+nothing. It says first how long it should take, from how fast your drive read last time: about two
+minutes for 400 photos on a hard drive. A full [Check saved copies…](#checking-the-saved-copies)
+counts too. When the check is clean, the card is *Safe to format*, and a notification says so.
 
 How it decides: each import keeps a list of the card's files and their SHA-256 hashes on the Mac.
 A file counts when the catalog has a copy with that hash on each side. A file you deleted from the
-Mac [on purpose](#clearing-space-on-the-mac) counts if the drive still has it. A copy the latest
-[check](#checking-the-saved-copies) found damaged or missing doesn't count until it's copied again,
-and a check that finds one takes the card's *safe* back. Without a USB drive, no card is ever safe
-to format, because one copy isn't a backup.
+Mac [on purpose](#clearing-space-on-the-mac) counts if the drive still has it. A copy a check found
+damaged or missing doesn't count until it's copied again, so the card goes back to *Don't format*.
+A copy made after the last check needs another one. Without a USB drive, no card is ever safe to
+format, because one copy isn't a backup.
 
 Click a card to open its report: how many files are on the card, on the Mac and on the drive, when
 it was first seen and last inserted, and, behind **Show which files**, the files still missing.
@@ -147,7 +155,7 @@ hide one that isn't. Otherwise press **I formatted it** in the card's report. It
 warns you if the card isn't safe yet. A removed card comes back if you insert it again.
 
 The end of each import says the same for the card just imported: the panel's summary starts with
-*Safe to format* or *Don't format the card yet*.
+*Safe to format*, *Check the card before formatting* or *Don't format the card yet*.
 
 ### Recent activity
 
@@ -181,8 +189,8 @@ to fold it away. Runs from before this version show a dash for anything that was
 ## The menu bar
 
 The SD card in the menu bar is followed by the state: `↻` during a transfer, `⏸` when paused, `Off` when stopped.
-While an imported card is inserted, it's followed by `✓` if the card is [safe to format](#cards-and-when-to-format)
-and `!` if it isn't, and the menu starts with the card's name and what to do with it. Its
+While an imported card is inserted, it's followed by `✓` if the card is [safe to format](#cards-and-when-to-format),
+`?` if it should be checked first and `!` if it isn't safe, and the menu starts with the card's name and what to do with it. Its
 menu has **Open Dashboard**, **Close Dashboard** (when one is open), **Copy to USB Drive** (when a
 drive is connected), **Pause / Resume Uploads** (while an upload runs or is paused), **Pause /
 Resume Automatic Imports**, **View Import Log**, **Edit Settings…**, **Stop Service…** or **Start
@@ -289,6 +297,9 @@ To run it from a terminal instead, where it exits with code 1 if it finds proble
 ```bash
 ~/Library/Application\ Support/PhotoOffloader/bin/photo-offloader-verify
 ```
+
+`--card <volume ID>` checks only one card's copies, as **Check this card** does. The volume IDs are
+the file names in `card-manifests` in the data folder.
 
 ### Clearing space on the Mac
 

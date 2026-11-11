@@ -16,7 +16,7 @@ class CardLine:
     """The inserted card, and whether it is safe to format, as the dashboard's cards row says."""
 
     title: str
-    safe: bool
+    state: str  # "safe", "check" before formatting, or "unsafe"
     status: str
 
 
@@ -62,7 +62,7 @@ def menu_title(snapshot: Snapshot, icon: bool = False) -> str:
     elif snapshot.transfer:
         state = " ↻"
     elif snapshot.card:
-        state = " ✓" if snapshot.card.safe else " !"
+        state = {"safe": " ✓", "check": " ?"}.get(snapshot.card.state, " !")
     else:
         state = ""
     return state if icon else "📷" + state

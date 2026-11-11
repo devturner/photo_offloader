@@ -37,7 +37,7 @@ class TestCardSafetyAfterRuns(support.CardFixtureTestCase):
             return app.main(["--backup-usb", "--sha256"])
 
     def safe_notes(self, notify):
-        return [call.args[1] for call in notify.call_args_list if call.args[0] == "Safe to Format"]
+        return [call.args[1] for call in notify.call_args_list if call.args[0] == "Card Backed Up"]
 
     def test_an_import_notes_the_cards_name_kind_and_size(self, notify, eject, launch):
         self.media()
@@ -56,15 +56,18 @@ class TestCardSafetyAfterRuns(support.CardFixtureTestCase):
         self.assertIn("TEST-CARD-UUID", card_status.safe_since())
         self.assertEqual(
             self.safe_notes(notify),
-            ["card · 64 GB SanDisk SD: all 3 files are on the Mac and the USB drive."],
+            [
+                "card · 64 GB SanDisk SD: all 3 files are on the Mac and the USB drive. "
+                "Check it before formatting."
+            ],
         )
         self.back_up()
         self.assertEqual(len(self.safe_notes(notify)), 1, "said once, not after every backup")
 
-    def test_an_import_with_the_drive_makes_the_card_safe_at_once(self, notify, eject, launch):
+    def test_an_import_with_the_drive_leaves_the_card_to_be_checked(self, notify, eject, launch):
         self.media()
         self.assertEqual(self.import_card(True), 0)
-        self.assertTrue(card_status.all_cards()[0].safe)
+        self.assertEqual(card_status.all_cards()[0].state, "check")
         self.assertEqual(len(self.safe_notes(notify)), 1)
 
     def test_the_same_card_formatted_replaces_its_old_entry(self, notify, eject, launch):

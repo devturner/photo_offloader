@@ -111,10 +111,13 @@ def _with_card_advice(summary: str, row: Dict[str, Any], cards: Sequence[Dict[st
     ejected by the end, so the panel is where this is said straight away."""
     details = row.get("details") or {}
     card = next((c for c in cards if c["id"] == details.get("card_id")), None)
-    if row.get("kind") != "import" or not card or card["tone"] not in ("success", "warning"):
+    if row.get("kind") != "import" or not card or card["tone"] == "off":
         return summary
     # First, as the line is cut short in a narrow window. "All backed up" meant the Mac.
-    advice = "Safe to format" if card["safe"] else "Don't format the card yet"
+    advice = {
+        "safe": "Safe to format",
+        "check": "Check the card before formatting",
+    }.get(card["state"], "Don't format the card yet")
     summary = str(summary or "")
     if summary.startswith(advice):
         return summary
@@ -374,8 +377,41 @@ class DashboardCore:
             if hidden_at and not is_mounted and _epoch(status["last_seen"]) <= hidden_at:
                 continue  # formatted, someone said; it comes back if the card is seen again
             name = str(names.get(_name_key(status)) or "")
-            rows.append(display.card_row(status, name, is_mounted))
+            check = self._card_check(status) if status["complete"] else None
+            rows.append(display.card_row(status, name, is_mounted, check))
         return rows
+
+    def _card_check_blocked(self) -> Optional[str]:
+        """Why Check this card can't start now, if it can't."""
+        if not self.usb_mounted():
+            return "Connect the USB drive to check this card: both copies are read."
+        if self.verify_running():
+            return "A check is running."
+        if self.importer_running():
+            return "An import is running. Check when it has finished."
+        return None
+
+    def _card_check(self, status: Dict[str, Any]) -> Dict[str, Any]:
+        def speeds() -> Dict[str, float]:
+            rows = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
+            drive = self._volume_id(self.paths.usb_volume) if self.usb_mounted() else None
+            return verify_report.measured_speeds(rows, drive)
+
+        return {
+            "note": display.card_check_note(status, self._cached("check-speeds", 60.0, speeds)),
+            "blocked": self._card_check_blocked(),
+        }
+
+    def _verify_card(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        status = self._known_card(params)
+        if status is None:
+            return {"ok": False, "message": "That card isn't known any more."}
+        blocked = self._card_check_blocked()
+        if blocked:
+            return {"ok": False, "message": blocked}
+        self._spawn([str(self.paths.python), str(self.paths.verify_script), "--card", status["id"]])
+        self._invalidate("verify", "cards")
+        return {"ok": True, "message": "Checking this card's copies. It shows in Recent activity."}
 
     def _described_by_macos(self, status: Dict[str, Any], volume: Path) -> Dict[str, Any]:
         """A card last imported before cards were told apart: ask macOS while it's inserted."""
@@ -1209,6 +1245,7 @@ class DashboardCore:
             "edit_settings": self._edit_settings,
             "rename_card": lambda: self._rename_card(params),
             "forget_card": lambda: self._forget_card(params),
+            "verify_card": lambda: self._verify_card(params),
             "open_file_list": lambda: self._open_file_list(params),
             "report_preview": lambda: self._report_preview(params),
             "save_debug_package": lambda: self._save_debug_package(params),
