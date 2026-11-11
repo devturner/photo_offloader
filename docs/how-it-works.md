@@ -84,6 +84,11 @@ missing or out-of-date cache just means hashing the file again.
   per card, named by its volume ID) record the hashes of files already verified, so a re-inserted card
   doesn't have to be read in full again. They hold no media, and the 50 most recently used are kept.
   A card with no volume ID goes without one, and its files are hashed.
+  Each also keeps the card's name, size and kind, and for an SD card in the built-in slot its
+  serial number, read from macOS. They are what the dashboard's
+  [cards row](using.md#cards-and-when-to-format) compares with the catalog to say whether a card is
+  safe to format. `card_safety.json` beside them records when each card became safe, and
+  `cards.json` the names you gave cards and the ones you said you formatted.
 
 Photo Offloader never writes to a card. Older versions kept the manifest on the card, in
 `.photo-offloader`; that folder is now ignored and left where it is, so such a card is hashed once more

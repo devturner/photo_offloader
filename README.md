@@ -32,6 +32,8 @@ Camera card  →  Mac (verified)  →  USB drive (optional)  →  Google Photos 
   and why, and a card it couldn't fully read is never called done.
 - **Check saved copies.** Reread everything on the Mac and the USB drive and compare it with the
   hashes saved at import time, to catch damaged or missing files.
+- **Know when to format.** Each card you've used says *Safe to format* once every file on it is
+  verified on the Mac and the USB drive, even if the backup happens days later.
 - **Eject after import.** The card can be ejected for you once its copy to the Mac is verified.
 
 ## Requirements

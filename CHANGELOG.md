@@ -4,6 +4,16 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Know when a card is safe to format.** A row above Recent activity lists each card Photo Offloader has seen and says *Safe to format* once every file on it, old photos left on the card included, has a verified copy on the Mac and on the USB drive, with the date it became so. Otherwise it says *Don't format* and how many files are missing where. The card doesn't need to be inserted, so a backup days after the import is what turns it green, with a notification. A check of the saved copies that finds a bad copy takes it back. Each card opens a report with the counts and the missing files. The Camera card box, the menu bar (`✓` or `!` by its icon) and the end of each import say the same. See [docs/using.md](docs/using.md#cards-and-when-to-format).
+- **Cards are told apart.** Every card from one camera has the same name, so each now shows its size and kind, such as *64 GB SanDisk SD* or *256 GB CFexpress*, and can be renamed. An SD card in the Mac's built-in slot is recognised by its serial number, so after a format it replaces its old entry and keeps its name. **I formatted it** removes any other card from the list.
+
+### Changed
+- With two cards from one camera inserted, the second is named by its own volume name, not the *NIKON Z 8 1* macOS gives its mount folder.
+
+### Documentation
+- [Taking a card out mid-copy](docs/using.md#taking-a-card-out-mid-copy): nothing half-copied looks finished, and putting the card back resumes file by file.
+
 ## [2.5.0] - 2026-11-10
 
 ### Added
