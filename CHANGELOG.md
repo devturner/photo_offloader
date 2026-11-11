@@ -4,6 +4,8 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-11-10
+
 ### Added
 - **Edit settings…** in the dashboard's ⋯ menu and the menu bar opens a settings file where you choose the archive folders and the backup drive. Save it and the change applies within a few seconds, with nothing to restart or reinstall, and updates and reinstalls keep it. Until now these were in `config.py`, so changing them meant editing the code, conflicting with every `git pull`, and reinstalling. If the file has a mistake, the dashboard says which line, and nothing is imported, backed up or uploaded until it's fixed. See [docs/configuration.md](docs/configuration.md#the-settings-file).
 - **A check's time estimate fits your drive.** Each check of the saved copies saves how fast it read the Mac and the USB drive, and the next estimate, before and during a check, uses that drive's own speed. An SSD, or a drive on a faster or slower port, was estimated as if it were a 5,400 rpm hard drive; now that's only the first guess for a drive never checked before, and the warning says so. Checks made before this version saved no speed, so the first check after updating still starts from the guess.
