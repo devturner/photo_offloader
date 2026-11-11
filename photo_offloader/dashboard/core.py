@@ -10,6 +10,7 @@ dashboard can do (pause, back up, sync, stop, ...). Everything that touches the 
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import os
 import plistlib
 import re
@@ -22,7 +23,17 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from xml.parsers.expat import ExpatError
 
-from photo_offloader import card, catalog, google_photos, jsonfile, logs, run_report, verify_report
+from photo_offloader import (
+    card,
+    catalog,
+    config,
+    google_photos,
+    jsonfile,
+    logs,
+    run_report,
+    settings,
+    verify_report,
+)
 from photo_offloader.dashboard import display
 from photo_offloader.dashboard.paths import Paths
 from photo_offloader.google_photos import parse_rclone_stats_line
@@ -96,6 +107,9 @@ class DashboardCore:
         popen: Callable[..., Any] = subprocess.Popen,
     ) -> None:
         self.paths = paths or Paths.default()
+        # Only the installed dashboard follows settings.txt to other folders; one given its paths
+        # (a test, the browser harness) keeps them, so it never strays onto real data.
+        self._follows_settings = paths is None
         self._clock = clock
         self._run = run
         self._popen = popen
@@ -120,6 +134,32 @@ class DashboardCore:
     def _invalidate(self, *keys: str) -> None:
         for key in keys:
             self._cache.pop(key, None)
+
+    # ---- settings.txt --------------------------------------------------------------------
+    def follow_settings(self) -> Optional[str]:
+        """Catch up with an edit of settings.txt. Returns what's wrong with it, if anything."""
+        if not self._follows_settings:
+            return settings.load(self.paths.settings_file, config.HOME).problem
+        if config.reload_settings():
+            self.paths = dataclasses.replace(
+                self.paths,
+                usb_volume=config.USB_DEST_VOLUME,
+                local_archives=(config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT),
+                usb_archives=(config.USB_DEST_ROOT,),
+            )
+            self._invalidate("usb", "counts")
+        return config.SETTINGS_PROBLEM
+
+    def _edit_settings(self) -> Dict[str, Any]:
+        path = self.paths.settings_file
+        # With no file, the values in use are the defaults, so the new file shows those.
+        settings.create_if_missing(path, settings.defaults(config.HOME), config.HOME)
+        self._spawn(["/usr/bin/open", "-t", str(path)])
+        return {
+            "ok": True,
+            "message": "Opened the settings in your text editor. Save the file and Photo "
+            "Offloader uses the change within a few seconds.",
+        }
 
     # ---- machine probes ------------------------------------------------------------
     def service_running(self) -> bool:
@@ -765,6 +805,7 @@ class DashboardCore:
     # ---- the one payload the front end renders -------------------------------------------
     def state(self) -> Dict[str, Any]:
         now = self._clock()
+        settings_problem = self._cached("settings", 2.0, self.follow_settings)
         status = self.read_status()
         running = self.service_running()
         paused = self.paths.pause_file.exists()
@@ -798,6 +839,7 @@ class DashboardCore:
                 "version", ""
             ),
             "service": {"running": running, "paused": paused},
+            "settings_problem": settings_problem,
             "card": {"mounted": card is not None, "name": card.name if card else None},
             "headline": headline,
             "busy": busy,
@@ -1025,6 +1067,7 @@ class DashboardCore:
             "set_theme": lambda: self._set_theme(str(params.get("theme", ""))),
             "set_report_style": lambda: self._set_report_style(str(params.get("report_style", ""))),
             "open_log": lambda: self._open_log(str(params.get("log", ""))),
+            "edit_settings": self._edit_settings,
             "open_file_list": lambda: self._open_file_list(params),
             "report_preview": lambda: self._report_preview(params),
             "save_debug_package": lambda: self._save_debug_package(params),

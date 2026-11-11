@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
-from photo_offloader import config, google_photos
+from photo_offloader import config, google_photos, settings
 
 
 @dataclass(frozen=True)
@@ -115,6 +115,10 @@ class Paths:
     @property
     def google_log_file(self) -> Path:
         return self.install_dir / "google_photos_sync.log"
+
+    @property
+    def settings_file(self) -> Path:
+        return self.data_dir / settings.FILE_NAME
 
     @property
     def preferences_file(self) -> Path:

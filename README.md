@@ -37,7 +37,7 @@ Camera card  →  Mac (verified)  →  USB drive (optional)  →  Google Photos 
 ## Requirements
 
 - macOS (the only supported system for now) with Python 3.9 or newer
-- Optional: a USB drive for the backup, named `Photos` unless you [choose another name](docs/configuration.md#settings-in-the-code)
+- Optional: a USB drive for the backup, named `Photos` unless you [choose another name](docs/configuration.md#the-settings-file)
 - Optional: [ExifTool](https://exiftool.org) (`brew install exiftool`), so videos are filed under their camera
 - Optional: [rclone](https://rclone.org) and a Google Cloud sign-in for Google Photos: see the [setup guide](docs/google-photos.md)
 
@@ -65,8 +65,8 @@ the files in the archive before you format a card.
 
 ## Where things are
 
-The archive folders and the USB drive are defaults that you can
-[change](docs/configuration.md#settings-in-the-code).
+The archive folders and the USB drive are defaults. To change them, choose **Edit settings…** in
+the dashboard's ⋯ menu ([details](docs/configuration.md#the-settings-file)).
 
 | What | Where |
 | --- | --- |
@@ -75,6 +75,19 @@ The archive folders and the USB drive are defaults that you can
 | USB backup | `/Volumes/Photos/CameraImports` |
 | Import log | `~/.camera_transfer.log` (or **⋯ › View logs** in the dashboard) |
 | Start, stop, status | `~/Library/Application Support/PhotoOffloader/scripts/service.sh` |
+
+## Status
+
+Photo Offloader is a personal project that's used for real, but by one person so far:
+
+- **Tested on:** macOS 26 with a Nikon Z 8 (SD and CFexpress cards) and an HFS+ USB drive. CI runs
+  about 950 tests on macOS with Python 3.9 to 3.14.
+- **Not tried yet:** other camera brands (it reads `DCIM`, `PRIVATE` and `MP_ROOT`), exFAT backup
+  drives, a clean install on another Mac, and a card that really fails mid-import (the failure
+  reports have only run against simulated failures).
+
+If you try it, an issue saying what worked, or what didn't, with your camera and macOS version, is very
+welcome. Keep your own backup until you trust it.
 
 ## Documentation
 
@@ -87,6 +100,13 @@ These pages are also on the [project website](https://devturner.github.io/photo_
 - [Development](docs/development.md): repository layout, tests and project rules
 - [Contributing](CONTRIBUTING.md): reporting a bug and proposing a change
 - [Changelog](CHANGELOG.md)
+
+## How it was built
+
+Photo Offloader was written with [Claude Code](https://claude.com/claude-code), Anthropic's AI coding
+tool, working to the rules in [CODE_QUALITY.md](CODE_QUALITY.md) and [CLAUDE.md](CLAUDE.md): a failing
+test first for each change and safety rules that every change must keep. A person reviews every pull
+request before it's merged, then tries the change on real cards.
 
 ## License
 

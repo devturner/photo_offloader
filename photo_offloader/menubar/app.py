@@ -27,7 +27,6 @@ DASHBOARD_SCRIPT = INSTALL_DIR / config.DASHBOARD
 IMPORTER_SCRIPT = INSTALL_DIR / config.IMPORTER
 SERVICE_SCRIPT = INSTALL_DIR / config.SERVICE
 BACKUP_LAUNCHER_SCRIPT = INSTALL_DIR / config.USB_BACKUP
-USB_VOLUME = Path("/Volumes/Photos")
 UI_LABEL = "com.user.photooffloader.menubar"
 PYTHON = INSTALL_DIR / "venv" / "bin" / "python3"
 ICON = Path(__file__).with_name("icon.png")  # drawn by macos/draw_icon.py
@@ -51,6 +50,7 @@ class PhotoOffloaderMenuBar(rumps.App):
             "stop_exit": self.stop_and_exit,
             "start": self.start_service,
             "view_log": self.view_log,
+            "edit_settings": self.edit_settings,
         }
         self._snapshot: Optional[Snapshot] = None
         self.refresh()
@@ -60,7 +60,8 @@ class PhotoOffloaderMenuBar(rumps.App):
 
     @staticmethod
     def read_snapshot() -> Snapshot:
-        usb = USB_VOLUME.is_mount()
+        config.reload_settings()  # follow an edit of settings.txt, such as another backup drive
+        usb = config.USB_DEST_VOLUME.is_mount()
         dashboard = bool(dashboard_pids())
         try:
             result = subprocess.run(
@@ -90,11 +91,11 @@ class PhotoOffloaderMenuBar(rumps.App):
                 self.menu.add(rumps.MenuItem(entry.title, callback=handler))
 
     def copy_to_usb(self, _sender: object = None) -> None:
-        if not USB_VOLUME.is_mount():
+        if not config.USB_DEST_VOLUME.is_mount():
             rumps.notification(
                 "Photo Offloader",
                 "USB drive not found",
-                "Mount the Photos drive to run the backup.",
+                f"Connect the drive named {config.USB_DEST_VOLUME.name} to run the backup.",
             )
             return
         try:
@@ -144,6 +145,11 @@ class PhotoOffloaderMenuBar(rumps.App):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+
+    def edit_settings(self, _sender: object = None) -> None:
+        result = DashboardCore().act("edit_settings")
+        if not result.get("ok"):
+            rumps.notification("Photo Offloader", "Could not open the settings", result["message"])
 
     def toggle_pause(self, _sender: object = None) -> None:
         if PAUSE_FILE.exists():

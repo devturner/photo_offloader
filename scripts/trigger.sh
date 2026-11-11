@@ -48,8 +48,41 @@ EJECT_STATE_FILE="${PHOTO_OFFLOADER_EJECT_STATE:-$INSTALL_DIR/.last_camera_eject
 IMPORT_STATUS_FILE="${PHOTO_OFFLOADER_IMPORT_STATUS:-$INSTALL_DIR/.last_camera_import_status}"
 AUTO_EJECT_FILE="${PHOTO_OFFLOADER_AUTO_EJECT_FILE:-$INSTALL_DIR/.auto-eject-enabled}"
 BROKEN_INSTALL_MARK="$INSTALL_DIR/.broken-install-warned"
-USB_VOLUME="${PHOTO_OFFLOADER_USB_VOLUME:-$VOLUMES_ROOT/Photos}"
-USB_ARCHIVE_FOLDER="CameraImports"
+# The same file as config.SETTINGS_PATH, read the way photo_offloader/settings.py reads it.
+SETTINGS_FILE="${PHOTO_OFFLOADER_SETTINGS_FILE:-$HOME/Library/Application Support/PhotoOffloaderData/settings.txt}"
+
+# The backup drive's name: backup_drive in settings.txt, else Photos. A name settings.py would
+# refuse (a path) is left to the importer, which won't run until the file is fixed.
+backup_drive_name() {
+    local line name value drive="Photos"
+    [[ -r "$SETTINGS_FILE" ]] || { printf '%s\n' "$drive"; return 0; }
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="$(trim "$line")"
+        [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+        name="$(trim "${line%%=*}")"
+        [[ "$name" == "backup_drive" ]] || continue
+        value="$(trim "${line#*=}")"
+        case "$value" in
+            \"*\") value="${value#\"}"; value="${value%\"}" ;;
+            \'*\') value="${value#\'}"; value="${value%\'}" ;;
+            “*”) value="${value#“}"; value="${value%”}" ;;
+            ‘*’) value="${value#‘}"; value="${value%’}" ;;
+        esac
+        value="$(trim "$value")"
+        [[ -n "$value" ]] && drive="$value"
+        break
+    done < "$SETTINGS_FILE"
+    printf '%s\n' "$drive"
+}
+
+trim() {
+    local text="$1"
+    text="${text#"${text%%[![:space:]]*}"}"
+    printf '%s' "${text%"${text##*[![:space:]]}"}"
+}
+
+USB_VOLUME="${PHOTO_OFFLOADER_USB_VOLUME:-$VOLUMES_ROOT/$(backup_drive_name)}"
+USB_ARCHIVE_FOLDER="CameraImports"  # config.USB_ARCHIVE_FOLDER
 USB_BACKUP="${PHOTO_OFFLOADER_USB_BACKUP:-$INSTALL_DIR/bin/photo-offloader-usb-backup}"
 USB_SUPERVISOR="${PHOTO_OFFLOADER_USB_SUPERVISOR:-$INSTALL_DIR/scripts/usb_backup_supervisor.sh}"
 USB_WORKER_LABEL="com.user.photooffloader.usb-backup"

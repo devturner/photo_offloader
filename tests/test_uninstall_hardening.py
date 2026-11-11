@@ -49,6 +49,7 @@ class TestUninstallHardening(unittest.TestCase):
         self.assertNotIn('rm -rf "$HOME/Pictures/CameraImports"', self.script)
         self.assertIn("Persistent media catalog preserved", self.script)
         self.assertIn("Imported media under ~/Pictures/CameraImports", self.script)
+        self.assertIn("Your settings were kept: $DATA_DIR/settings.txt", self.script)
 
     def test_trigger_recognizes_any_mounted_volume_with_dcim(self):
         self.assertIn('for volume in "$VOLUMES_ROOT"/*; do', self.trigger)

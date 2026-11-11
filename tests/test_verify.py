@@ -308,6 +308,18 @@ class TestTheDrive(VerifyTestCase):
 
 
 class TestCommand(VerifyTestCase):
+    def test_a_settings_problem_checks_nothing_and_records_why(self):
+        self.save()
+        with (
+            patch.object(config, "SETTINGS_PROBLEM", "Line 1: broken."),
+            patch.object(verify, "check_archives") as check,
+        ):
+            code, _output = self.run_main()
+        self.assertEqual(code, 1)
+        check.assert_not_called()
+        self.assertEqual(self.last_run()["outcome"], "failed")
+        self.assertIn("settings file", self.last_run()["message"])
+
     def test_a_clean_check_exits_0_and_saves_a_row_but_no_report(self):
         self.save()
 

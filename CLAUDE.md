@@ -8,8 +8,8 @@ app sit on top. Open work and its reasons are in `scratch/ai_tasks.md` (gitignor
 first when asked to "continue". What only the user can do is in `scratch/human_todo.md`.
 
 ## Commands
-- Tests: `tools/test.sh full` (about 650 tests, about 2.5 min) or `tools/test.sh fast` (about 35 s,
-  without `test_trigger`, `test_service_control` and the browser tests). Use the project `.venv`,
+- Tests: `tools/test.sh full` (about 950 tests, about 2.5 min) or `tools/test.sh fast` (about 35 s,
+  without `test_trigger`, `test_service_control`, `test_google_photos_process` and the browser tests). Use the project `.venv`,
   not the system `python3`, which has no Pillow.
 - Which tests when: only the affected modules while working; `fast` before a commit that touches
   several areas; `full` once before a push; CI always runs everything. Changes to the shell scripts
@@ -45,7 +45,11 @@ Two consequences:
 - **The shell scripts can't see `config.py`.** They repeat its paths and take
   `PHOTO_OFFLOADER_*` environment overrides, so `isolate_config` doesn't protect them. Tests
   of the scripts pass those variables instead (see `tests/test_trigger.py`). If a path
-  changes, update both sides.
+  changes, update both sides. `trigger.sh` parses `settings.txt` (`settings.py`) itself.
+- **The archive folders and backup drive come from `settings.txt`** in the data folder
+  (`settings.py`), applied by `config.reload_settings()`. Each program reads it as it starts;
+  the dashboard and menu bar reload it while running. A file with a problem makes the
+  copying programs refuse to run (`config.check_settings()`), never fall back silently.
 - **A source checkout uses the real data.** Only code paths follow `APP_ROOT`; the archives,
   catalog and `status.json` always resolve to the real locations. Running `bin/` programs from
   the repo acts on the live install, and the dashboard also launches the installed programs

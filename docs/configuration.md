@@ -3,24 +3,54 @@
 Most people won't need anything here. Eject and Terminal behaviour are switches in the dashboard's
 **⋯** menu.
 
+## The settings file
+
+The archive folders and the backup drive are in a settings file. To change them, choose
+**Edit settings…** in the dashboard's **⋯** menu or the menu bar. It opens the file in your text
+editor, creating it with the values in use the first time. Change a value after the `=` and save:
+the next import uses it, and the dashboard and menu bar follow within a few seconds. There's nothing
+to restart or reinstall.
+
+```text
+archive_folder = ~/Pictures/CameraImports
+raw_archive_folder = ~/Pictures/CameraImportsRaw
+backup_drive = Photos
+```
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `archive_folder` | `~/Pictures/CameraImports` | Where photos, video and other files go |
+| `raw_archive_folder` | `~/Pictures/CameraImportsRaw` | Where camera RAW files go. It must be a different folder, and not inside the other one |
+| `backup_drive` | `Photos` | The USB drive's name as Finder shows it. Backups go in its `CameraImports` folder |
+
+The file is `~/Library/Application Support/PhotoOffloaderData/settings.txt`, so it survives
+reinstalling, updating and uninstalling. Lines starting with `#` are notes. Without the file, the
+defaults apply.
+
+**Changing a folder doesn't move what's already in the old one.** The next import copies whatever is
+still on the card into the new folder. To keep one archive, stop Photo Offloader, move the folder in
+Finder, change the setting, start it again, and choose **Update file catalog** in the ⋯ menu so the
+catalog knows the files' new place.
+
+**With a new backup drive,** the first backup copies the whole archive to it. *Back up when the drive
+connects* only starts on a drive that already holds a backup, so start the first one yourself with
+**Back up to USB now**.
+
+**If the file has a mistake,** such as a setting given twice or a folder that isn't a full path, the
+dashboard says which line and why, and nothing is imported, backed up or uploaded until it's fixed.
+It never falls back to the defaults on its own, so photos can't end up somewhere you didn't choose.
+
 ## Settings in the code
 
-Paths and import settings are in `photo_offloader/config.py`. Installing replaces the installed copy,
+Other import settings are in `photo_offloader/config.py`. Installing replaces the installed copy,
 so change the file in your clone and run `./install.sh` again.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `LOCAL_DEST_ROOT` | `~/Pictures/CameraImports` | Archive for photos, video and other files |
-| `LOCAL_RAW_DEST_ROOT` | `~/Pictures/CameraImportsRaw` | Archive for RAW files |
-| `USB_DEST_VOLUME` | `/Volumes/Photos` | The backup drive |
-| `USB_DEST_ROOT` | `/Volumes/Photos/CameraImports` | Where the backup goes on that drive |
 | `EJECT_CARD_AFTER_SUCCESS` | `True` | Allows ejecting. The dashboard's switch must also be on |
 | `VERIFY_WITH_SHA256` | `False` | Forces hashing for size-based comparisons too (same as `--sha256`). Copies are always verified |
 | `USE_FILE_BIRTH_TIME` | `True` | Use the creation time for files with no capture date |
 | `MIN_FREE_SPACE_BUFFER_BYTES` | 100 MiB | Free space to keep on each destination |
-
-The easiest way to use a different USB drive is to name it `Photos`. If you change `USB_DEST_VOLUME`,
-also change `USB_VOLUME` in `photo_offloader/menubar/app.py`, which keeps its own copy.
 
 File types and card locations are in `photo_offloader/card.py`. To change what's uploaded to Google
 Photos, edit `INCLUDE_EXTENSIONS` in `photo_offloader/google_photos.py`.
@@ -70,7 +100,7 @@ after each one. To undo it, run `launchctl unsetenv NAME` and restart the servic
 | --- | --- |
 | The app, replaced on each install | `~/Library/Application Support/PhotoOffloader`, including `Photo Offloader Menu Bar.app` |
 | The app you open, and its link | `~/Applications/Photo Offloader.app`, and `Photo Offloader` on the Desktop |
-| Catalog, history, run reports and preferences, kept on uninstall | `~/Library/Application Support/PhotoOffloaderData` |
+| Settings, catalog, history, run reports and preferences, kept on uninstall | `~/Library/Application Support/PhotoOffloaderData` |
 | Background agents | `~/Library/LaunchAgents/com.user.photooffloader.plist` and `com.user.photooffloader.menubar.plist` |
 
 Uninstalling removes the app, its agents and its logs. Your photos and

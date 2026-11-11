@@ -137,6 +137,8 @@ to fold it away. Runs from before this version show a dash for anything that was
 - **Show Terminal during imports:** off by default. When on, the import runs in a terminal window.
 - **Appearance:** Auto, Light or Dark.
 - **Import report:** Basic or Advanced, for how a finished run's report looks.
+- **Edit settings…:** opens the settings file, where you choose the archive folders and the backup
+  drive. See [Configuration](configuration.md#the-settings-file).
 - **View logs:** opens a log in Console, where it updates live. **Import** is what each import
   did, **Cards** is card detection, **Google** is uploads, and **Dashboard** is what the dashboard
   showed and why.
@@ -148,8 +150,8 @@ to fold it away. Runs from before this version show a dash for anything that was
 The SD card in the menu bar is followed by the state: `↻` during a transfer, `⏸` when paused, `Off` when stopped. Its
 menu has **Open Dashboard**, **Close Dashboard** (when one is open), **Copy to USB Drive** (when a
 drive is connected), **Pause / Resume Uploads** (while an upload runs or is paused), **Pause /
-Resume Automatic Imports**, **View Import Log**, **Stop Service…** or **Start Service**, and **Stop
-and Exit…**.
+Resume Automatic Imports**, **View Import Log**, **Edit Settings…**, **Stop Service…** or **Start
+Service**, and **Stop and Exit…**.
 
 ## Pausing uploads
 

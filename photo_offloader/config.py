@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from photo_offloader import settings
+
 HOME = Path.home()
 APP_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_DIR = HOME / "Library" / "Application Support" / "PhotoOffloader"
@@ -36,11 +38,15 @@ SERVICE = "scripts/service.sh"
 APP_BUNDLE = HOME / "Applications" / "Photo Offloader.app"
 APP_PROGRAM = "Contents/MacOS/photo-offloader"  # inside APP_BUNDLE
 
-# Archives.
+# Archives. The folders and the drive come from settings.txt (see reload_settings below), which
+# Edit settings… in the dashboard creates. scripts/trigger.sh reads backup_drive from it too.
+SETTINGS_PATH = DATA_DIR / settings.FILE_NAME
+USB_ARCHIVE_FOLDER = "CameraImports"  # on the backup drive; scripts/trigger.sh uses the same name
 LOCAL_DEST_ROOT = HOME / "Pictures" / "CameraImports"  # photos, video, other
 LOCAL_RAW_DEST_ROOT = HOME / "Pictures" / "CameraImportsRaw"  # camera RAW
 USB_DEST_VOLUME = Path("/Volumes/Photos")
-USB_DEST_ROOT = USB_DEST_VOLUME / "CameraImports"
+USB_DEST_ROOT = USB_DEST_VOLUME / USB_ARCHIVE_FOLDER
+SETTINGS_PROBLEM = None  # what's wrong with settings.txt; the defaults apply until it's fixed
 
 # Importer state and logs.
 LOG_FILE_PATH = HOME / ".camera_transfer.log"
@@ -83,3 +89,29 @@ VERIFY_WITH_SHA256 = False  # --sha256 forces a full hash comparison
 USE_FILE_BIRTH_TIME = True  # month folder fallback when a file has no EXIF date
 MIN_FREE_SPACE_BUFFER_BYTES = 100 * 1024 * 1024
 READ_RETRY_PAUSE_SECONDS = 5  # before trying again the files a card failed to give up
+
+
+def reload_settings() -> bool:
+    """Apply settings.txt to the archive paths. True if any of them changed.
+
+    Each program reads it once as it starts; the dashboard and the menu bar, which keep running,
+    call this again when the file changes.
+    """
+    global LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT, USB_DEST_VOLUME, USB_DEST_ROOT, SETTINGS_PROBLEM
+    values = settings.load(SETTINGS_PATH, HOME)
+    before = (LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT, USB_DEST_VOLUME, SETTINGS_PROBLEM)
+    LOCAL_DEST_ROOT = values.archive_folder
+    LOCAL_RAW_DEST_ROOT = values.raw_archive_folder
+    USB_DEST_VOLUME = values.usb_volume
+    USB_DEST_ROOT = USB_DEST_VOLUME / USB_ARCHIVE_FOLDER
+    SETTINGS_PROBLEM = values.problem
+    return before != (LOCAL_DEST_ROOT, LOCAL_RAW_DEST_ROOT, USB_DEST_VOLUME, SETTINGS_PROBLEM)
+
+
+def check_settings() -> None:
+    """Raise settings.SettingsProblem if settings.txt has a problem: copy and check nothing then."""
+    if SETTINGS_PROBLEM:
+        raise settings.SettingsProblem(SETTINGS_PROBLEM)
+
+
+reload_settings()

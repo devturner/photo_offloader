@@ -30,6 +30,7 @@ from photo_offloader import (
     importer,
     jsonfile,
     logs,
+    settings,
     verify_report,
     volumes,
 )
@@ -492,7 +493,11 @@ def _run() -> int:
     # Before the archives are listed, so a check started from the dashboard shows straight away.
     _write_status(where="", usb=False)
     try:
+        config.check_settings()
         check_archives(check)
+    except settings.SettingsProblem as exc:
+        logger.error("%s", exc)
+        check.error = str(exc)
     except KeyboardInterrupt:
         check.canceled = True
     except (OSError, sqlite3.Error) as exc:  # never mistake a broken catalog for an empty one
