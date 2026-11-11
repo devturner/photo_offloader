@@ -223,6 +223,40 @@ class TestRecord(CardCase):
             self.assertEqual(card_status.record(), [])
 
 
+class TestSafeSinceWithoutARecord(CardCase):
+    """A card safe before anything recorded it (an upgrade) is dated by its newest copy."""
+
+    def at(self, when, saver, *args):
+        with patch("time.time", return_value=when):
+            saver(*args)
+
+    def test_the_newest_copy_the_card_depends_on_dates_it(self):
+        self.card("A", {"a.NEF": "h1", "b.NEF": "h2"})
+        self.at(100.0, self.on_mac, "a.NEF", "h1")
+        self.at(200.0, self.on_usb, "a.NEF", "h1")
+        self.at(150.0, self.on_mac, "b.NEF", "h2")
+        self.at(300.0, self.on_usb, "b.NEF", "h2")
+        self.assertEqual(self.status().safe_since, 300.0)
+
+    def test_a_recorded_date_wins(self):
+        self.card("A", {"a.NEF": "h1"})
+        self.at(100.0, self.on_mac, "a.NEF", "h1")
+        self.at(200.0, self.on_usb, "a.NEF", "h1")
+        card_status.record(now=250.0)
+        self.assertEqual(self.status().safe_since, 250.0)
+
+    def test_a_file_deleted_from_the_mac_on_purpose_is_dated_by_the_drive(self):
+        self.card("A", {"a.NEF": "h1"})
+        self.at(200.0, self.on_usb, "2026-11/a.NEF", "h1")
+        verify_report.remember_deleted(["2026-11/a.NEF"])
+        self.assertEqual(self.status().safe_since, 200.0)
+
+    def test_a_card_that_is_not_safe_has_no_date(self):
+        self.card("A", {"a.NEF": "h1"})
+        self.at(100.0, self.on_mac, "a.NEF", "h1")
+        self.assertIsNone(self.status().safe_since)
+
+
 class TestForgetFormatted(CardCase):
     def setUp(self):
         super().setUp()

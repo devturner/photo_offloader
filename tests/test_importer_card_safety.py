@@ -6,7 +6,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from photo_offloader import card_identity, card_status, config, jsonfile
+from photo_offloader import card_identity, card_status, catalog, config, jsonfile
 from photo_offloader import importer as app
 from photo_offloader.volumes import VolumeIdentity
 from tests import support
@@ -84,6 +84,7 @@ class TestCardSafetyAfterRuns(support.CardFixtureTestCase):
         ]
         self.assertEqual(history["volume_name"], "NIKON Z 8  ")
         self.assertEqual(history["identity"], SD)
+        self.assertEqual(catalog.list_import_history()[0]["source"], "NIKON Z 8  ")
 
     def test_a_reader_that_says_nothing_does_not_stop_the_import(self, notify, eject, launch):
         self.media()

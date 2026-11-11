@@ -503,6 +503,7 @@ def _remember_card(dcim_folder: Path, card_volume: Path) -> None:
     """Note which card this is, so it can be told apart and its earlier self, formatted, forgotten."""
     identity = card_identity.read(card_volume)
     name = str(identity.pop("volume_name", "") or card_volume.name)
+    _RUN["source"] = name  # what history shows: the card's name, not "NIKON Z 8 1" beside another
     logger.info(
         "Card: %s %s", name.strip(), card_identity.label(identity) or "(size and kind unknown)"
     )

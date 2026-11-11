@@ -47,6 +47,11 @@ class Copies:
     def on_usb(self, digest: str) -> bool:
         return self._good("usb", digest, self.usb)
 
+    def saved_at(self, digest: str) -> float:
+        """When the newer of the file's two copies was catalogued: when it became safe."""
+        mac = self.mac[digest][1] if self._good("mac", digest, self.mac) else 0.0
+        return max(mac, self.usb[digest][1]) if digest in self.usb else mac
+
     def _good(self, side: str, digest: str, copies: Mapping[str, Tuple[str, float]]) -> bool:
         copy = copies.get(digest)
         checked_bad = self.bad.get((side, digest))
@@ -57,7 +62,8 @@ def _side_copies(db: sqlite3.Connection, roots: List[Path]) -> Dict[str, Tuple[s
     resolved = [str(root.resolve()) for root in roots]
     rows = db.execute(
         "SELECT sha256, relative_path, indexed_at FROM file_locations "
-        f"WHERE sha256 IS NOT NULL AND root IN ({','.join('?' * len(resolved))})",
+        f"WHERE sha256 IS NOT NULL AND root IN ({','.join('?' * len(resolved))}) "
+        "ORDER BY indexed_at",  # with two copies of one file, the newer one is kept
         resolved,
     )
     return {digest: (relative, float(indexed_at)) for digest, relative, indexed_at in rows}
@@ -104,6 +110,7 @@ class CardStatus:
     first_seen: str
     last_seen: str
     safe_since: Optional[float] = None
+    newest_copy: Optional[float] = None  # when the last copy it needs was saved, once safe
 
     @property
     def safe(self) -> bool:
@@ -142,12 +149,15 @@ def status_of(
     history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
     not_on_mac: List[str] = []
     not_on_usb: List[str] = []
+    newest_copy = 0.0
     for relative, entry in sorted(files.items()):
         digest = entry.get("sha256") if isinstance(entry, dict) else None
         if not (digest and copies.on_mac(digest)):
             not_on_mac.append(relative)
         if not (digest and copies.on_usb(digest)):
             not_on_usb.append(relative)
+        if digest and not (not_on_mac or not_on_usb):
+            newest_copy = max(newest_copy, copies.saved_at(digest))
     identity = history.get("identity") if isinstance(history.get("identity"), dict) else {}
     earlier = (imports or {}).get(card_id, ("", ""))
     return CardStatus(
@@ -161,6 +171,7 @@ def status_of(
         not_on_usb=not_on_usb[:FILES_LISTED],
         first_seen=str(history.get("first_seen") or earlier[1] or history.get("last_seen") or ""),
         last_seen=str(history.get("last_seen") or ""),
+        newest_copy=newest_copy or None,
     )
 
 
@@ -208,7 +219,9 @@ def all_cards(copies: Optional[Copies] = None) -> List[CardStatus]:
     cards = []
     for card_id, payload in _manifests():
         status = status_of(card_id, payload, copies, imports)
-        status.safe_since = since.get(card_id)
+        # A card safe before anything recorded it, such as from before an upgrade, is dated by
+        # the newest copy it depends on.
+        status.safe_since = since.get(card_id) or (status.newest_copy if status.safe else None)
         cards.append(status)
     return sorted(cards, key=lambda status: status.last_seen, reverse=True)
 

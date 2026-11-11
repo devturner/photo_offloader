@@ -25,6 +25,7 @@ from xml.parsers.expat import ExpatError
 
 from photo_offloader import (
     card,
+    card_identity,
     card_status,
     catalog,
     config,
@@ -50,6 +51,7 @@ UPLOAD_START_GRACE_SECONDS = 30  # importer done, sync process still starting
 CARD_HISTORY_ROWS = 20  # enough to get past any backups since a card's last import
 CARD_ID_SECONDS = 30.0  # how long a mounted card's ID is trusted before asking again
 CARD_NAME_LENGTH = 40
+CARD_IDENTITY_SECONDS = 600.0  # a card's size and kind don't change while it's in
 DISKUTIL_SECONDS = 5  # a failing card can leave diskutil waiting, and a poll waits for this
 PREVIEW_LINES = 40  # of a report's file list, in the debug package's save sheet
 UPLOAD_SILENT_SECONDS = 10  # no report from rclone for this long counts as a stall
@@ -332,29 +334,63 @@ class DashboardCore:
         return None  # the caller compares names instead
 
     # ---- the cards row ------------------------------------------------------------------
-    def cards(self, mounted: Optional[Path]) -> List[Dict[str, Any]]:
+    def mounted_cards(self) -> List[Path]:
+        """Every inserted camera card. Two from one camera mount as "NIKON Z 8" and "NIKON Z 8 1"."""
+
+        def probe() -> List[Path]:
+            try:
+                return [
+                    volume
+                    for volume in sorted(self.paths.volumes_root.iterdir())
+                    if not volume.is_symlink() and (volume / "DCIM").is_dir()
+                ]
+            except OSError:
+                return []  # /Volumes can't be listed: show the same as having no card
+
+        return self._cached("cards-mounted", 3.0, probe)
+
+    def cards(self, mounted: Sequence[Path] = ()) -> List[Dict[str, Any]]:
         """Each card seen, safe to format or not, most recently seen first."""
         statuses = self._cached(
             "cards", 2.0, lambda: [status.as_dict() for status in card_status.all_cards()]
         )
         if not statuses:
             return []
-        mounted_id = (
-            self._cached(f"card-id:{mounted}", CARD_ID_SECONDS, lambda: self._volume_id(mounted))
-            if mounted
-            else None
-        )
+        inserted: Dict[str, Path] = {}
+        for volume in mounted:
+            volume_id = self._cached(
+                f"card-id:{volume}", CARD_ID_SECONDS, lambda volume=volume: self._volume_id(volume)
+            )
+            if volume_id:
+                inserted[volume_id] = volume
         own = jsonfile.read_object(self.paths.cards_file)
         names, hidden = own.get("names") or {}, own.get("hidden") or {}
         rows = []
         for status in statuses:
-            is_mounted = status["id"] == mounted_id
+            is_mounted = status["id"] in inserted
+            if is_mounted and not status["label"]:
+                status = self._described_by_macos(status, inserted[status["id"]])
             hidden_at = hidden.get(status["id"])
             if hidden_at and not is_mounted and _epoch(status["last_seen"]) <= hidden_at:
                 continue  # formatted, someone said; it comes back if the card is seen again
             name = str(names.get(_name_key(status)) or "")
             rows.append(display.card_row(status, name, is_mounted))
         return rows
+
+    def _described_by_macos(self, status: Dict[str, Any], volume: Path) -> Dict[str, Any]:
+        """A card last imported before cards were told apart: ask macOS while it's inserted."""
+        identity = dict(
+            self._cached(
+                f"card-identity:{volume}", CARD_IDENTITY_SECONDS, lambda: card_identity.read(volume)
+            )
+        )
+        name = str(identity.pop("volume_name", "") or "").strip()
+        return {
+            **status,
+            "camera": name or status["camera"],
+            "label": card_identity.label(identity),
+            "serial": identity.get("serial") or status["serial"],
+        }
 
     def _known_card(self, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         card_id = str(params.get("id") or "")
@@ -927,7 +963,7 @@ class DashboardCore:
         checking = self._verify_progress()
 
         handled = self.card_handled(card)
-        cards = self.cards(card)
+        cards = self.cards(self.mounted_cards())
         if last and last["outcome"] != "failed":
             last = {**last, "summary": _with_card_advice(last["summary"], last, cards)}
         headline = display.headline(

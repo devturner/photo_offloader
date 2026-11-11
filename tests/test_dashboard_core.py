@@ -893,6 +893,34 @@ class TestCards(Fixture):
         self.assertFalse(self.core.act("rename_card", {"id": "../x", "name": "a"})["ok"])
         self.assertFalse(self.core.act("forget_card", {"id": "nope"})["ok"])
 
+    def test_every_inserted_card_is_marked(self):
+        # The user's Mac, 2026-11-11: two cards from one camera, mounted as "NIKON Z 8  " and
+        # "NIKON Z 8   1".
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.card_manifest("B", {"b": "h2"}, self.SD)
+        self.add_card("NIKON Z 8  ")
+        self.add_card("NIKON Z 8   1")
+        ids = {"NIKON Z 8  ": "B", "NIKON Z 8   1": "A"}
+        with patch.object(self.core, "_volume_id", side_effect=lambda volume: ids[volume.name]):
+            self.assertEqual([c["mounted"] for c in self.cards()], [True, True])
+
+    def test_an_inserted_card_imported_before_this_version_is_described_by_macos(self):
+        self.card_manifest("A", {"a": "h1"}, {})
+        manifest = self.data / "card-manifests" / "A.json"
+        payload = json.loads(manifest.read_text())
+        del payload["history"]["volume_name"]
+        manifest.write_text(json.dumps(payload))
+        self.add_card("NIKON Z 8   1")
+        live = {**self.CF, "volume_name": "NIKON Z 8  "}
+        with (
+            patch.object(self.core, "_volume_id", return_value="A"),
+            patch.object(core.card_identity, "read", return_value=live) as read,
+        ):
+            self.assertEqual(self.cards()[0]["title"], "NIKON Z 8 · 256 GB CFexpress")
+            self.now += 5  # the next polls, past every short-lived cache
+            self.core.state()
+        self.assertEqual(read.call_count, 1, "asked once, then kept")
+
     def test_the_end_of_an_import_says_whether_that_card_is_safe_to_format(self):
         self.card_manifest("A", {"a": "h1"}, self.SD)
         self.saved(mac=("h1",))

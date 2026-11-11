@@ -334,7 +334,7 @@ _CARDS = (
 def inserted_card() -> Optional[CardLine]:
     """The inserted card as the dashboard's cards row shows it, so the two never disagree."""
     try:
-        rows = _CARDS.cards(_CARDS.mounted_card())
+        rows = _CARDS.cards(_CARDS.mounted_cards())
     except (OSError, ValueError) as exc:
         logger.debug("Could not read the inserted card's state: %s", exc)
         return None
