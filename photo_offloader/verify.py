@@ -168,7 +168,12 @@ def seconds_left(
     return round(here + later_bytes / later_speed)
 
 
+_CHECKING_CARD = ""  # the card a --card check reads, for the dashboard to show on that card
+
+
 def _write_status(**fields: object) -> None:
+    if _CHECKING_CARD:
+        fields = {**fields, "card": _CHECKING_CARD}
     try:
         jsonfile.write_json(config.VERIFY_STATUS_PATH, fields)
     except OSError as exc:  # only the dashboard's progress: the check itself goes on
@@ -532,6 +537,8 @@ class _CantCheck(RuntimeError):
 
 
 def _run(card: str = "") -> int:
+    global _CHECKING_CARD
+    _CHECKING_CARD = card
     started_at = time.time()
     check = ArchiveCheck()
     logger.info("Starting a check of the saved copies%s.", f" of card {card}" if card else "")

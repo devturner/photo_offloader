@@ -538,6 +538,19 @@ class TestOneCard(VerifyTestCase):
         self.assertIn("Connect the USB drive", output)
         self.assertEqual(card_status.all_cards()[0].state, "check")
 
+    def test_its_progress_says_which_card_is_being_checked(self):
+        seen = []
+        real = verify.check_archives
+
+        def spy(check, only=None):
+            seen.append(jsonfile.read_object(config.VERIFY_STATUS_PATH).get("card"))
+            real(check, only)
+            seen.append(jsonfile.read_object(config.VERIFY_STATUS_PATH).get("card"))
+
+        with patch.object(verify, "check_archives", side_effect=spy), patch.object(logs, "notify"):
+            self.run_main("--card", "CARD")
+        self.assertEqual(seen, ["CARD", "CARD"])
+
     def test_an_unknown_card_is_refused(self):
         with patch.object(logs, "notify"):
             code, output = self.run_main("--card", "NOPE")

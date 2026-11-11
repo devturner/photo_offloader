@@ -200,6 +200,19 @@ class TestCards(PageTestCase):
         expect(report.locator(".check .note")).to_contain_text("Reads its 412 files again")
         self.click_action(report.locator(".check button"), "verify_card")
         self.assertEqual(self.sandbox.spawned[-1][-2:], ["--card", "SD2-UUID"])
+        # The button can't start a second check, and says why, before the check shows up.
+        expect(report.locator(".check button")).to_be_disabled()
+        expect(report.locator(".check .note")).to_have_text("Checking this card…")
+
+    def test_the_check_button_answers_the_click_at_once(self):
+        self.show("cards")
+        self.chip("Lexar").click()
+        self.page.route(
+            "**/api/action/verify_card", lambda route: None
+        )  # an answer that never comes
+        self.page.locator("#card-report .check button").click()
+        expect(self.page.locator("#card-report .check button")).to_be_disabled()
+        expect(self.page.locator("#card-report .check .note")).to_have_text("Starting the check…")
 
     def test_without_the_drive_the_check_button_says_why_it_waits(self):
         self.load("cards")

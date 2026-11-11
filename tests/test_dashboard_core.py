@@ -890,6 +890,29 @@ class TestCards(Fixture):
         self.assertEqual(self.spawned[-1][-2:], ["--card", "A"])
         self.assertFalse(self.core.act("verify_card", {"id": "../A"})["ok"])
 
+    def test_a_check_just_started_counts_as_running_before_its_process_shows(self):
+        # The user, 2026-11-11: the button stayed live after a click, and a second click
+        # started a second check (which stopped at once, as only one may run).
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.card_manifest("B", {"b": "h2"}, self.SD)
+        self.saved(mac=("h1", "h2"), usb=("h1", "h2"))
+        self.usb.mkdir()
+        self.assertTrue(self.core.act("verify_card", {"id": "A"})["ok"])
+        checks = {c["id"]: c["report"]["check"]["blocked"] for c in self.cards()}
+        self.assertEqual(checks, {"A": "Checking this card…", "B": "A check is running."})
+        self.assertFalse(self.core.act("verify_card", {"id": "A"})["ok"])
+        self.assertEqual(len(self.spawned), 1)
+        self.advance(core.CHECK_START_SECONDS + 1)  # it never showed up: it failed to start
+        self.assertIsNone(self.cards()[0]["report"]["check"]["blocked"])
+
+    def test_a_running_card_check_is_known_from_its_progress_file(self):
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.saved(mac=("h1",), usb=("h1",))
+        self.usb.mkdir()
+        self.verify_up = True
+        (self.data / "verify_status.json").write_text(json.dumps({"where": "", "card": "A"}))
+        self.assertEqual(self.cards()[0]["report"]["check"]["blocked"], "Checking this card…")
+
     def test_no_card_check_while_another_check_or_an_import_runs(self):
         self.card_manifest("A", {"a": "h1"}, self.CF)
         self.saved(mac=("h1",), usb=("h1",))

@@ -51,6 +51,7 @@ UPLOAD_START_GRACE_SECONDS = 30  # importer done, sync process still starting
 CARD_HISTORY_ROWS = 20  # enough to get past any backups since a card's last import
 CARD_ID_SECONDS = 30.0  # how long a mounted card's ID is trusted before asking again
 CARD_NAME_LENGTH = 40
+CHECK_START_SECONDS = 15.0  # a check just started counts as running until its process shows
 CARD_IDENTITY_SECONDS = 600.0  # a card's size and kind don't change while it's in
 DISKUTIL_SECONDS = 5  # a failing card can leave diskutil waiting, and a poll waits for this
 PREVIEW_LINES = 40  # of a report's file list, in the debug package's save sheet
@@ -144,6 +145,7 @@ class DashboardCore:
         # Only the installed dashboard follows settings.txt to other folders; one given its paths
         # (a test, the browser harness) keeps them, so it never strays onto real data.
         self._follows_settings = paths is None
+        self._check_started: Tuple[str, float] = ("", float("-inf"))
         self._clock = clock
         self._run = run
         self._popen = popen
@@ -381,12 +383,28 @@ class DashboardCore:
             rows.append(display.card_row(status, name, is_mounted, check))
         return rows
 
-    def _card_check_blocked(self) -> Optional[str]:
+    def _checking_card(self) -> Optional[str]:
+        """The card a running check reads ("" for a full check), or None when none runs.
+
+        A check this dashboard just started counts before its process shows, so a second
+        click can't start a second one.
+        """
+        started_card, started_at = self._check_started
+        if self.verify_running():
+            return str(jsonfile.read_object(self.paths.verify_status_file).get("card") or "")
+        if self._clock() - started_at < CHECK_START_SECONDS:
+            return started_card
+        return None
+
+    def _card_check_blocked(self, card_id: str = "") -> Optional[str]:
         """Why Check this card can't start now, if it can't."""
+        checking = self._checking_card()
+        if checking is not None:
+            return (
+                "Checking this card…" if checking and checking == card_id else "A check is running."
+            )
         if not self.usb_mounted():
             return "Connect the USB drive to check this card: both copies are read."
-        if self.verify_running():
-            return "A check is running."
         if self.importer_running():
             return "An import is running. Check when it has finished."
         return None
@@ -399,17 +417,18 @@ class DashboardCore:
 
         return {
             "note": display.card_check_note(status, self._cached("check-speeds", 60.0, speeds)),
-            "blocked": self._card_check_blocked(),
+            "blocked": self._card_check_blocked(status["id"]),
         }
 
     def _verify_card(self, params: Dict[str, Any]) -> Dict[str, Any]:
         status = self._known_card(params)
         if status is None:
             return {"ok": False, "message": "That card isn't known any more."}
-        blocked = self._card_check_blocked()
+        blocked = self._card_check_blocked(status["id"])
         if blocked:
             return {"ok": False, "message": blocked}
         self._spawn([str(self.paths.python), str(self.paths.verify_script), "--card", status["id"]])
+        self._check_started = (status["id"], self._clock())
         self._invalidate("verify", "cards")
         return {"ok": True, "message": "Checking this card's copies. It shows in Recent activity."}
 
@@ -1435,11 +1454,12 @@ class DashboardCore:
         return {"ok": True, "message": "Catalog update started."}
 
     def _verify_start(self) -> Dict[str, Any]:
-        if self.verify_running():
+        if self._checking_card() is not None:
             return {"ok": False, "message": "A check is already running."}
         if self.importer_running():
             return {"ok": False, "message": "An import is running. Check when it has finished."}
         self._spawn([str(self.paths.python), str(self.paths.verify_script)])
+        self._check_started = ("", self._clock())
         self._invalidate("verify")
         return {"ok": True, "message": "Check started. You can close this window while it runs."}
 

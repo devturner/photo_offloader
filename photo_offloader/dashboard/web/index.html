@@ -929,7 +929,12 @@ function cardReport(c) {
     h("div", { class: "verdict", "data-tone": c.tone }, h("b", { text: r.headline }), r.text && h("span", { text: r.text })),
     r.check && h("div", { class: "check" },
       h("button", { type: "button", class: c.state === "check" ? "btn" : "btn secondary", text: r.check.label, disabled: !!r.check.blocked,
-        onclick: () => run("verify_card", { id: c.id }) }),
+        onclick: (e) => {
+          // Say so at once: the check's process takes a moment to show up in the next poll.
+          const button = e.currentTarget; button.disabled = true;
+          button.parentElement.querySelector(".note").textContent = "Starting the check…";
+          run("verify_card", { id: c.id });
+        } }),
       h("span", { class: "note", text: r.check.blocked || r.check.note })),
     h("div", { class: "counts" }, ...r.counts.map(x => h("div", {}, h("span", { text: x.label }), h("b", { text: x.value })))),
     r.files.length > 0 && cardFiles !== c.id && h("button", { type: "button", class: "link files-link", "aria-expanded": "false",
