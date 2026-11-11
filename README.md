@@ -83,7 +83,7 @@ the dashboard's ⋯ menu ([details](docs/configuration.md#the-settings-file)).
 Photo Offloader is a personal project that's used for real, but by one person so far:
 
 - **Tested on:** macOS 26 with a Nikon Z 8 (SD and CFexpress cards) and an HFS+ USB drive. CI runs
-  about 950 tests on macOS with Python 3.9 to 3.14.
+  about 1,200 tests on macOS with Python 3.9 to 3.14.
 - **Not tried yet:** other camera brands (it reads `DCIM`, `PRIVATE` and `MP_ROOT`), exFAT backup
   drives, a clean install on another Mac, and a card that really fails mid-import (the failure
   reports have only run against simulated failures).
