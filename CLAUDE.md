@@ -8,8 +8,8 @@ app sit on top. Open work and its reasons are in `scratch/ai_tasks.md` (gitignor
 first when asked to "continue". What only the user can do is in `scratch/human_todo.md`.
 
 ## Commands
-- Tests: `tools/test.sh full` (about 650 tests, about 2.5 min) or `tools/test.sh fast` (about 35 s,
-  without `test_trigger`, `test_service_control` and the browser tests). Use the project `.venv`,
+- Tests: `tools/test.sh full` (about 950 tests, about 2.5 min) or `tools/test.sh fast` (about 35 s,
+  without `test_trigger`, `test_service_control`, `test_google_photos_process` and the browser tests). Use the project `.venv`,
   not the system `python3`, which has no Pillow.
 - Which tests when: only the affected modules while working; `fast` before a commit that touches
   several areas; `full` once before a push; CI always runs everything. Changes to the shell scripts
