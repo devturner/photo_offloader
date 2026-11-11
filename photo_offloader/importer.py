@@ -30,6 +30,8 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 from photo_offloader import (
     awake,
     card,
+    card_identity,
+    card_status,
     catalog,
     catalog_refresh,
     config,
@@ -86,6 +88,8 @@ def _finish_run_record(exit_code: int) -> None:
         message=message,
         details=details,
     )
+    if kind in ("import", "usb_backup"):
+        _note_safe_cards()
 
 
 def _files_not_reached(
@@ -495,6 +499,42 @@ def _run_usb_backup() -> int:
     return 0
 
 
+def _remember_card(dcim_folder: Path, card_volume: Path) -> None:
+    """Note which card this is, so it can be told apart and its earlier self, formatted, forgotten."""
+    identity = card_identity.read(card_volume)
+    name = str(identity.pop("volume_name", "") or card_volume.name)
+    _RUN["source"] = name  # what history shows: the card's name, not "NIKON Z 8 1" beside another
+    logger.info(
+        "Card: %s %s", name.strip(), card_identity.label(identity) or "(size and kind unknown)"
+    )
+    try:
+        card.remember_identity(dcim_folder, identity, name)
+        card_id = _RUN.get("card_id")
+        if card_id:
+            card_status.forget_formatted(str(card_id), identity, name)
+    except OSError as exc:  # only reporting; the import goes on
+        logger.warning("Could not note which card this is: %s", exc)
+
+
+def _note_safe_cards() -> None:
+    """Say when a card's files are all backed up, now or days later, ready to check."""
+    newly = card_status.record()
+    if len(newly) == 1:
+        status = newly[0]
+        name = " · ".join(part for part in (status.camera, status.label) if part)
+        logs.notify(
+            "Card Backed Up",
+            f"{name}: all {status.files:,} files are on the Mac and the USB drive. "
+            "Check it before formatting.",
+        )
+    elif newly:
+        logs.notify(
+            "Cards Backed Up",
+            f"{len(newly)} cards now have every file on the Mac and the USB drive. "
+            "Check them before formatting.",
+        )
+
+
 def _scan_card(
     args: argparse.Namespace,
 ) -> Tuple[Path, Path, Dict[str, List[Path]], List[Path]]:
@@ -510,6 +550,7 @@ def _scan_card(
     card_volume = dcim_folder.parent.resolve()
     _RUN.update(source=card_volume.name, dcim=dcim_folder, card_id=card.card_volume_id(dcim_folder))
     logger.info("Source card volume: %s", card_volume)
+    _remember_card(dcim_folder, card_volume)
     progress.update_status(
         source=str(card_volume),
         state="scanning",

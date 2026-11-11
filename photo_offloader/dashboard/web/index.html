@@ -206,7 +206,7 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .link { border: 0; background: none; color: var(--accent); font-size: 13px; font-weight: 550; padding: 2px 4px; }
 .link:hover { text-decoration: underline; }
 .link[hidden] { display: none; }
-.history { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow-y: auto; flex: 1 1 auto !important; min-height: 150px; overscroll-behavior: contain; }
+.history { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow-y: auto; flex: 1 1 auto !important; min-height: 130px; overscroll-behavior: contain; }
 .row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 16px; border: 0; border-top: 1px solid var(--border); background: none; text-align: left; }
 .row:hover, .row:focus-visible { background: var(--surface-2); }
 .row:focus-visible { outline-offset: -2px; border-radius: 0; }
@@ -222,6 +222,51 @@ button[aria-checked="true"] .switch::after { transform: translateX(14px); }
 .row[data-tone="success"] .ico { background: var(--ok-soft); color: var(--ok); }
 .row[data-tone="warning"] .ico { background: var(--warn-soft); color: var(--warn); }
 .row[data-tone="error"] .ico { background: var(--err-soft); color: var(--err); }
+/* the cards row: each card seen, and whether it is safe to format */
+.section-head .hint { color: var(--text-3); font-size: 12px; text-align: right; }
+.cards { display: flex; gap: 10px; overflow-x: auto; margin-bottom: 12px; padding: 1px; flex: none; }
+.cards[hidden], .card-report[hidden], #cards-head[hidden] { display: none; }
+.card-chip { flex: 1 0 230px; max-width: 360px; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); text-align: left; }
+.card-chip:hover { background: var(--surface-2); }
+.card-chip[aria-expanded="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.card-chip .ico { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; flex: none; background: var(--off-soft); color: var(--off); }
+.card-chip .ico .icon { width: 15px; height: 15px; }
+.card-chip[data-tone="success"] .ico { background: var(--ok-soft); color: var(--ok); }
+.card-chip[data-tone="warning"] .ico { background: var(--warn-soft); color: var(--warn); }
+.card-chip[data-tone="check"] .ico { background: var(--accent-soft); color: var(--accent); }
+.card-chip[data-tone="check"] .s { color: var(--accent); }
+.card-chip .grow { flex: 1; min-width: 0; }
+.card-chip .t { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-chip .s { display: block; font-size: 12px; font-weight: 600; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-chip[data-tone="success"] .s { color: var(--ok); }
+.card-chip[data-tone="warning"] .s { color: var(--warn); }
+.card-chip .here { font-size: 11px; font-weight: 600; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 7px; flex: none; }
+.card-report { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 14px; display: grid; gap: 10px; flex: none; }
+.card-report .top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.card-report .top .grow { flex: 1 1 220px; min-width: 0; }
+.card-report h3 { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+.card-report .seen { color: var(--text-2); font-size: 13px; }
+.card-report .verdict { padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.card-report .verdict b { display: block; }
+.card-report .verdict span { font-size: 13px; }
+.card-report .verdict[data-tone="success"] { background: var(--ok-soft); color: var(--ok); }
+.card-report .verdict[data-tone="warning"] { background: var(--warn-soft); color: var(--warn); }
+.card-report .verdict[data-tone="check"] { background: var(--accent-soft); color: var(--accent); }
+.card-report .check { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.card-report .check .note { flex: 1 1 260px; color: var(--text-2); font-size: 13px; }
+.card-report .check .every { padding-left: 0; }
+.card-report .verdict span { color: var(--text); }
+.card-report .counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.card-report .counts div { background: var(--surface-2); border-radius: 10px; padding: 8px 12px; }
+.card-report .counts span { display: block; color: var(--text-2); font-size: 12px; font-weight: 550; }
+.card-report .counts b { font-variant-numeric: tabular-nums; }
+.card-report ul { margin: 0; padding-left: 18px; color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
+.card-report .files-link { justify-self: start; padding-left: 0; }
+.card-report .rename { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.card-report .rename input { flex: 1 1 200px; min-width: 0; font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+.card-report .ask { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.card-report .ask span { flex: 1 1 260px; }
+
 .row .grow { flex: 1; min-width: 0; }
 .row .t { font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row .s { color: var(--text-2); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -395,6 +440,10 @@ dialog p.stop-note[hidden] { display: none; }
   <section class="hero" id="hero" data-tone="idle" aria-live="polite"></section>
   <section class="pipeline" id="pipeline" aria-label="Where your photos are"></section>
 
+  <div class="section-head" id="cards-head" hidden><h2>Cards</h2><span class="hint">Safe to format: every file is on the Mac and the USB drive, and read again since</span></div>
+  <section class="cards" id="cards" aria-label="Camera cards" hidden></section>
+  <section class="card-report" id="card-report" hidden></section>
+
   <div class="section-head"><h2>Recent activity</h2><button class="link" id="clear-history" hidden>Clear</button></div>
   <section class="history" id="history"></section>
   <footer>Source media on your card is never deleted.</footer>
@@ -446,6 +495,7 @@ dialog p.stop-note[hidden] { display: none; }
 <script>
 "use strict";
 const ICONS = {
+  sdcard: '<path d="M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M10 6v3M13 6v3"/>',
   camera: '<path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/>',
   drive: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 14h18"/><path d="M7 17h.01"/>',
   plug: '<path d="M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-10 0V8zM12 16v5"/>',
@@ -833,6 +883,85 @@ function renderHistory(now) {
   if (focusedId != null) list.querySelector(`.row[data-run="${focusedId}"]`).focus();
 }
 
+// ---- the cards row. One card's report open at a time, under the row.
+let openCard = null, renamingCard = null, askingForget = null, renameDraft = null, cardFiles = null, askingAll = null;
+const CARD_ICON = { success: "check", warning: "alert", check: "shield" };
+function renderCards(s) {
+  const cards = s.cards || [];
+  if (openCard && !cards.some(c => c.id === openCard)) openCard = renamingCard = askingForget = null;
+  if (!changed("cards", [cards, openCard, renamingCard, askingForget, cardFiles, askingAll])) return;
+  $("#cards-head").hidden = $("#cards").hidden = !cards.length;
+  const focusedId = document.activeElement && document.activeElement.closest(".card-chip") ? document.activeElement.dataset.card : null;
+  $("#cards").replaceChildren(...cards.map(c => h("button", {
+      type: "button", class: "card-chip", "data-tone": c.tone, "data-card": c.id, "aria-expanded": String(c.id === openCard),
+      title: c.id === openCard ? "Close this card's report" : "Open this card's report",
+      onclick: () => { openCard = openCard === c.id ? null : c.id; renamingCard = askingForget = askingAll = null; renderCards(LAST); } },
+    h("span", { class: "ico" }, icon(CARD_ICON[c.tone] || "sdcard")),
+    h("span", { class: "grow" }, h("span", { class: "t", text: c.title }), h("span", { class: "s", text: c.status })),
+    c.mounted && h("span", { class: "here", text: "Inserted" }))));
+  if (focusedId) { const chip = $(`.card-chip[data-card="${CSS.escape(focusedId)}"]`); if (chip) chip.focus(); }
+  const open = cards.find(c => c.id === openCard), box = $("#card-report");
+  box.hidden = !open;
+  if (open) box.replaceChildren(...cardReport(open).filter(Boolean));
+}
+// Check new copies starts at once. Check every copy says how long it takes and asks first.
+function cardChecks(c) {
+  const k = c.report.check, blocked = k.blocked;
+  const start = (e, isNew) => {
+    // Say so at once: the check's process takes a moment to show up in the next poll.
+    const box = e.currentTarget.closest(".check");
+    box.querySelectorAll("button").forEach(b => { b.disabled = true; });
+    box.querySelector(".note").textContent = "Starting the check…";
+    askingAll = null;
+    run("verify_card", isNew ? { id: c.id, new: true } : { id: c.id });
+  };
+  if (askingAll === c.id && !blocked) {
+    return h("div", { class: "check ask", role: "group", "aria-label": "Check every copy" },
+      h("span", { class: "note", text: k.all.warning }),
+      h("button", { type: "button", class: "btn", text: "Start", onclick: (e) => start(e, false) }),
+      h("button", { type: "button", class: "btn secondary", text: "Cancel", onclick: () => { askingAll = null; renderCards(LAST); } }));
+  }
+  const every = h("button", { type: "button", class: k.new ? "link every" : "btn secondary", text: k.all.label, disabled: !!blocked,
+    onclick: () => { askingAll = c.id; renderCards(LAST); } });
+  return h("div", { class: "check" },
+    k.new && h("button", { type: "button", class: "btn", text: k.new.label, disabled: !!blocked, onclick: (e) => start(e, true) }),
+    !k.new && every,
+    h("span", { class: "note", text: blocked || (k.new ? k.new.note : "Every copy has been read again since it was made.") }),
+    k.new && every);
+}
+function cardReport(c) {
+  const r = c.report;
+  const rename = () => {
+    // A poll can draw the report again while someone types, so what they typed is kept.
+    const input = h("input", { type: "text", value: renameDraft ?? c.name, placeholder: c.kind, maxlength: "40", "aria-label": "Name for this card", oninput: e => { renameDraft = e.target.value; } });
+    const save = () => { renamingCard = null; run("rename_card", { id: c.id, name: input.value }); };
+    input.addEventListener("keydown", e => { if (e.key === "Enter") save(); if (e.key === "Escape") { renamingCard = null; renderCards(LAST); } });
+    setTimeout(() => { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }, 0);
+    return h("div", { class: "rename" }, input,
+      h("button", { type: "button", class: "btn", text: "Save", onclick: save }),
+      h("button", { type: "button", class: "btn secondary", text: "Cancel", onclick: () => { renamingCard = null; renderCards(LAST); } }));
+  };
+  const forget = () => h("div", { class: "ask", role: "group", "aria-label": "Remove this card" },
+    h("span", { text: c.safe ? "Remove this card from the list? It comes back if you insert it again." : "This card isn't safe to format yet. Remove it from the list anyway?" }),
+    h("button", { type: "button", class: "btn", text: "Remove", onclick: () => { askingForget = null; openCard = null; run("forget_card", { id: c.id }); } }),
+    h("button", { type: "button", class: "btn secondary", text: "Cancel", onclick: () => { askingForget = null; renderCards(LAST); } }));
+  return [
+    h("div", { class: "top" },
+      h("div", { class: "grow" }, h("h3", { text: c.title }), h("div", { class: "seen", text: (c.name ? c.kind + " · " : "") + r.seen })),
+      h("button", { type: "button", class: "link", text: "Rename", onclick: () => { renamingCard = c.id; renameDraft = null; askingForget = null; renderCards(LAST); } }),
+      h("button", { type: "button", class: "link", text: "I formatted it", onclick: () => { askingForget = c.id; renamingCard = null; renderCards(LAST); } })),
+    renamingCard === c.id && rename(),
+    askingForget === c.id && forget(),
+    h("div", { class: "verdict", "data-tone": c.tone }, h("b", { text: r.headline }), r.text && h("span", { text: r.text })),
+    r.check && cardChecks(c),
+    h("div", { class: "counts" }, ...r.counts.map(x => h("div", {}, h("span", { text: x.label }), h("b", { text: x.value })))),
+    r.files.length > 0 && cardFiles !== c.id && h("button", { type: "button", class: "link files-link", "aria-expanded": "false",
+      text: r.files_more || r.files.length > 1 ? `Show which files` : "Show which file", onclick: () => { cardFiles = c.id; renderCards(LAST); } }),
+    r.files.length > 0 && cardFiles === c.id && h("ul", { "aria-label": "Files not saved yet" }, ...r.files.map(f => h("li", { text: f })),
+      r.files_more > 0 && h("li", { text: `and ${r.files_more.toLocaleString()} more` })),
+  ];
+}
+
 // One report open at a time, so the list stays short enough to scan.
 let openRun = null;
 const UNFOLD_MS = 180;
@@ -929,7 +1058,7 @@ async function refresh(withHistory) {
   try {
     const s = await api("/api/state");
     failures = 0; LAST = s;
-    renderChrome(s); renderHero(s); renderPipeline(s); renderMenu(s);
+    renderChrome(s); renderHero(s); renderPipeline(s); renderMenu(s); renderCards(s);
     const lastId = s.last_transfer ? s.last_transfer.id : 0;
     const checking = !!s.verify, checkEnded = refresh.checking && !checking;
     refresh.checking = checking;

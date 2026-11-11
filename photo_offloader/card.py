@@ -229,6 +229,20 @@ def reconcile_card_manifest(
     return counts
 
 
+def remember_identity(dcim_folder: Path, identity: Dict[str, object], volume_name: str) -> bool:
+    """Keep what tells this card apart from others, and when it was first seen, in its manifest."""
+    if card_manifest_path(dcim_folder) is None:
+        return False
+    payload = load_card_manifest_payload(dcim_folder)
+    history = dict(payload["history"])
+    now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat() + "Z"
+    history.setdefault("first_seen", history.get("last_seen") or now)
+    history["volume_name"] = volume_name
+    if identity:
+        history["identity"] = dict(identity)
+    return save_card_manifest(dcim_folder, payload["files"], history)
+
+
 def card_is_intact(dcim_folder: Path) -> bool:
     """Whether the last scan found every file in the manifest, unchanged, on this volume ID.
 

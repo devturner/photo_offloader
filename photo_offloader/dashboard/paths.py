@@ -121,6 +121,11 @@ class Paths:
         return self.data_dir / settings.FILE_NAME
 
     @property
+    def cards_file(self) -> Path:
+        """Names given to cards, and the ones someone said they formatted. The dashboard's own."""
+        return self.data_dir / "cards.json"
+
+    @property
     def preferences_file(self) -> Path:
         return self.data_dir / "preferences.json"
 

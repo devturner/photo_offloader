@@ -46,7 +46,7 @@ The USB and Google steps are skipped if the drive isn't connected or Google Phot
 
 | Card | Shows | Buttons, when they apply |
 | --- | --- | --- |
-| **Camera card** | The mounted card, or *No card* | **Import now**, **Eject** |
+| **Camera card** | The mounted card, or *No card*. Once the card has been imported, whether it's [safe to format](#cards-and-when-to-format) | **Import now**, **Eject** |
 | **Mac archive** | How many files are on the Mac, with the JPG, RAW and video counts | None |
 | **USB backup** | How many files are on the drive, with the same counts, or how many files it's behind. A count in blue means the drive holds more of that type than the Mac, such as RAW files you deleted from the Mac to save space. Unplugged, it shows the counts from the last backup in grey, and how many imports it has missed since then. It also says when a backup is paused or waiting | **Back up now**, **Eject** |
 | **Google Photos** | Setup and upload state, *Paused*, or when it will try again | **Sync now**, **Pause**, **Resume**, **Retry now** |
@@ -116,6 +116,54 @@ still in Recent activity and the import log. The menu bar still confirms what yo
 When you install, macOS itself shows *App Background Activity: "trigger.sh" can run in the background*. That's the
 system, and Photo Offloader can't turn it off.
 
+### Cards and when to format
+
+Above Recent activity is a row with each card Photo Offloader has seen, in one of three states:
+
+| State | Meaning |
+| --- | --- |
+| **Don't format** | Some files on the card, including old photos you left on it from earlier imports, aren't on the Mac or the USB drive yet. It says how many, and where |
+| **Check before formatting** | Every file has a copy on the Mac and on the USB drive, each verified by SHA-256 when it was made, but some copies haven't been read again since. It says how many |
+| **Safe to format** | All of that, and a check has read every copy again since it was made and found it good. It says when, by the oldest of those reads |
+
+The card doesn't need to be inserted: plug in the drive a week later, and once the backup finishes,
+the card moves on to *Check before formatting* and a notification says so. The card's report then
+offers two checks, which read the copies on the Mac and the drive and change nothing:
+
+- **Check new copies** reads only the copies no check has read since they were made. After a full
+  check, that's just what you've imported since, so it usually takes a minute or two.
+- **Check every copy** reads all of the card's copies again, for when you want to be sure. It says
+  first how long it will take, from how fast your drive read last time. On a hard drive at about
+  68 MB/s, a 68 GB card takes about 18 minutes, as the drive has to read every byte.
+
+Each check remembers the copies it found good, so the next one doesn't read them again. A full
+[Check saved copies…](#checking-the-saved-copies) counts too. When nothing is left to read, the
+card is *Safe to format*, and a notification says so.
+
+How it decides: each import keeps a list of the card's files and their SHA-256 hashes on the Mac.
+A file counts when the catalog has a copy with that hash on each side. A file you deleted from the
+Mac [on purpose](#clearing-space-on-the-mac) counts if the drive still has it. A copy a check found
+damaged or missing doesn't count until it's copied again, so the card goes back to *Don't format*.
+A copy made again, such as a file imported a second time, needs reading again. Without a USB drive, no card is ever safe to
+format, because one copy isn't a backup.
+
+Click a card to open its report: how many files are on the card, on the Mac and on the drive, when
+it was first seen and last inserted, and, behind **Show which files**, the files still missing.
+
+Cameras give every card the same name, so each card shows its size and kind as well, such as
+*NIKON Z 8 · 64 GB SanDisk SD*. The Mac's built-in SD slot also passes on the card's maker and
+serial number. A CFexpress reader passes on only the size. **Rename** gives a card your own name.
+
+Formatting gives a card a new volume ID, so to the app a formatted card is a new card. An SD card in
+the built-in slot is recognised by its serial number, and its old entry is replaced, keeping your
+name for it. Without a serial number, a card from the same camera with the same size and kind
+replaces an old entry only if that one was safe to format, so a second identical card can never
+hide one that isn't. Otherwise press **I formatted it** in the card's report. It asks first, and
+warns you if the card isn't safe yet. A removed card comes back if you insert it again.
+
+The end of each import says the same for the card just imported: the panel's summary starts with
+*Safe to format*, *Check the card before formatting* or *Don't format the card yet*.
+
 ### Recent activity
 
 This lists past imports, USB backups, catalog updates and [checks of the saved copies](#checking-the-saved-copies), with what each one did. The history
@@ -147,7 +195,9 @@ to fold it away. Runs from before this version show a dash for anything that was
 
 ## The menu bar
 
-The SD card in the menu bar is followed by the state: `↻` during a transfer, `⏸` when paused, `Off` when stopped. Its
+The SD card in the menu bar is followed by the state: `↻` during a transfer, `⏸` when paused, `Off` when stopped.
+While an imported card is inserted, it's followed by `✓` if the card is [safe to format](#cards-and-when-to-format),
+`?` if it should be checked first and `!` if it isn't safe, and the menu starts with the card's name and what to do with it. Its
 menu has **Open Dashboard**, **Close Dashboard** (when one is open), **Copy to USB Drive** (when a
 drive is connected), **Pause / Resume Uploads** (while an upload runs or is paused), **Pause /
 Resume Automatic Imports**, **View Import Log**, **Edit Settings…**, **Stop Service…** or **Start
@@ -207,6 +257,19 @@ If you take a card out, shoot more, and put it back after more than 20 seconds, 
 copies only the new files. Shorter gaps are treated as the card briefly disconnecting. If a card
 stayed mounted and you want to import it again, press **Import now**.
 
+## Taking a card out mid-copy
+
+Nothing half-copied ever looks finished. Each file is written to a hidden temporary file beside
+where it goes, read back from the disk, and compared with the card by SHA-256. Only then does it get
+its real name, and never over a file that's already there. If the card comes out, the temporary
+file is removed and the import stops as failed, and the Camera card box says not to format the
+card.
+
+Put it back and the import picks up where it left off: files that were finished are skipped, and
+the one that was cut off is copied again from the start. It resumes file by file, not part-way
+through a file. The same goes for a crash, a restart or a power cut, except that a power cut can
+leave a hidden `.photo-copy-….tmp` file behind, which is safe to delete.
+
 ## Keeping the USB drive up to date
 
 The **USB backup** box turns amber when files aren't on the drive yet, and says how many and how much. While the drive is unplugged it also says when the last backup was. **Back up now** catches up.
@@ -241,6 +304,10 @@ To run it from a terminal instead, where it exits with code 1 if it finds proble
 ```bash
 ~/Library/Application\ Support/PhotoOffloader/bin/photo-offloader-verify
 ```
+
+`--card <volume ID>` checks only one card's copies, as **Check every copy** does, and `--card <volume
+ID> --new` only those not read since they were made, as **Check new copies** does. The volume IDs
+are the file names in `card-manifests` in the data folder.
 
 ### Clearing space on the Mac
 

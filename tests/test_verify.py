@@ -10,12 +10,14 @@ import sqlite3
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stdout
+import unittest.mock
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 from photo_offloader import (
     awake,
+    card_status,
     catalog,
     catalog_refresh,
     config,
@@ -63,10 +65,10 @@ class VerifyTestCase(support.CardFixtureTestCase):
         path.write_bytes(bytes(data))
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
 
-    def run_main(self):
+    def run_main(self, *args):
         out = io.StringIO()
         with redirect_stdout(out):
-            code = verify.main([])
+            code = verify.main(list(args))
         return code, out.getvalue()
 
     @staticmethod
@@ -352,6 +354,23 @@ class TestCommand(VerifyTestCase):
         self.assertEqual(report[0]["expected_sha256"], hashlib.sha256(b"photo bytes").hexdigest())
         self.assertEqual(report[0]["actual_sha256"], fileops.sha256_file(mac))
 
+    def test_a_card_with_a_damaged_copy_is_no_longer_safe_to_format(self):
+        mac, _usb = self.save()
+        digest = hashlib.sha256(b"photo bytes").hexdigest()
+        jsonfile.write_json(
+            config.CARD_MANIFESTS_DIR / "CARD.json",
+            {"schema": 1, "files": {"DCIM/a.jpg": {"sha256": digest}}, "history": {}},
+        )
+        card_status.record(now=1.0)
+        self.assertIn("CARD", card_status.safe_since())
+        self.damage(mac)
+
+        with patch.object(logs, "notify"):
+            self.run_main()
+
+        self.assertEqual(card_status.safe_since(), {})
+        self.assertFalse(card_status.all_cards()[0].safe)
+
     def test_files_gone_from_the_mac_alone_read_as_one_situation(self):
         one, _ = self.save("a/one.jpg", b"1")
         one.unlink()
@@ -477,6 +496,93 @@ class TestCommand(VerifyTestCase):
 
         self.assertEqual(code, 0)
         self.assertFalse(config.STATUS_FILE_PATH.exists())
+
+
+class TestOneCard(VerifyTestCase):
+    """--card rereads only one card's copies, so it can be called safe to format."""
+
+    def setUp(self):
+        super().setUp()
+        self.save("2026-10/a.jpg", b"from the card")
+        self.save("2026-10/b.jpg", b"from another card")
+        digest = hashlib.sha256(b"from the card").hexdigest()
+        jsonfile.write_json(
+            config.CARD_MANIFESTS_DIR / "CARD.json",
+            {"schema": 1, "files": {"DCIM/a.jpg": {"sha256": digest, "size": 13}}, "history": {}},
+        )
+
+    def test_only_the_cards_copies_are_read_and_the_card_becomes_safe(self):
+        self.assertEqual(card_status.all_cards()[0].state, "check")
+        with patch.object(logs, "notify") as notify:
+            code, output = self.run_main("--card", "CARD")
+        self.assertEqual(code, 0, output)
+        row = self.last_run()
+        self.assertEqual(row["files"], 2)  # one copy on each side, not four
+        self.assertEqual(row["details"]["card_id"], "CARD")
+        self.assertTrue(row["details"]["whole"])
+        self.assertEqual(card_status.all_cards()[0].state, "safe")
+        notify.assert_called_once_with(
+            "Safe to Format", "Camera card: all 1 file was read again and is good on both sides."
+        )
+
+    def test_a_damaged_copy_of_the_card_makes_it_dont_format(self):
+        self.damage(self.local / "2026-10/a.jpg")
+        with patch.object(logs, "notify"):
+            self.assertEqual(self.run_main("--card", "CARD")[0], 1)
+        self.assertEqual(card_status.all_cards()[0].state, "unsafe")
+
+    def test_without_the_drive_a_card_is_not_checked(self):
+        self.usb_is_mounted.return_value = False
+        with patch.object(logs, "notify"):
+            code, output = self.run_main("--card", "CARD")
+        self.assertEqual(code, 1)
+        self.assertIn("Connect the USB drive", output)
+        self.assertEqual(card_status.all_cards()[0].state, "check")
+
+    def test_its_progress_says_which_card_is_being_checked(self):
+        seen = []
+        real = verify.check_archives
+
+        def spy(check, only=None):
+            seen.append(jsonfile.read_object(config.VERIFY_STATUS_PATH).get("card"))
+            real(check, only)
+            seen.append(jsonfile.read_object(config.VERIFY_STATUS_PATH).get("card"))
+
+        with patch.object(verify, "check_archives", side_effect=spy), patch.object(logs, "notify"):
+            self.run_main("--card", "CARD")
+        self.assertEqual(seen, ["CARD", "CARD"])
+
+    def test_each_copy_found_good_is_remembered(self):
+        with patch.object(logs, "notify"):
+            self.run_main("--card", "CARD")
+        digest = hashlib.sha256(b"from the card").hexdigest()
+        self.assertEqual(set(verify_report.rereads()), {digest})
+        self.assertEqual(set(verify_report.rereads()[digest]), {"mac", "usb"})
+
+    def test_new_copies_only_reads_what_no_check_has_read_since_it_was_made(self):
+        with patch.object(logs, "notify"):
+            self.run_main("--card", "CARD", "--new")
+            self.assertEqual(self.last_run()["files"], 2)
+            self.run_main("--card", "CARD", "--new")
+        self.assertEqual(self.last_run()["files"], 0)  # nothing new to read
+        self.assertEqual(card_status.all_cards()[0].state, "safe")
+
+    def test_a_damaged_copy_is_not_remembered_as_good(self):
+        self.damage(self.local / "2026-10/a.jpg")
+        with patch.object(logs, "notify"):
+            self.run_main("--card", "CARD")
+        digest = hashlib.sha256(b"from the card").hexdigest()
+        self.assertEqual(verify_report.rereads()[digest], {"usb": unittest.mock.ANY})
+
+    def test_new_only_goes_with_a_card(self):
+        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+            verify.main(["--new"])
+
+    def test_an_unknown_card_is_refused(self):
+        with patch.object(logs, "notify"):
+            code, output = self.run_main("--card", "NOPE")
+        self.assertEqual(code, 1)
+        self.assertIn("isn't known", output)
 
 
 class TestDeletedOnPurpose(VerifyTestCase):
@@ -742,7 +848,7 @@ class TestProgressFile(VerifyTestCase):
         with patch.object(
             verify,
             "check_archives",
-            side_effect=lambda check: self.assertEqual(
+            side_effect=lambda check, only=None: self.assertEqual(
                 jsonfile.read_object(config.VERIFY_STATUS_PATH)["where"], ""
             ),
         ):

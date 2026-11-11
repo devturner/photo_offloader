@@ -20,11 +20,13 @@ import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
 from xml.parsers.expat import ExpatError
 
 from photo_offloader import (
     card,
+    card_identity,
+    card_status,
     catalog,
     config,
     google_photos,
@@ -48,6 +50,9 @@ UPLOAD_FOLLOWS_IMPORT_SECONDS = 30 * 60  # an upload this soon after an import c
 UPLOAD_START_GRACE_SECONDS = 30  # importer done, sync process still starting
 CARD_HISTORY_ROWS = 20  # enough to get past any backups since a card's last import
 CARD_ID_SECONDS = 30.0  # how long a mounted card's ID is trusted before asking again
+CARD_NAME_LENGTH = 40
+CHECK_START_SECONDS = 15.0  # a check just started counts as running until its process shows
+CARD_IDENTITY_SECONDS = 600.0  # a card's size and kind don't change while it's in
 DISKUTIL_SECONDS = 5  # a failing card can leave diskutil waiting, and a poll waits for this
 PREVIEW_LINES = 40  # of a report's file list, in the debug package's save sheet
 UPLOAD_SILENT_SECONDS = 10  # no report from rclone for this long counts as a stall
@@ -97,6 +102,36 @@ def _missed_imports(db: sqlite3.Connection) -> int:
         return 0  # a catalog from before the run history
 
 
+def _name_key(status: Dict[str, Any]) -> str:
+    """An SD card's serial number survives a format, so its name does too."""
+    return f"serial:{status['serial']}" if status.get("serial") else f"id:{status['id']}"
+
+
+def _with_card_advice(summary: str, row: Dict[str, Any], cards: Sequence[Dict[str, Any]]) -> str:
+    """An import's summary, saying whether its card is safe to format now. The card is usually
+    ejected by the end, so the panel is where this is said straight away."""
+    details = row.get("details") or {}
+    card = next((c for c in cards if c["id"] == details.get("card_id")), None)
+    if row.get("kind") != "import" or not card or card["tone"] == "off":
+        return summary
+    # First, as the line is cut short in a narrow window. "All backed up" meant the Mac.
+    advice = {
+        "safe": "Safe to format",
+        "check": "Check the card before formatting",
+    }.get(card["state"], "Don't format the card yet")
+    summary = str(summary or "")
+    if summary.startswith(advice):
+        return summary
+    return f"{advice} · " + summary.replace(", all backed up", "")
+
+
+def _epoch(iso: str) -> float:
+    try:
+        return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
 class DashboardCore:
     def __init__(
         self,
@@ -110,6 +145,7 @@ class DashboardCore:
         # Only the installed dashboard follows settings.txt to other folders; one given its paths
         # (a test, the browser harness) keeps them, so it never strays onto real data.
         self._follows_settings = paths is None
+        self._check_started: Tuple[str, float] = ("", float("-inf"))
         self._clock = clock
         self._run = run
         self._popen = popen
@@ -301,6 +337,156 @@ class DashboardCore:
         except (ValueError, TypeError, AttributeError, ExpatError) as exc:
             logs.logger.debug("Unreadable details for %s: %s", volume, exc)
         return None  # the caller compares names instead
+
+    # ---- the cards row ------------------------------------------------------------------
+    def mounted_cards(self) -> List[Path]:
+        """Every inserted camera card. Two from one camera mount as "NIKON Z 8" and "NIKON Z 8 1"."""
+
+        def probe() -> List[Path]:
+            try:
+                return [
+                    volume
+                    for volume in sorted(self.paths.volumes_root.iterdir())
+                    if not volume.is_symlink() and (volume / "DCIM").is_dir()
+                ]
+            except OSError:
+                return []  # /Volumes can't be listed: show the same as having no card
+
+        return self._cached("cards-mounted", 3.0, probe)
+
+    def cards(self, mounted: Sequence[Path] = ()) -> List[Dict[str, Any]]:
+        """Each card seen, safe to format or not, most recently seen first."""
+        statuses = self._cached(
+            "cards", 2.0, lambda: [status.as_dict() for status in card_status.all_cards()]
+        )
+        if not statuses:
+            return []
+        inserted: Dict[str, Path] = {}
+        for volume in mounted:
+            volume_id = self._cached(
+                f"card-id:{volume}", CARD_ID_SECONDS, lambda volume=volume: self._volume_id(volume)
+            )
+            if volume_id:
+                inserted[volume_id] = volume
+        own = jsonfile.read_object(self.paths.cards_file)
+        names, hidden = own.get("names") or {}, own.get("hidden") or {}
+        rows = []
+        for status in statuses:
+            is_mounted = status["id"] in inserted
+            if is_mounted and not status["label"]:
+                status = self._described_by_macos(status, inserted[status["id"]])
+            hidden_at = hidden.get(status["id"])
+            if hidden_at and not is_mounted and _epoch(status["last_seen"]) <= hidden_at:
+                continue  # formatted, someone said; it comes back if the card is seen again
+            name = str(names.get(_name_key(status)) or "")
+            check = self._card_check(status) if status["complete"] else None
+            rows.append(display.card_row(status, name, is_mounted, check))
+        return rows
+
+    def _checking_card(self) -> Optional[str]:
+        """The card a running check reads ("" for a full check), or None when none runs.
+
+        A check this dashboard just started counts before its process shows, so a second
+        click can't start a second one.
+        """
+        started_card, started_at = self._check_started
+        if self.verify_running():
+            return str(jsonfile.read_object(self.paths.verify_status_file).get("card") or "")
+        if self._clock() - started_at < CHECK_START_SECONDS:
+            return started_card
+        return None
+
+    def _card_check_blocked(self, card_id: str = "") -> Optional[str]:
+        """Why a check of a card can't start now, if it can't."""
+        checking = self._checking_card()
+        if checking is not None:
+            return (
+                "Checking this card…" if checking and checking == card_id else "A check is running."
+            )
+        if not self.usb_mounted():
+            return "Connect the USB drive to check this card: both copies are read."
+        if self.importer_running():
+            return "An import is running. Check when it has finished."
+        return None
+
+    def _card_check(self, status: Dict[str, Any]) -> Dict[str, Any]:
+        def speeds() -> Dict[str, float]:
+            rows = catalog.list_import_history(limit=catalog.IMPORT_HISTORY_MAX_ROWS)
+            drive = self._volume_id(self.paths.usb_volume) if self.usb_mounted() else None
+            return verify_report.measured_speeds(rows, drive)
+
+        return display.card_checks(
+            status,
+            self._cached("check-speeds", 60.0, speeds),
+            self._card_check_blocked(status["id"]),
+        )
+
+    def _verify_card(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        status = self._known_card(params)
+        if status is None:
+            return {"ok": False, "message": "That card isn't known any more."}
+        blocked = self._card_check_blocked(status["id"])
+        if blocked:
+            return {"ok": False, "message": blocked}
+        argv = [str(self.paths.python), str(self.paths.verify_script), "--card", status["id"]]
+        self._spawn(argv + (["--new"] if params.get("new") else []))
+        self._check_started = (status["id"], self._clock())
+        self._invalidate("verify", "cards")
+        return {"ok": True, "message": "Checking this card's copies. It shows in Recent activity."}
+
+    def _described_by_macos(self, status: Dict[str, Any], volume: Path) -> Dict[str, Any]:
+        """A card last imported before cards were told apart: ask macOS while it's inserted."""
+        identity = dict(
+            self._cached(
+                f"card-identity:{volume}", CARD_IDENTITY_SECONDS, lambda: card_identity.read(volume)
+            )
+        )
+        name = str(identity.pop("volume_name", "") or "").strip()
+        return {
+            **status,
+            "camera": name or status["camera"],
+            "label": card_identity.label(identity),
+            "serial": identity.get("serial") or status["serial"],
+        }
+
+    def _known_card(self, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        card_id = str(params.get("id") or "")
+        return next(
+            (status.as_dict() for status in card_status.all_cards() if status.card_id == card_id),
+            None,
+        )
+
+    def _save_cards_file(self, change: Callable[[Dict[str, Any]], None]) -> None:
+        own = jsonfile.read_object(self.paths.cards_file)
+        own = {"names": dict(own.get("names") or {}), "hidden": dict(own.get("hidden") or {})}
+        change(own)
+        jsonfile.write_json(self.paths.cards_file, own)
+        self._invalidate("cards")
+
+    def _rename_card(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        status = self._known_card(params)
+        if status is None:
+            return {"ok": False, "message": "That card isn't known any more."}
+        name = " ".join(str(params.get("name") or "").split())[:CARD_NAME_LENGTH]
+
+        def change(own: Dict[str, Any]) -> None:
+            if name:
+                own["names"][_name_key(status)] = name
+            else:
+                own["names"].pop(_name_key(status), None)
+
+        self._save_cards_file(change)
+        return {"ok": True, "message": f"Renamed to {name}." if name else "Name removed."}
+
+    def _forget_card(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        status = self._known_card(params)
+        if status is None:
+            return {"ok": False, "message": "That card isn't known any more."}
+        self._save_cards_file(lambda own: own["hidden"].__setitem__(status["id"], self._clock()))
+        return {
+            "ok": True,
+            "message": "Removed from the list. It comes back if the card is inserted again.",
+        }
 
     def usb_mounted(self) -> bool:
         return self._cached(
@@ -690,7 +876,11 @@ class DashboardCore:
         }
 
     def _finished(
-        self, last: Optional[Dict[str, Any]], google: Dict[str, Any], now: float
+        self,
+        last: Optional[Dict[str, Any]],
+        google: Dict[str, Any],
+        now: float,
+        cards: Sequence[Dict[str, Any]] = (),
     ) -> Optional[Dict[str, Any]]:
         """The end of an import or failed backup, in the panel until it fades or is dismissed."""
         if last is None:
@@ -699,7 +889,8 @@ class DashboardCore:
             return display.run_report(last)
         if last["kind"] != "import":
             return None
-        return display.run_report(last, self._upload_state_after(last, google, now))
+        report = display.run_report(last, self._upload_state_after(last, google, now))
+        return {**report, "detail": _with_card_advice(report["detail"], last, cards)}
 
     @staticmethod
     def _log_time(line: str) -> Optional[float]:
@@ -829,6 +1020,9 @@ class DashboardCore:
         checking = self._verify_progress()
 
         handled = self.card_handled(card)
+        cards = self.cards(self.mounted_cards())
+        if last and last["outcome"] != "failed":
+            last = {**last, "summary": _with_card_advice(last["summary"], last, cards)}
         headline = display.headline(
             running, paused, card, activity, interrupted, last, status, google, handled
         )
@@ -846,7 +1040,7 @@ class DashboardCore:
             "activity": activity,
             "interrupted": interrupted,
             "last_transfer": last,
-            "finished": None if activity else self._finished(last, google, now),
+            "finished": None if activity else self._finished(last, google, now, cards),
             "pipeline": display.pipeline(
                 card,
                 import_activity,
@@ -860,7 +1054,9 @@ class DashboardCore:
                 bool(checking and checking["usb"]),
                 usb_paused,
                 self.paths.auto_usb_backup_file.exists(),
+                next((row for row in cards if row["mounted"]), None),
             ),
+            "cards": cards,
             "verify": checking,
             "upload": google["progress"],
             # Not the importer, so not "busy"; the Stop dialogs and the ⋯ menu need it.
@@ -1068,6 +1264,9 @@ class DashboardCore:
             "set_report_style": lambda: self._set_report_style(str(params.get("report_style", ""))),
             "open_log": lambda: self._open_log(str(params.get("log", ""))),
             "edit_settings": self._edit_settings,
+            "rename_card": lambda: self._rename_card(params),
+            "forget_card": lambda: self._forget_card(params),
+            "verify_card": lambda: self._verify_card(params),
             "open_file_list": lambda: self._open_file_list(params),
             "report_preview": lambda: self._report_preview(params),
             "save_debug_package": lambda: self._save_debug_package(params),
@@ -1080,7 +1279,7 @@ class DashboardCore:
             result = handler()
         except OSError as exc:
             result = {"ok": False, "message": f"Could not complete that: {exc}"}
-        self._invalidate("service", "importer", "usb", "counts", "card")
+        self._invalidate("service", "importer", "usb", "counts", "card", "cards")
         return result
 
     def _pause(self) -> Dict[str, Any]:
@@ -1257,11 +1456,12 @@ class DashboardCore:
         return {"ok": True, "message": "Catalog update started."}
 
     def _verify_start(self) -> Dict[str, Any]:
-        if self.verify_running():
+        if self._checking_card() is not None:
             return {"ok": False, "message": "A check is already running."}
         if self.importer_running():
             return {"ok": False, "message": "An import is running. Check when it has finished."}
         self._spawn([str(self.paths.python), str(self.paths.verify_script)])
+        self._check_started = ("", self._clock())
         self._invalidate("verify")
         return {"ok": True, "message": "Check started. You can close this window while it runs."}
 

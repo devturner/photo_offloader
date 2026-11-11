@@ -18,7 +18,13 @@ except ImportError as exc:  # pragma: no cover - dependency is installed by inst
 from photo_offloader import config, jsonfile
 from photo_offloader.dashboard.core import DashboardCore
 from photo_offloader.logs import logger
-from photo_offloader.menubar.model import Snapshot, menu_entries, menu_title, parse_status
+from photo_offloader.menubar.model import (
+    CardLine,
+    Snapshot,
+    menu_entries,
+    menu_title,
+    parse_status,
+)
 
 INSTALL_DIR = config.INSTALL_DIR
 PAUSE_FILE = INSTALL_DIR / ".paused"
@@ -74,7 +80,9 @@ class PhotoOffloaderMenuBar(rumps.App):
         except (OSError, subprocess.TimeoutExpired):
             return Snapshot(running=False, usb=usb, dashboard=dashboard)
         snapshot = parse_status(result.stdout, result.returncode, usb=usb)
-        return dataclasses.replace(snapshot, dashboard=dashboard, upload=upload_state())
+        return dataclasses.replace(
+            snapshot, dashboard=dashboard, upload=upload_state(), card=inserted_card()
+        )
 
     def refresh(self, _sender: object = None) -> None:
         snapshot = self.read_snapshot()
@@ -316,6 +324,22 @@ class PhotoOffloaderMenuBar(rumps.App):
                 "Photo Offloader", "Photo Offloader started", "Camera cards will be imported again."
             )
         self.refresh()
+
+
+_CARDS = (
+    DashboardCore()
+)  # one, so it keeps asking diskutil about the inserted card only now and then
+
+
+def inserted_card() -> Optional[CardLine]:
+    """The inserted card as the dashboard's cards row shows it, so the two never disagree."""
+    try:
+        rows = _CARDS.cards(_CARDS.mounted_cards())
+    except (OSError, ValueError) as exc:
+        logger.debug("Could not read the inserted card's state: %s", exc)
+        return None
+    row = next((row for row in rows if row["mounted"]), None)
+    return CardLine(row["title"], row["state"], row["status"]) if row else None
 
 
 def upload_state() -> str:

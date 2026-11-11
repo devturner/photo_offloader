@@ -19,6 +19,7 @@ from unittest.mock import patch
 from photo_offloader import (
     awake,
     card,
+    card_identity,
     catalog,
     catalog_refresh,
     config,
@@ -61,6 +62,8 @@ def _test_locations(root: Path) -> dict:
         "VERIFY_LOCK_PATH": root / "verify.lock",
         "VERIFY_STATUS_PATH": data / "verify_status.json",
         "DELETED_FROM_MAC_PATH": data / "deleted_from_mac.json",
+        "CARD_SAFETY_PATH": data / "card_safety.json",
+        "REREADS_PATH": data / "rereads.json",
         "LEGACY_CATALOG_DB_PATH": install / "catalog.sqlite3",
         "BUILD_INFO_PATH": root / "build_info.json",
         "VERSION_PATH": root / "VERSION",
@@ -106,6 +109,9 @@ def isolate_config(testcase: unittest.TestCase, root: Path, **overrides) -> None
     testcase.addCleanup(patcher.stop)
     # A fake card is a plain folder with no volume ID, and a test must not run diskutil on it.
     patcher = patch.object(card, "card_volume_id", return_value="TEST-CARD-UUID")
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
+    patcher = patch.object(card_identity, "read", return_value={})
     patcher.start()
     testcase.addCleanup(patcher.stop)
     patcher = patch.object(run_report, "volume_info", return_value="Test volume\n")

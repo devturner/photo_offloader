@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from photo_offloader import catalog, config, google_photos, settings
+from photo_offloader import catalog, config, google_photos, settings, verify_report
 from photo_offloader.dashboard import core, display
 from tests import support
 
@@ -800,6 +800,243 @@ class TestSettingsFile(Fixture):
         self.settings_file().write_text("backup_drive = Backup 2\n", encoding="utf-8")
         self.core.follow_settings()
         self.assertEqual(self.core.paths, self.paths)
+
+
+class TestCards(Fixture):
+    """The cards row: each card seen, and whether it is safe to format."""
+
+    SD = {"kind": "SD", "size_bytes": 63_864_569_856, "maker": "SanDisk", "serial": "0x1"}
+    CF = {"kind": "CFexpress", "size_bytes": 256_060_514_304}
+
+    def card_manifest(self, card_id, files, identity, last_seen="2026-11-10T16:41:19Z"):
+        folder = self.data / "card-manifests"
+        folder.mkdir(exist_ok=True)
+        history = {"identity": identity, "volume_name": "NIKON Z 8  ", "last_seen": last_seen}
+        history["first_seen"] = "2026-10-21T10:00:00Z"
+        payload = {
+            "files": {name: {"sha256": digest} for name, digest in files.items()},
+            "history": history,
+        }
+        (folder / f"{card_id}.json").write_text(json.dumps(payload))
+
+    def saved(self, mac=(), usb=()):
+        catalog.catalog_connection().close()
+        rows = [(f"m/{d}", self.paths.local_archives[0], d) for d in mac]
+        rows += [(f"u/{d}", self.paths.usb_archives[0], d) for d in usb]
+        with sqlite3.connect(self.data / "catalog.sqlite3") as db:
+            db.executemany(
+                "INSERT INTO file_locations (path, root, relative_path, size, mtime_ns, inode,"
+                " sha256, indexed_at) VALUES (?, ?, ?, 1, 1, 1, ?, 1)",
+                [(path, str(root.resolve()), f"x/{digest}", digest) for path, root, digest in rows],
+            )
+
+    def cards(self):
+        self.core._cache.clear()
+        return self.core.state()["cards"]
+
+    def test_no_cards_seen_gives_an_empty_row(self):
+        self.assertEqual(self.cards(), [])
+
+    def checked(self, *digests, when=None):
+        """A check read these files' copies on both sides and found them good."""
+        when = self.now - 100 if when is None else when
+        verify_report.remember_rereads({(s, d) for d in digests for s in ("mac", "usb")}, when)
+
+    def test_a_backed_up_card_not_read_again_since_says_check_before_formatting(self):
+        self.card_manifest("A", {"a": "h1", "b": "h2"}, self.CF)
+        self.saved(mac=("h1", "h2"), usb=("h1", "h2"))
+        (self.data / "card_safety.json").write_text(
+            json.dumps({"A": datetime(2026, 11, 10, 8, 52).timestamp()})
+        )
+        self.usb.mkdir()
+        (card,) = self.cards()
+        self.assertEqual(card["title"], "NIKON Z 8 · 256 GB CFexpress")
+        self.assertEqual((card["tone"], card["status"]), ("check", "Check before formatting"))
+        report = card["report"]
+        self.assertEqual(report["headline"], "Check before formatting")
+        self.assertIn("since Nov 10", report["text"])
+        self.assertEqual(report["seen"], "First seen Oct 21 · last inserted Nov 10")
+        self.assertIn("None of them has been read again since", report["text"])
+        check = report["check"]
+        self.assertIsNone(check["blocked"])
+        self.assertEqual(check["new"]["label"], "Check new copies")
+        self.assertIn("Reads the 2 files not read again", check["new"]["note"])
+        self.assertEqual(check["all"]["label"], "Check every copy")
+        self.assertIn("Reads all 2 files again", check["all"]["warning"])
+
+    def test_only_the_copies_not_read_again_are_offered_as_new(self):
+        self.card_manifest("A", {"a": "h1", "b": "h2"}, self.CF)
+        self.saved(mac=("h1", "h2"), usb=("h1", "h2"))
+        self.checked("h1")
+        report = self.cards()[0]["report"]
+        self.assertIn("1 of them hasn't been read again since", report["text"])
+        self.assertIn(
+            "Reads the 1 file not read again since it was copied", report["check"]["new"]["note"]
+        )
+
+    def test_a_card_read_again_since_is_safe_with_the_date_of_the_check(self):
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.saved(mac=("h1",), usb=("h1",))
+        self.checked("h1", when=datetime(2026, 11, 17, 21, 14).timestamp())
+        (card,) = self.cards()
+        self.assertEqual(
+            (card["tone"], card["status"]), ("success", "Safe to format · checked Nov 17")
+        )
+        self.assertEqual(card["report"]["headline"], "Safe to format")
+        self.assertIn("the oldest on Nov 17, 9:14 PM", card["report"]["text"])
+        self.assertIsNone(card["report"]["check"]["new"])  # nothing new to read
+        self.assertEqual(card["report"]["check"]["all"]["label"], "Check every copy")
+
+    def test_check_this_card_starts_a_check_of_only_that_card(self):
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.saved(mac=("h1",), usb=("h1",))
+        self.assertFalse(self.core.act("verify_card", {"id": "A"})["ok"])  # no drive
+        self.assertIn("Connect the USB drive", self.cards()[0]["report"]["check"]["blocked"])
+        self.usb.mkdir()
+        self.core._cache.clear()
+        self.assertTrue(self.core.act("verify_card", {"id": "A", "new": True})["ok"])
+        self.assertEqual(self.spawned[-1][-3:], ["--card", "A", "--new"])
+        self.advance(core.CHECK_START_SECONDS + 1)
+        self.assertTrue(self.core.act("verify_card", {"id": "A"})["ok"])
+        self.assertEqual(self.spawned[-1][-2:], ["--card", "A"])
+        self.assertFalse(self.core.act("verify_card", {"id": "../A"})["ok"])
+
+    def test_a_check_just_started_counts_as_running_before_its_process_shows(self):
+        # The user, 2026-11-11: the button stayed live after a click, and a second click
+        # started a second check (which stopped at once, as only one may run).
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.card_manifest("B", {"b": "h2"}, self.SD)
+        self.saved(mac=("h1", "h2"), usb=("h1", "h2"))
+        self.usb.mkdir()
+        self.assertTrue(self.core.act("verify_card", {"id": "A"})["ok"])
+        checks = {c["id"]: c["report"]["check"]["blocked"] for c in self.cards()}
+        self.assertEqual(checks, {"A": "Checking this card…", "B": "A check is running."})
+        self.assertFalse(self.core.act("verify_card", {"id": "A"})["ok"])
+        self.assertEqual(len(self.spawned), 1)
+        self.advance(core.CHECK_START_SECONDS + 1)  # it never showed up: it failed to start
+        self.assertIsNone(self.cards()[0]["report"]["check"]["blocked"])
+
+    def test_a_running_card_check_is_known_from_its_progress_file(self):
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.saved(mac=("h1",), usb=("h1",))
+        self.usb.mkdir()
+        self.verify_up = True
+        (self.data / "verify_status.json").write_text(json.dumps({"where": "", "card": "A"}))
+        self.assertEqual(self.cards()[0]["report"]["check"]["blocked"], "Checking this card…")
+
+    def test_no_card_check_while_another_check_or_an_import_runs(self):
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.saved(mac=("h1",), usb=("h1",))
+        self.usb.mkdir()
+        self.verify_up = True
+        self.assertFalse(self.core.act("verify_card", {"id": "A"})["ok"])
+        self.assertEqual(self.cards()[0]["report"]["check"]["blocked"], "A check is running.")
+        self.verify_up, self.importer_up = False, True
+        self.core._cache.clear()
+        self.assertFalse(self.core.act("verify_card", {"id": "A"})["ok"])
+
+    def test_a_card_missing_from_the_drive_says_how_many(self):
+        self.card_manifest("A", {"a": "h1", "b": "h2", "c": "h3"}, self.SD)
+        self.saved(mac=("h1", "h2", "h3"), usb=("h1",))
+        (card,) = self.cards()
+        self.assertEqual(card["title"], "NIKON Z 8 · 64 GB SanDisk SD")
+        self.assertEqual((card["tone"], card["status"]), ("warning", "Don't format · 2 not on USB"))
+        self.assertEqual(card["report"]["headline"], "Don't format this card yet")
+        self.assertIn("2 files aren't on the USB drive", card["report"]["text"])
+        self.assertEqual(card["report"]["files"], ["b", "c"])
+
+    def test_files_missing_from_the_mac_come_first(self):
+        self.card_manifest("A", {"a": "h1"}, self.SD)
+        self.assertEqual(self.cards()[0]["status"], "Don't format · 1 not on the Mac")
+
+    def test_a_renamed_card_keeps_its_name_after_a_format_when_it_has_a_serial(self):
+        self.card_manifest("A", {"a": "h1"}, self.SD)
+        self.assertTrue(self.core.act("rename_card", {"id": "A", "name": "Red SanDisk"})["ok"])
+        self.assertEqual(self.cards()[0]["title"], "Red SanDisk")
+        (self.data / "card-manifests" / "A.json").unlink()
+        self.card_manifest("B", {}, self.SD)  # the same card, formatted
+        self.assertEqual(self.cards()[0]["title"], "Red SanDisk")
+        self.core.act("rename_card", {"id": "B", "name": "  "})
+        self.assertEqual(self.cards()[0]["title"], "NIKON Z 8 · 64 GB SanDisk SD")
+
+    def test_i_formatted_it_hides_a_card_until_it_is_seen_again(self):
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.assertTrue(self.core.act("forget_card", {"id": "A"})["ok"])
+        self.assertEqual(self.cards(), [])
+        self.advance(60)
+        self.card_manifest(
+            "A",
+            {"a": "h1"},
+            self.CF,
+            last_seen=datetime.utcfromtimestamp(self.now).isoformat() + "Z",
+        )
+        self.assertEqual(len(self.cards()), 1)
+
+    def test_an_unknown_card_cannot_be_renamed_or_forgotten(self):
+        self.assertFalse(self.core.act("rename_card", {"id": "../x", "name": "a"})["ok"])
+        self.assertFalse(self.core.act("forget_card", {"id": "nope"})["ok"])
+
+    def test_every_inserted_card_is_marked(self):
+        # The user's Mac, 2026-11-11: two cards from one camera, mounted as "NIKON Z 8  " and
+        # "NIKON Z 8   1".
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.card_manifest("B", {"b": "h2"}, self.SD)
+        self.add_card("NIKON Z 8  ")
+        self.add_card("NIKON Z 8   1")
+        ids = {"NIKON Z 8  ": "B", "NIKON Z 8   1": "A"}
+        with patch.object(self.core, "_volume_id", side_effect=lambda volume: ids[volume.name]):
+            self.assertEqual([c["mounted"] for c in self.cards()], [True, True])
+
+    def test_an_inserted_card_imported_before_this_version_is_described_by_macos(self):
+        self.card_manifest("A", {"a": "h1"}, {})
+        manifest = self.data / "card-manifests" / "A.json"
+        payload = json.loads(manifest.read_text())
+        del payload["history"]["volume_name"]
+        manifest.write_text(json.dumps(payload))
+        self.add_card("NIKON Z 8   1")
+        live = {**self.CF, "volume_name": "NIKON Z 8  "}
+        with (
+            patch.object(self.core, "_volume_id", return_value="A"),
+            patch.object(core.card_identity, "read", return_value=live) as read,
+        ):
+            self.assertEqual(self.cards()[0]["title"], "NIKON Z 8 · 256 GB CFexpress")
+            self.now += 5  # the next polls, past every short-lived cache
+            self.core.state()
+        self.assertEqual(read.call_count, 1, "asked once, then kept")
+
+    def test_the_end_of_an_import_says_whether_that_card_is_safe_to_format(self):
+        self.card_manifest("A", {"a": "h1"}, self.SD)
+        self.saved(mac=("h1",))
+        self.record(details={"card_id": "A", "new": {"RAW": 1}})
+        state = self.core.state()
+        detail = state["finished"]["detail"]
+        self.assertTrue(detail.startswith("Don't format the card yet · 1 new: 1 RAW"), detail)
+        self.assertNotIn("all backed up", detail)
+        self.assertEqual(state["headline"]["detail"], detail)  # what the panel shows
+        self.saved(usb=("h1",))
+        self.advance(1)
+        detail = self.core.state()["finished"]["detail"]
+        self.assertTrue(detail.startswith("Check the card before formatting · "), detail)
+        self.checked("h1", when=self.now)
+        self.advance(1)
+        self.record(details={"card_id": "A", "new": {}})  # inserted again: nothing new
+        self.assertTrue(self.core.state()["finished"]["detail"].startswith("Safe to format · "))
+
+    def test_an_import_from_an_unknown_card_says_nothing_about_formatting(self):
+        self.record(details={"card_id": "GONE"})
+        self.assertNotIn("format", self.core.state()["finished"]["detail"])
+
+    def test_the_mounted_card_is_marked_and_its_box_says_whether_to_format(self):
+        self.card_manifest("A", {"a": "h1"}, self.CF)
+        self.card_manifest("B", {"b": "h2"}, self.SD)
+        self.saved(mac=("h1", "h2"), usb=("h1",))
+        self.add_card()
+        with patch.object(self.core, "_volume_id", return_value="B"):
+            cards = self.cards()
+            box = self.pipeline("card")
+        self.assertEqual([c["mounted"] for c in cards], [False, True])
+        self.assertEqual(box["detail"], "Don't format · 1 not on USB")
+        self.assertEqual(box["state"], "warn")
 
 
 class TestEject(Fixture):

@@ -23,6 +23,7 @@ from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 from photo_offloader import (
     awake,
+    card_status,
     catalog,
     catalog_refresh,
     config,
@@ -103,6 +104,7 @@ class ArchiveCheck:
     canceled: bool = False
     error: str = ""
     speeds: Dict[str, float] = field(default_factory=dict)  # bytes a second, for the next estimate
+    good: Set[Tuple[str, str]] = field(default_factory=set)  # ("mac" or "usb", hash) read and good
     drive_id: str = ""
 
 
@@ -167,7 +169,12 @@ def seconds_left(
     return round(here + later_bytes / later_speed)
 
 
+_CHECKING_CARD = ""  # the card a --card check reads, for the dashboard to show on that card
+
+
 def _write_status(**fields: object) -> None:
+    if _CHECKING_CARD:
+        fields = {**fields, "card": _CHECKING_CARD}
     try:
         jsonfile.write_json(config.VERIFY_STATUS_PATH, fields)
     except OSError as exc:  # only the dashboard's progress: the check itself goes on
@@ -290,6 +297,8 @@ def _check_location(
             )
             continue
         location.actual[relative] = actual
+        # Under the hash its bytes have: a card's file only ever matches its own.
+        check.good.add(("usb" if on_drive else "mac", actual))
         if expected is None:
             location.unverified.add(relative)
             check.not_checked += 1
@@ -354,17 +363,33 @@ def _other_copy(problem: Problem, mac: _Location, usb: _Location) -> str:
     return OTHER_BAD if other.finished else OTHER_UNKNOWN
 
 
-def check_archives(check: Optional[ArchiveCheck] = None) -> ArchiveCheck:
-    """Read every saved copy, filling in ``check`` as it goes so a cancel keeps what was found."""
+def _keep_only(location: _Location, hashes: Optional[Set[str]]) -> _Location:
+    if hashes is not None:
+        location.files = {
+            relative: entry for relative, entry in location.files.items() if entry.sha256 in hashes
+        }
+    return location
+
+
+def check_archives(
+    check: Optional[ArchiveCheck] = None, only: Optional[Tuple[Set[str], Set[str]]] = None
+) -> ArchiveCheck:
+    """Read every saved copy, filling in ``check`` as it goes so a cancel keeps what was found.
+
+    ``only``: the hashes of the copies to read on the Mac and on the drive, for one card.
+    """
     check = check if check is not None else ArchiveCheck()
     noted = verify_report.deleted_files()
-    mac = _load_location(MAC, (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT))
+    mac = _keep_only(
+        _load_location(MAC, (config.LOCAL_DEST_ROOT, config.LOCAL_RAW_DEST_ROOT)),
+        only[0] if only else None,
+    )
     usb = _Location(USB)
     identity = None
     if volumes.usb_is_mounted() and config.USB_DEST_ROOT.is_dir():
         identity = volumes.get_volume_identity(config.USB_DEST_VOLUME)
         check.drive_id = (identity.volume_uuid or "") if identity else ""
-        usb = _load_location(USB, (config.USB_DEST_ROOT,))
+        usb = _keep_only(_load_location(USB, (config.USB_DEST_ROOT,)), only[1] if only else None)
     else:
         check.usb_skipped = True
         logger.info("The USB drive isn't connected, so only the Mac's copies are being checked.")
@@ -462,9 +487,13 @@ def _exit_code(check: ArchiveCheck) -> int:
     return EXIT_PROBLEMS if check.problems or check.drive_gone or check.error else EXIT_OK
 
 
-def _record(check: ArchiveCheck, started_at: float, message: str, code: int, report: str) -> None:
+def _record(
+    check: ArchiveCheck, started_at: float, message: str, code: int, report: str, card: str = ""
+) -> None:
     whole = not (check.canceled or check.drive_gone or check.error)
     details: Dict[str, object] = {"whole": whole}
+    if card:
+        details["card_id"] = card
     if check.problems:
         details["check"] = verify_report.details_for(_report_rows(check), report)
     if check.speeds:
@@ -486,16 +515,56 @@ def _record(check: ArchiveCheck, started_at: float, message: str, code: int, rep
     )
 
 
-def _run() -> int:
+def _card_to_check(card: str, new_only: bool) -> Tuple[Set[str], Set[str]]:
+    """The hashes of the card's copies to read, on the Mac and on the drive. Raises _CantCheck
+    when it can't be checked: both sides must be read."""
+    hashes = card_status.card_hashes(card)
+    if hashes is None:
+        raise _CantCheck(f"That card isn't known: {card}.")
+    if new_only:
+        hashes_by_side = card_status.copies_to_reread(card) or (set(), set())
+    else:
+        hashes_by_side = (hashes, hashes)
+    if not volumes.usb_is_mounted():
+        raise _CantCheck("Connect the USB drive to check this card: both copies are read.")
+    return hashes_by_side
+
+
+def _say_card_is_safe(card: str) -> None:
+    status = next((c for c in card_status.all_cards() if c.card_id == card), None)
+    if status and status.safe:
+        name = " · ".join(part for part in (status.camera, status.label) if part)
+        files = f"all {status.files:,} file{'s were' if status.files != 1 else ' was'}"
+        logs.notify(
+            "Safe to Format",
+            f"{name}: {files} read again and {'are' if status.files != 1 else 'is'} good on both sides.",
+        )
+
+
+def _remember_good_copies(check: ArchiveCheck) -> None:
+    """Every copy read and found good, also by a check stopped part way: they were read."""
+    try:
+        verify_report.remember_rereads(check.good, time.time())
+    except OSError as exc:  # the next check reads them again; nothing is lost
+        logger.warning("Could not note which copies were read and found good: %s", exc)
+
+
+class _CantCheck(RuntimeError):
+    pass
+
+
+def _run(card: str = "", new_only: bool = False) -> int:
+    global _CHECKING_CARD
+    _CHECKING_CARD = card
     started_at = time.time()
     check = ArchiveCheck()
-    logger.info("Starting a check of the saved copies.")
+    logger.info("Starting a check of the saved copies%s.", f" of card {card}" if card else "")
     # Before the archives are listed, so a check started from the dashboard shows straight away.
     _write_status(where="", usb=False)
     try:
         config.check_settings()
-        check_archives(check)
-    except settings.SettingsProblem as exc:
+        check_archives(check, _card_to_check(card, new_only) if card else None)
+    except (settings.SettingsProblem, _CantCheck) as exc:
         logger.error("%s", exc)
         check.error = str(exc)
     except KeyboardInterrupt:
@@ -505,6 +574,7 @@ def _run() -> int:
         check.error = str(exc)
     finally:
         config.VERIFY_STATUS_PATH.unlink(missing_ok=True)
+        _remember_good_copies(check)
     message, code = describe(check), _exit_code(check)
     logger.info("Check finished: %s", message)
     print(f"\n{message}")
@@ -517,7 +587,10 @@ def _run() -> int:
             "that copy by hand, or from the card if it still has the photo."
         )
         logs.notify("Saved Copies Need Attention", message)
-    _record(check, started_at, message, code, report)
+    _record(check, started_at, message, code, report, card)
+    card_status.record()  # a damaged or missing copy means a card is no longer safe to format
+    if card and code == EXIT_OK:
+        _say_card_is_safe(card)
     return code
 
 
@@ -533,16 +606,29 @@ def _only_one_check() -> Iterator[None]:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         description="Reread every saved copy and compare it with the hash recorded when it was "
         "saved. Only reports: nothing is changed."
-    ).parse_args(argv)
+    )
+    parser.add_argument(
+        "--card",
+        default="",
+        help="only the copies of this card's files (its volume ID), on the Mac and the USB drive",
+    )
+    parser.add_argument(
+        "--new",
+        action="store_true",
+        help="with --card: only the copies no check has read since they were made",
+    )
+    args = parser.parse_args(argv)
+    if args.new and not args.card:
+        parser.error("--new goes with --card")
     importer.configure_logging()
     previous = signal.signal(signal.SIGTERM, importer._raise_keyboard_interrupt)
     try:
         with _only_one_check():
             awake.keep_awake()
-            return _run()
+            return _run(args.card, args.new)
     except _Busy:
         print("A check is already running.")
         return EXIT_PROBLEMS

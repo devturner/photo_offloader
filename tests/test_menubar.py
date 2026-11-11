@@ -123,6 +123,46 @@ class TestMenuEntries(unittest.TestCase):
                             )
 
 
+class TestInsertedCard(unittest.TestCase):
+    """While a card is inserted, the menu bar says whether it is safe to format."""
+
+    SAFE = model.CardLine("NIKON Z 8 · 256 GB CFexpress", "safe", "Safe to format · checked Nov 17")
+    CHECK = model.CardLine("NIKON Z 8 · 128 GB SD", "check", "Check before formatting")
+    NOT_SAFE = model.CardLine(
+        "NIKON Z 8 · 64 GB SanDisk SD", "unsafe", "Don't format · 18 not on USB"
+    )
+
+    def test_the_menu_starts_with_the_card_and_what_to_do_with_it(self):
+        entries = model.menu_entries(Snapshot(running=True, card=self.SAFE))
+        self.assertEqual(
+            [(e.key, e.title, e.enabled) for e in entries[:3]],
+            [
+                ("card", "NIKON Z 8 · 256 GB CFexpress", False),
+                ("card_status", "Safe to format · checked Nov 17", False),
+                (None, "", True),
+            ],
+        )
+
+    def test_no_card_no_line(self):
+        self.assertNotIn("card", keys(Snapshot(running=True)))
+
+    def test_the_title_marks_a_safe_card_and_one_to_keep(self):
+        self.assertEqual(model.menu_title(Snapshot(running=True, card=self.SAFE), icon=True), " ✓")
+        self.assertEqual(
+            model.menu_title(Snapshot(running=True, card=self.NOT_SAFE), icon=True), " !"
+        )
+        self.assertEqual(model.menu_title(Snapshot(running=True, card=self.CHECK), icon=True), " ?")
+        self.assertEqual(model.menu_title(Snapshot(running=True, card=self.SAFE)), "📷 ✓")
+
+    def test_a_running_import_or_a_stop_says_more_than_the_card(self):
+        for snapshot, title in (
+            (Snapshot(running=True, transfer=True, card=self.SAFE), " ↻"),
+            (Snapshot(running=True, paused=True, card=self.SAFE), " ⏸"),
+            (Snapshot(running=False, card=self.SAFE), " Off"),
+        ):
+            self.assertEqual(model.menu_title(snapshot, icon=True), title)
+
+
 class TestTitleAndParsing(unittest.TestCase):
     def test_titles(self):
         self.assertEqual(model.menu_title(Snapshot(running=True)), "📷")

@@ -32,6 +32,8 @@ Camera card  →  Mac (verified)  →  USB drive (optional)  →  Google Photos 
   and why, and a card it couldn't fully read is never called done.
 - **Check saved copies.** Reread everything on the Mac and the USB drive and compare it with the
   hashes saved at import time, to catch damaged or missing files.
+- **Know when to format.** Each card you've used says *Safe to format* once every file on it is
+  verified on the Mac and the USB drive, even if the backup happens days later.
 - **Eject after import.** The card can be ejected for you once its copy to the Mac is verified.
 
 ## Requirements
@@ -81,7 +83,7 @@ the dashboard's ⋯ menu ([details](docs/configuration.md#the-settings-file)).
 Photo Offloader is a personal project that's used for real, but by one person so far:
 
 - **Tested on:** macOS 26 with a Nikon Z 8 (SD and CFexpress cards) and an HFS+ USB drive. CI runs
-  about 950 tests on macOS with Python 3.9 to 3.14.
+  about 1,200 tests on macOS with Python 3.9 to 3.14.
 - **Not tried yet:** other camera brands (it reads `DCIM`, `PRIVATE` and `MP_ROOT`), exFAT backup
   drives, a clean install on another Mac, and a card that really fails mid-import (the failure
   reports have only run against simulated failures).
