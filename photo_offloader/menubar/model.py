@@ -12,6 +12,15 @@ from typing import List, Optional
 
 
 @dataclass(frozen=True)
+class CardLine:
+    """The inserted card, and whether it is safe to format, as the dashboard's cards row says."""
+
+    title: str
+    safe: bool
+    status: str
+
+
+@dataclass(frozen=True)
 class Snapshot:
     running: bool
     paused: bool = False
@@ -19,6 +28,7 @@ class Snapshot:
     usb: bool = False
     dashboard: bool = False
     upload: str = ""  # the Google Photos upload: "running", "paused" or nothing
+    card: Optional[CardLine] = None  # the inserted card, once the importer has seen it
 
 
 @dataclass(frozen=True)
@@ -51,13 +61,22 @@ def menu_title(snapshot: Snapshot, icon: bool = False) -> str:
         state = " ⏸"
     elif snapshot.transfer:
         state = " ↻"
+    elif snapshot.card:
+        state = " ✓" if snapshot.card.safe else " !"
     else:
         state = ""
     return state if icon else "📷" + state
 
 
 def menu_entries(snapshot: Snapshot) -> List[Entry]:
-    entries = [Entry("open_dashboard", "Open Dashboard")]
+    entries = []
+    if snapshot.card:
+        entries += [
+            Entry("card", snapshot.card.title, enabled=False),
+            Entry("card_status", snapshot.card.status, enabled=False),
+            Entry(None),
+        ]
+    entries.append(Entry("open_dashboard", "Open Dashboard"))
     if snapshot.dashboard:
         entries.append(Entry("close_dashboard", "Close Dashboard"))
     entries.append(Entry(None))
