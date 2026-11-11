@@ -182,6 +182,26 @@ class TestImporterCommandLine(support.CardFixtureTestCase):
         # afterward, so the card is safely released and backup reports failure.
         eject.assert_called_once_with(self.card.resolve())
 
+    @patch("photo_offloader.volumes.usb_is_mounted", return_value=False)
+    @patch("photo_offloader.logs.notify")
+    def test_a_settings_problem_imports_nothing_and_says_why(self, notify, _mounted):
+        self.media()
+        with patch.object(config, "SETTINGS_PROBLEM", "Line 2: backup_drive is set twice."):
+            result = app.main(["--source", str(self.card)])
+        self.assertEqual(result, 1)
+        self.assertEqual([p for p in self.local.rglob("*") if p.is_file()], [])
+        status = json.loads(config.STATUS_FILE_PATH.read_text())
+        self.assertEqual(status["state"], "failed")
+        self.assertIn("set twice", status["message"])
+        self.assertIn("Edit settings", notify.call_args[0][1])
+
+    @patch("photo_offloader.transfer.copy_local_archive_to_usb")
+    @patch("photo_offloader.logs.notify")
+    def test_a_settings_problem_stops_a_usb_backup_too(self, _notify, backup):
+        with patch.object(config, "SETTINGS_PROBLEM", "Line 1: broken."):
+            self.assertEqual(app.main(["--backup-usb"]), 1)
+        backup.assert_not_called()
+
     @patch("photo_offloader.transfer.copy_local_archive_to_usb")
     @patch("photo_offloader.logs.notify")
     def test_standalone_usb_backup_does_not_require_card(self, notify, backup):

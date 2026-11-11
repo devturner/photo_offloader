@@ -302,6 +302,22 @@ class TestGooglePhotosSync(unittest.TestCase):
             sync._upload_stopped(["a.jpg"], started)
         self.assertEqual(record.call_args[0][0]["outcome"], "complete")
 
+    def test_a_settings_problem_uploads_nothing_and_says_why(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            support.isolate_config(self, Path(tmp))
+            with (
+                patch.object(config, "SETTINGS_PROBLEM", "Line 1: broken."),
+                patch.object(sync, "find_rclone", return_value="/usr/bin/false"),
+                patch.object(sync, "list_upload_candidates") as candidates,
+            ):
+                result = sync.run_sync()
+            payload = json.loads(config.GOOGLE_STATUS_PATH.read_text())
+            self.doCleanups()
+        self.assertEqual(result, 1)
+        candidates.assert_not_called()
+        self.assertEqual(payload["state"], "failed")
+        self.assertIn("settings file", payload["message"])
+
     def test_missing_rclone_reports_not_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -74,6 +74,7 @@ def _test_locations(root: Path) -> dict:
         "GOOGLE_PAUSED_PATH": install / ".google-photos-paused",
         "GOOGLE_RETRY_PATH": install / ".google-photos-retry",
         "PREFERENCES_PATH": data / "preferences.json",
+        "SETTINGS_PATH": data / "settings.txt",
         "RCLONE_CONFIG_PATH": root / "rclone" / "rclone.conf",
     }
 
@@ -95,6 +96,10 @@ def isolate_config(testcase: unittest.TestCase, root: Path, **overrides) -> None
         patcher = patch.object(config, name, value)
         patcher.start()
         testcase.addCleanup(patcher.stop)
+    # A problem in the user's real settings.txt must not fail a test.
+    patcher = patch.object(config, "SETTINGS_PROBLEM", None)
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
     # A test must never put a notification on the user's screen.
     patcher = patch.object(logs, "notify")
     patcher.start()

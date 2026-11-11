@@ -828,6 +828,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
                 }
             )
             progress.update_status()
+            config.check_settings()
             if args.update_catalog:
                 return _run_catalog_update()
             if args.backup_usb:

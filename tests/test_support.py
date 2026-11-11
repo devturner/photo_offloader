@@ -27,6 +27,13 @@ class TestIsolateConfig(unittest.TestCase):
             run.assert_not_called()
             self.doCleanups()
 
+    def test_a_problem_in_the_real_settings_file_does_not_reach_a_test(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(config, "SETTINGS_PROBLEM", "Line 1: broken"):
+                support.isolate_config(self, Path(tmp))
+                self.assertIsNone(config.SETTINGS_PROBLEM)
+                self.doCleanups()
+
     def test_a_new_config_path_without_a_test_location_is_refused(self):
         with patch.object(config, "NEW_THING_PATH", Path("/real/place"), create=True):
             with self.assertRaisesRegex(AssertionError, "NEW_THING_PATH"):

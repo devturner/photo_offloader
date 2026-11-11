@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
-from photo_offloader import catalog, config, jsonfile, logs
+from photo_offloader import catalog, config, jsonfile, logs, settings
 
 UPLOAD_LIST_PREFIX = ".upload-list-"  # in INSTALL_DIR; the dashboard spots our rclone by it
 # How long to wait after the Nth attempt before trying an unfinished upload again. The same
@@ -688,6 +688,10 @@ def _sync(lock_fd: Optional[int] = None) -> int:
         )
         _clear_retry()
         return 2
+
+    if config.SETTINGS_PROBLEM:
+        publish_status("failed", str(settings.SettingsProblem(config.SETTINGS_PROBLEM)))
+        return 1
 
     if not config.LOCAL_DEST_ROOT.is_dir():
         publish_status("failed", f"Local photo archive does not exist: {config.LOCAL_DEST_ROOT}")
