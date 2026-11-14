@@ -63,8 +63,10 @@ is optional, and the copies to the Mac and the USB drive work without it. When G
 something again, an upload can fail, but your verified copies on the Mac and the USB drive don't
 depend on it.
 
-Insert the card, walk away, and the photos are on your Mac, your backup drive and in Google
-Photos when you come back.
+Insert the card and walk away. Once the copy to the Mac is verified, the uploads start, and you can
+watch the photos arrive one by one in the Google Photos app on your phone, from another room or
+after you've left the house. When you come back they're on your Mac, your backup drive and in
+Google Photos.
 
 - [Get started](../README.md): requirements and install
 - [Google Photos setup](google-photos.md): the Google Cloud and rclone steps, with a command that
