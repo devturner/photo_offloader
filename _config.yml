@@ -13,3 +13,7 @@ defaults:
     values:
       title: Get started
       permalink: /get-started.html
+
+# Writes sitemap.xml, so search engines find every page. GitHub Pages supports this plugin.
+plugins:
+  - jekyll-sitemap
