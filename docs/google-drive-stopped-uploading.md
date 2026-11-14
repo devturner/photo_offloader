@@ -17,7 +17,7 @@ for anyone who takes photos with a camera and copies them to a Mac.
 
 | Option | Runs by itself | Setup | Good for |
 | --- | --- | --- | --- |
-| [Google Photos website](#the-google-photos-website) | Only while the tab is open | None | An occasional upload |
+| [Google Photos website](#the-google-photos-website) | Only while the tab is open | A Chrome-based browser | An occasional upload |
 | [Your phone](#through-your-phone) | Yes, once photos reach the phone | Camera's phone app | A few photos at a time |
 | [rclone](#rclone-on-its-own) | If you schedule it | Command line and a Google Cloud client | People at home in the Terminal |
 | [Photo Offloader](#photo-offloader) | Yes, when a card goes in | About 20 minutes, mostly in Google Cloud | Copying whole cards, with a verified backup |
@@ -25,8 +25,9 @@ for anyone who takes photos with a camera and copies them to a Mac.
 ### The Google Photos website
 
 Google's suggested replacement is **Back up folders** on [photos.google.com](https://photos.google.com):
-press **+** and choose **Back up folders**. It only uploads while that browser tab stays open,
-so it can't upload in the background or start on its own after you copy a card. See
+press **+** and choose **Back up folders**. It only works in Chrome and browsers built on it,
+such as Edge or Brave, so not in Safari or Firefox. It only uploads while that browser tab stays
+open, so it can't upload in the background or start on its own after you copy a card. See
 [Google's help page](https://support.google.com/drive/answer/13470231) for the details.
 
 ### Through your phone
