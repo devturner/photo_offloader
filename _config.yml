@@ -13,6 +13,20 @@ defaults:
     values:
       title: Get started
       permalink: /get-started.html
+  # Published because the README links to them, or because Pages publishes every
+  # HTML file, but not pages for people searching: leave them out of sitemap.xml.
+  - scope:
+      path: CLAUDE.md
+    values:
+      sitemap: false
+  - scope:
+      path: CODE_QUALITY.md
+    values:
+      sitemap: false
+  - scope:
+      path: photo_offloader
+    values:
+      sitemap: false
 
 # Writes sitemap.xml, so search engines find every page. GitHub Pages supports this plugin.
 plugins:
