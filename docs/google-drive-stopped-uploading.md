@@ -64,8 +64,8 @@ something again, an upload can fail, but your verified copies on the Mac and the
 depend on it.
 
 Insert the card and walk away. Once the copy to the Mac is verified, the uploads start, and you can
-watch the photos arrive one by one in the Google Photos app on your phone, from another room or
-after you've left the house. When you come back they're on your Mac, your backup drive and in
+watch the photos arrive one by one in the Google Photos app on your phone, or on any device signed
+in to Google Photos, from another room or after you've left the house. When you come back they're on your Mac, your backup drive and in
 Google Photos.
 
 - [Get started](../README.md): requirements and install
