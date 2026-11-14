@@ -97,6 +97,7 @@ These pages are also on the [project website](https://devturner.github.io/photo_
 
 - [Using Photo Offloader](docs/using.md): the dashboard and menu bar, what each step means, pausing and stopping
 - [Google Photos setup](docs/google-photos.md): a step-by-step guide, with a command that checks your setup
+- [Google Drive stopped uploading to Google Photos](docs/google-drive-stopped-uploading.md): your options on a Mac since August 10, 2026
 - [How it works](docs/how-it-works.md): the safety model, archive layout, catalog and logs
 - [Configuration](docs/configuration.md): settings and environment variables
 - [Development](docs/development.md): repository layout, tests and project rules

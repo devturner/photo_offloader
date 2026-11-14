@@ -4,6 +4,9 @@ All notable changes to Photo Offloader are documented here.
 
 ## [Unreleased]
 
+### Documentation
+- [Google Drive stopped uploading to Google Photos](docs/google-drive-stopped-uploading.md): what changed on August 10, 2026, and the ways left to get camera photos from a Mac into Google Photos, for people searching for that problem. Site pages can now set their own search description.
+
 ## [2.6.0] - 2026-11-11
 
 ### Added
