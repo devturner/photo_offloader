@@ -1,5 +1,8 @@
 # Photo Offloader
 
+**Insert a card and walk away.** Once the upload starts, your photos appear live on your phone,
+or on any device signed in to Google Photos.
+
 Insert a camera card into your Mac and Photo Offloader does the rest. It copies everything to
 the Mac and checks each copy with SHA-256, mirrors the archive to a USB drive, and can upload
 JPGs and video to Google Photos. It never deletes anything from the card and never overwrites
@@ -97,6 +100,7 @@ These pages are also on the [project website](https://devturner.github.io/photo_
 
 - [Using Photo Offloader](docs/using.md): the dashboard and menu bar, what each step means, pausing and stopping
 - [Google Photos setup](docs/google-photos.md): a step-by-step guide, with a command that checks your setup
+- [Google Drive stopped uploading to Google Photos](docs/google-drive-stopped-uploading.md): your options on a Mac since August 10, 2026
 - [How it works](docs/how-it-works.md): the safety model, archive layout, catalog and logs
 - [Configuration](docs/configuration.md): settings and environment variables
 - [Development](docs/development.md): repository layout, tests and project rules
